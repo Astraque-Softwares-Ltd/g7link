@@ -35,12 +35,33 @@ mod imp {
     const FIND_WINDOW: Duration = Duration::from_secs(5);
 
     /// The lowest bitrate the stream backs off to on a slow link (encoders
-    /// go no lower).
+    /// go no lower), when the phone asked for the data saver's rate or less.
     const MIN_BITRATE: u32 = 500_000;
+    /// The most any stream is given.
+    const MAX_BITRATE: u32 = 20_000_000;
+    /// The data saver's rate (the phone's 1280 setting), and the least a sharp
+    /// picture is given before backing off.
+    const SAVER_BITRATE: u32 = 4_000_000;
+    /// The sharp picture's floor: the link measure misjudges a quiet stream
+    /// (it times the phone's reports, not the link), and backing off below this
+    /// on its word blurred every keyframe.
+    const SHARP_MIN_BITRATE: u32 = 2_000_000;
+    /// The most a sharp picture is given: 1440p at 30 frames a second.
+    const SHARP_MAX_BITRATE: u32 = 16_000_000;
+    /// The longest side the phone gets. Larger screens are scaled down to it;
+    /// 1440p and 2560 x 1600 come whole, which H.264 level 5.1 covers at up to 60
+    /// frames a second.
+    pub(crate) const MAX_EDGE: u32 = 2560;
+    /// The longest side when OpenH264 encodes, in software. It can't hold 30
+    /// frames a second at 1440p on a laptop: on an i5-10210U it takes 24 to 28
+    /// ms a frame there (over 100 ms for a keyframe), before capture and colour
+    /// conversion, against 12 to 15 ms at 1080p.
+    const SOFTWARE_MAX_EDGE: u32 = 1920;
     /// A measure of the link over fewer bytes than this says how late they
     /// were, not what the link carries (a quiet screen, the phone's radio
-    /// asleep for a moment): the bitrate stays.
-    const MIN_MEASURED_BYTES: u64 = 16 * 1024;
+    /// asleep for a moment): the bitrate stays. Larger than a keyframe, so
+    /// one late keyframe isn't taken for a slow link.
+    const MIN_MEASURED_BYTES: u64 = 256 * 1024;
     /// How long the link must have carried everything before the bitrate
     /// steps back up, and how often it then does, a quarter at a time. From
     /// the lowest bitrate to 4 Mbit/s that is about half a minute; it used to
@@ -56,6 +77,144 @@ mod imp {
         bytes: u64,
         dropped: u64,
         rebuilds: u64,
+        /// Pictures whose pixels were the same as the last one sent's.
+        unchanged: u64,
+        /// How long each picture took to convert to NV12, and to encode.
+        convert: Vec<Duration>,
+        encode: Vec<Duration>,
+    }
+
+    /// What the stream's pacing did in the stats window (`MirrorStream::take_stats`).
+    struct Pacing {
+        holds: u32,
+        held: Duration,
+        shortest_trip: Option<Duration>,
+        p95_trip: Option<Duration>,
+    }
+
+    /// The `pct` percentile of `samples`, in milliseconds.
+    fn percentile_ms(samples: &mut [Duration], pct: usize) -> Option<f64> {
+        samples.sort_unstable();
+        let last = samples.len().checked_sub(1)?;
+        Some(samples[last * pct.min(100) / 100].as_secs_f64() * 1000.0)
+    }
+
+    /// `p50/p95` of `samples` in milliseconds, or `-`.
+    fn p50_p95(samples: &mut [Duration]) -> String {
+        match (percentile_ms(samples, 50), percentile_ms(samples, 95)) {
+            (Some(p50), Some(p95)) => format!("{p50:.1}/{p95:.1}"),
+            _ => "-".to_owned(),
+        }
+    }
+
+    impl Stats {
+        /// The stats line, every ten seconds: what R0 measures from.
+        fn log(
+            &mut self,
+            peer: &DeviceId,
+            size: (u32, u32),
+            encoder: &str,
+            bitrate: u32,
+            pace: &Pacing,
+            took: Duration,
+        ) {
+            let secs = took.as_secs_f64().max(0.001);
+            let ms = |d: Option<Duration>| d.map_or_else(|| "-".to_owned(), |d| d.as_millis().to_string());
+            tracing::info!(
+                %peer,
+                size = format!("{}x{}", size.0, size.1),
+                encoder,
+                fps = format!("{:.1}", self.frames as f64 / secs),
+                kbps = (self.bytes as f64 * 8.0 / secs / 1000.0) as u64,
+                keyframes = self.keyframes,
+                unchanged = self.unchanged,
+                convert_ms = p50_p95(&mut self.convert),
+                encode_ms = p50_p95(&mut self.encode),
+                holds = pace.holds,
+                held_ms = pace.held.as_millis() as u64,
+                trip_ms = format!("{}/{}", ms(pace.shortest_trip), ms(pace.p95_trip)),
+                dropped = self.dropped,
+                rebuilds = self.rebuilds,
+                bitrate,
+                "sharing this PC's screen"
+            );
+        }
+    }
+
+    /// The monotonic clock (`CLOCK_MONOTONIC`) in microseconds: what the
+    /// stream's packets are stamped with, and what the phone times
+    /// (`mirror.clock`, answered by the core from the same clock).
+    pub(crate) fn monotonic_us() -> u64 {
+        let mut now = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+        // SAFETY: `now` is a valid timespec for the call to fill.
+        if unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut now) } != 0 {
+            return 0;
+        }
+        let secs = u64::try_from(now.tv_sec).unwrap_or(0);
+        secs.saturating_mul(1_000_000).saturating_add(u64::try_from(now.tv_nsec).unwrap_or(0) / 1000)
+    }
+
+    /// What the capture loop does next with the pictures.
+    #[derive(Debug, PartialEq, Eq)]
+    pub(crate) enum Next {
+        /// Encode the newest picture, numbered so: one not sent yet.
+        New(u64),
+        /// Encode the last picture again: a keyframe is due, and nothing newer came.
+        Again,
+        /// Too soon after the last: wait this long (at most `fps` a second).
+        Pace(Duration),
+        /// Nothing new: wait for a picture.
+        Idle,
+    }
+
+    /// Encodes a picture the moment it comes, at most `fps` a second, and
+    /// only one it hasn't sent: a still screen costs nothing. The last one
+    /// goes again only as a keyframe asked for while nothing newer came.
+    #[derive(Debug, Default)]
+    pub(crate) struct FrameGate {
+        /// The last picture encoded, by its number from where it came.
+        sent: Option<u64>,
+        last_encode: Option<Instant>,
+    }
+
+    impl FrameGate {
+        /// What to do at `now`, the newest picture being `newest` (0: none
+        /// yet), one every `interval` at most.
+        pub(crate) fn next(&self, newest: u64, keyframe_due: bool, interval: Duration, now: Instant) -> Next {
+            if let Some(ready) = self.last_encode.map(|at| at + interval)
+                && ready > now
+            {
+                return Next::Pace(ready - now);
+            }
+            match self.sent {
+                _ if newest == 0 => Next::Idle,
+                Some(sent) if newest <= sent => {
+                    if keyframe_due {
+                        Next::Again
+                    } else {
+                        Next::Idle
+                    }
+                }
+                _ => Next::New(newest),
+            }
+        }
+
+        /// Picture `number` was encoded at `at`.
+        pub(crate) fn encoded(&mut self, number: u64, at: Instant) {
+            self.sent = Some(number);
+            self.last_encode = Some(at);
+        }
+
+        /// The last picture encoded.
+        pub(crate) fn sent(&self) -> Option<u64> {
+            self.sent
+        }
+
+        /// Pictures from somewhere new (a restarted capture, another size):
+        /// their numbers start again, and there's none to send again.
+        pub(crate) fn restart(&mut self) {
+            self.sent = None;
+        }
     }
 
     /// Returns the device currently viewing this PC's screen, if any.
@@ -256,30 +415,113 @@ mod imp {
         }
     }
 
-    /// Computes target encoder dimensions (multiples of 16) fitting within `max_size`.
+    /// The size a `src_w` x `src_h` picture is encoded at, its longer side at
+    /// most `max_size` (and [`MAX_EDGE`]). A picture that fits keeps its own
+    /// size, an odd side padded by one to even (4:2:0 needs it); the encoder
+    /// crops its own block padding. Never rounded down to a block size and
+    /// never scaled up: either would resample every pixel and soften the text.
+    /// A larger picture is scaled to fit, to the nearest even size.
     pub(crate) fn target_dimensions(src_w: u32, src_h: u32, max_size: u32) -> (u32, u32) {
-        let max_edge = max_size.clamp(320, 1920) as f64;
-        let sw = src_w.max(64) as f64;
-        let sh = src_h.max(64) as f64;
+        let max_edge = u64::from(max_size.clamp(320, MAX_EDGE));
+        let sw = u64::from(src_w.max(64));
+        let sh = u64::from(src_h.max(64));
         let longest = sw.max(sh);
-        let scale = if longest > max_edge { max_edge / longest } else { 1.0 };
-        let w = (((sw * scale).round() as u32) / 16).max(4) * 16;
-        let h = (((sh * scale).round() as u32) / 16).max(4) * 16;
-        (w, h)
+        let (w, h) = if longest <= max_edge {
+            ((sw + 1) & !1, (sh + 1) & !1)
+        } else {
+            let fit = |side: u64| ((side * max_edge + longest / 2) / longest) & !1;
+            (fit(sw), fit(sh))
+        };
+        // At most MAX_EDGE + 1 on a side, so these always fit.
+        (u32::try_from(w.max(64)).unwrap_or(MAX_EDGE), u32::try_from(h.max(64)).unwrap_or(MAX_EDGE))
+    }
+
+    /// What's captured for a picture encoded at `encoded` (from
+    /// [`target_dimensions`]): the picture itself when it fits, at its own size,
+    /// else the scaled size. Where it is smaller, the encoded frame repeats its
+    /// last column and row.
+    pub(crate) fn picture_dimensions(src_w: u32, src_h: u32, encoded: (u32, u32)) -> (u32, u32) {
+        (src_w.clamp(1, encoded.0), src_h.clamp(1, encoded.1))
+    }
+
+    /// The bitrate a sharp `width` x `height` picture at `fps` needs: 8 Mbit/s
+    /// for 1080p at 30 frames a second and in proportion to the pixels sent,
+    /// so about 14 for 1440p; never under the data saver's rate (small screens
+    /// still need their text sharp) nor over [`SHARP_MAX_BITRATE`].
+    pub(crate) fn bitrate_for(width: u32, height: u32, fps: u32) -> u32 {
+        const AT_1080P30: u64 = 8_000_000;
+        let pixels = u64::from(width) * u64::from(height) * u64::from(fps.max(1));
+        let rate = pixels * AT_1080P30 / (1920 * 1080 * 30);
+        u32::try_from(rate.clamp(u64::from(SAVER_BITRATE), u64::from(SHARP_MAX_BITRATE)))
+            .unwrap_or(SHARP_MAX_BITRATE)
+    }
+
+    /// The most a stream encoded at `width` x `height` is given when the phone
+    /// asked for `asked`: what its size needs, up to what was asked. The data
+    /// saver asks for its own rate, and gets exactly that.
+    pub(crate) fn stream_bitrate(asked: u32, width: u32, height: u32, fps: u32) -> u32 {
+        asked.clamp(MIN_BITRATE, MAX_BITRATE).min(bitrate_for(width, height, fps))
+    }
+
+    /// The least a stream backs off to on a slow link: the sharp picture's
+    /// floor, or the old one when the phone asked for the data saver's rate.
+    pub(crate) fn bitrate_floor(asked: u32) -> u32 {
+        if asked > SAVER_BITRATE { SHARP_MIN_BITRATE } else { MIN_BITRATE }
+    }
+
+    /// A stream's size: what's captured, and what's encoded (even, and at
+    /// least as large; see [`picture_dimensions`]).
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub(crate) struct StreamSize {
+        pub(crate) picture: (u32, u32),
+        pub(crate) encoded: (u32, u32),
+    }
+
+    impl StreamSize {
+        pub(crate) fn new(src_w: u32, src_h: u32, max_size: u32) -> Self {
+            let encoded = target_dimensions(src_w, src_h, max_size);
+            Self { picture: picture_dimensions(src_w, src_h, encoded), encoded }
+        }
     }
 
     /// Converts a top-down 32-bit BGRA image (`width * height * 4` bytes) into
     /// BT.709 limited-range NV12 (`width * height * 3 / 2` bytes).
     pub(crate) fn bgra_to_nv12(bgra: &[u8], width: usize, height: usize, nv12: &mut Vec<u8>) {
+        bgra_to_nv12_padded(bgra, width, height, width, height, nv12);
+    }
+
+    /// [`bgra_to_nv12`] of a `src_w` x `src_h` picture into a `width` x
+    /// `height` frame (even, and at least as large), the picture's last
+    /// column and row repeated into the rest. A picture shorter than its size
+    /// says, or an odd frame, leaves `nv12` empty.
+    pub(crate) fn bgra_to_nv12_padded(
+        bgra: &[u8],
+        src_w: usize,
+        src_h: usize,
+        width: usize,
+        height: usize,
+        nv12: &mut Vec<u8>,
+    ) {
+        if src_w == 0
+            || src_h == 0
+            || width < src_w
+            || height < src_h
+            || !width.is_multiple_of(2)
+            || !height.is_multiple_of(2)
+            || bgra.len() < src_w * src_h * 4
+        {
+            nv12.clear();
+            return;
+        }
         let y_size = width * height;
         let uv_size = y_size / 2;
         nv12.resize(y_size + uv_size, 0);
         let (y_plane, uv_plane) = nv12.split_at_mut(y_size);
 
         for row in 0..height {
-            let src_row = row * width * 4;
+            let src_row = row.min(src_h - 1) * src_w * 4;
             let y_row = row * width;
-            for col in 0..width {
+            for col in 0..src_w {
                 let px = src_row + col * 4;
                 let b = i32::from(bgra[px]);
                 let g = i32::from(bgra[px + 1]);
@@ -287,17 +529,21 @@ mod imp {
                 let y = ((47 * r + 157 * g + 16 * b + 128) >> 8) + 16;
                 y_plane[y_row + col] = y.clamp(16, 235) as u8;
             }
+            let edge = y_plane[y_row + src_w - 1];
+            y_plane[y_row + src_w..y_row + width].fill(edge);
         }
 
         for row in (0..height).step_by(2) {
-            let src0 = row * width * 4;
-            let src1 = (row + 1).min(height - 1) * width * 4;
+            let src0 = row.min(src_h - 1) * src_w * 4;
+            let src1 = (row + 1).min(src_h - 1) * src_w * 4;
             let uv_row = (row / 2) * width;
             for col in (0..width).step_by(2) {
-                let p00 = src0 + col * 4;
-                let p01 = src0 + (col + 1).min(width - 1) * 4;
-                let p10 = src1 + col * 4;
-                let p11 = src1 + (col + 1).min(width - 1) * 4;
+                let c0 = col.min(src_w - 1) * 4;
+                let c1 = (col + 1).min(src_w - 1) * 4;
+                let p00 = src0 + c0;
+                let p01 = src0 + c1;
+                let p10 = src1 + c0;
+                let p11 = src1 + c1;
 
                 let b = (i32::from(bgra[p00])
                     + i32::from(bgra[p01])
@@ -362,7 +608,7 @@ mod imp {
 
     #[repr(C)]
     struct SEncParamBase {
-        i_usage_type: std::ffi::c_int, // 0 = CAMERA_VIDEO_REAL_TIME
+        i_usage_type: std::ffi::c_int, // 0 = CAMERA_VIDEO_REAL_TIME, 1 = SCREEN_CONTENT_REAL_TIME
         i_pic_width: std::ffi::c_int,
         i_pic_height: std::ffi::c_int,
         i_target_bitrate: std::ffi::c_int,
@@ -554,7 +800,9 @@ mod imp {
                 );
 
                 let param = SEncParamBase {
-                    i_usage_type: 0, // CAMERA_VIDEO_REAL_TIME
+                    // Desktops, not camera pictures: sharp edges and text, and
+                    // most of the picture unchanged from one to the next.
+                    i_usage_type: 1, // SCREEN_CONTENT_REAL_TIME
                     i_pic_width: width as std::ffi::c_int,
                     i_pic_height: height as std::ffi::c_int,
                     i_target_bitrate: bitrate.clamp(500_000, 20_000_000) as std::ffi::c_int,
@@ -567,7 +815,9 @@ mod imp {
                     return Err(format!("OpenH264 Initialize failed with code {rc}"));
                 }
 
-                let mut idr_interval = (fps.max(1) * 2) as std::ffi::c_int;
+                // A keyframe at the start and when asked for; between those, only
+                // the safety one (`SAFETY_KEYFRAME`).
+                let mut idr_interval = (fps.max(1) * 30) as std::ffi::c_int;
                 let _ = set_option(
                     encoder,
                     1, // ENCODER_OPTION_IDR_INTERVAL
@@ -777,25 +1027,41 @@ mod imp {
         }
     }
 
-    pub(crate) enum ScreenEncoder {
+    /// The encoder a screen goes through: in hardware through FFmpeg when it
+    /// opens, else OpenH264.
+    pub(crate) enum Codec {
         OpenH264(OpenH264Encoder),
         #[cfg(linux_ffmpeg_video)]
         Hardware(crate::sys::video_encoder::Encoder),
     }
 
-    impl ScreenEncoder {
-        pub(crate) fn new_for_codec(
-            codec: &str,
-            width: u32,
-            height: u32,
-            fps: u32,
-            bitrate: u32,
-        ) -> Result<Self, String> {
+    /// Encodes a screen. A recording gets a keyframe every two seconds, to
+    /// seek in; the stream to a phone only at its start and when asked
+    /// (`new_for_stream`).
+    pub(crate) struct ScreenEncoder {
+        codec: Codec,
+        /// A keyframe at least this often, in 100 ns units.
+        keyframe_every: Option<i64>,
+        last_keyframe_hns: Option<i64>,
+    }
+
+    /// A recording's keyframes, in 100 ns units.
+    const RECORDING_KEYFRAME_EVERY: i64 = 2 * 10_000_000;
+
+    impl From<Codec> for ScreenEncoder {
+        fn from(codec: Codec) -> Self {
+            Self { codec, keyframe_every: None, last_keyframe_hns: None }
+        }
+    }
+
+    impl Codec {
+        fn new(codec: &str, width: u32, height: u32, fps: u32, bitrate: u32) -> Result<Self, String> {
             #[cfg(linux_ffmpeg_video)]
             match crate::sys::video_encoder::Encoder::new(codec, width, height, fps, bitrate) {
                 Ok(encoder) => return Ok(Self::Hardware(encoder)),
                 Err(error) if codec != "h264" => return Err(error),
-                Err(error) => tracing::debug!(%error, "Hardware H.264 unavailable; using OpenH264"),
+                // Why, at info: hardware that never runs costs heat and frames.
+                Err(error) => tracing::info!(%error, "Hardware H.264 unavailable; using OpenH264"),
             }
             if codec != "h264" {
                 return Err(
@@ -804,36 +1070,77 @@ mod imp {
             }
             OpenH264Encoder::new(width, height, fps, bitrate).map(Self::OpenH264)
         }
+    }
+
+    impl ScreenEncoder {
+        /// An encoder for a recording: a keyframe every two seconds.
+        pub(crate) fn new_for_codec(
+            codec: &str,
+            width: u32,
+            height: u32,
+            fps: u32,
+            bitrate: u32,
+        ) -> Result<Self, String> {
+            let codec = Codec::new(codec, width, height, fps, bitrate)?;
+            Ok(Self { keyframe_every: Some(RECORDING_KEYFRAME_EVERY), ..Self::from(codec) })
+        }
+
+        /// An encoder for the stream to a phone: a keyframe at the start and
+        /// when asked for, and none in between.
+        pub(crate) fn new_for_stream(
+            codec: &str,
+            width: u32,
+            height: u32,
+            fps: u32,
+            bitrate: u32,
+        ) -> Result<Self, String> {
+            Codec::new(codec, width, height, fps, bitrate).map(Self::from)
+        }
 
         #[cfg(linux_ffmpeg_video)]
         fn next_encoder(&mut self, codec: &str, width: u32, height: u32, fps: u32, bitrate: u32) -> bool {
-            if let Self::Hardware(encoder) = self {
+            if let Codec::Hardware(encoder) = &mut self.codec {
                 if encoder.next_device() {
                     return true;
                 }
                 if codec == "h264"
                     && let Ok(software) = OpenH264Encoder::new(width, height, fps, bitrate)
                 {
-                    *self = Self::OpenH264(software);
+                    self.codec = Codec::OpenH264(software);
                     return true;
                 }
             }
             false
         }
 
-        pub(crate) fn request_keyframe(&self) -> bool {
-            match self {
-                Self::OpenH264(encoder) => encoder.request_keyframe(),
+        /// Whether this is OpenH264, in software.
+        pub(crate) fn is_software(&self) -> bool {
+            matches!(self.codec, Codec::OpenH264(_))
+        }
+
+        /// Which encoder this is, for the stats line: `OpenH264`, or the
+        /// FFmpeg encoder and how it sets its rate.
+        pub(crate) fn name(&self) -> String {
+            match &self.codec {
+                Codec::OpenH264(_) => "OpenH264".to_owned(),
                 #[cfg(linux_ffmpeg_video)]
-                Self::Hardware(encoder) => encoder.request_keyframe(),
+                Codec::Hardware(encoder) => encoder.backend(),
+            }
+        }
+
+        pub(crate) fn request_keyframe(&self) -> bool {
+            match &self.codec {
+                Codec::OpenH264(encoder) => encoder.request_keyframe(),
+                #[cfg(linux_ffmpeg_video)]
+                Codec::Hardware(encoder) => encoder.request_keyframe(),
             }
         }
 
         pub(crate) fn set_bitrate(&self, bitrate: u32) -> bool {
-            match self {
-                Self::OpenH264(encoder) => encoder.set_bitrate(bitrate),
+            match &self.codec {
+                Codec::OpenH264(encoder) => encoder.set_bitrate(bitrate),
                 #[cfg(linux_ffmpeg_video)]
-                Self::Hardware(encoder) => encoder.set_bitrate(bitrate),
+                Codec::Hardware(encoder) => encoder.set_bitrate(bitrate),
             }
         }
 
@@ -844,11 +1151,20 @@ mod imp {
             dur_hns: i64,
             stop: &AtomicBool,
         ) -> Result<Vec<(bool, Vec<u8>)>, String> {
-            match self {
-                Self::OpenH264(encoder) => encoder.encode(nv12, hns, dur_hns, stop),
-                #[cfg(linux_ffmpeg_video)]
-                Self::Hardware(encoder) => encoder.encode(nv12, hns, stop),
+            if let (Some(every), Some(last)) = (self.keyframe_every, self.last_keyframe_hns)
+                && hns.saturating_sub(last) >= every
+            {
+                self.request_keyframe();
             }
+            let packets = match &mut self.codec {
+                Codec::OpenH264(encoder) => encoder.encode(nv12, hns, dur_hns, stop),
+                #[cfg(linux_ffmpeg_video)]
+                Codec::Hardware(encoder) => encoder.encode(nv12, hns, stop),
+            }?;
+            if packets.iter().any(|(keyframe, _)| *keyframe) {
+                self.last_keyframe_hns = Some(hns);
+            }
+            Ok(packets)
         }
     }
 
@@ -859,7 +1175,7 @@ mod imp {
         fps: u32,
         bitrate: u32,
     ) -> Result<ScreenEncoder, String> {
-        ScreenEncoder::new_for_codec(codec, width, height, fps, bitrate)
+        ScreenEncoder::new_for_stream(codec, width, height, fps, bitrate)
     }
 
     fn new_pc_encoder_with_fallback(
@@ -1137,13 +1453,74 @@ mod imp {
         /// only readable through it.
         remote: std::os::fd::OwnedFd,
         node_id: u32,
-        started: Instant,
         src_w: u32,
         src_h: u32,
         dst_w: u32,
         dst_h: u32,
         child: Option<std::process::Child>,
-        latest_frame: Arc<Mutex<Option<Vec<u8>>>>,
+        latest_frame: Arc<FrameSlot>,
+    }
+
+    /// The newest picture a capture process wrote: numbered, stamped with
+    /// when it reached this app, and waited for by the capture loop.
+    #[derive(Default)]
+    pub(crate) struct FrameSlot {
+        latest: Mutex<SlotFrame>,
+        arrived: std::sync::Condvar,
+    }
+
+    #[derive(Default)]
+    pub(crate) struct SlotFrame {
+        pub(crate) bgra: Option<Vec<u8>>,
+        /// Counts pictures from 1; 0 before the first.
+        pub(crate) number: u64,
+        /// When it reached this app, on the monotonic clock in microseconds.
+        pub(crate) at_us: u64,
+    }
+
+    impl FrameSlot {
+        fn lock(&self) -> std::sync::MutexGuard<'_, SlotFrame> {
+            self.latest.lock().unwrap_or_else(|e| e.into_inner())
+        }
+
+        /// A new picture (`buf`) arrived at `at_us`: it takes the slot, and
+        /// `buf` gets the one it held, to be read over next.
+        pub(crate) fn put(&self, buf: &mut Vec<u8>, at_us: u64) {
+            let mut slot = self.lock();
+            match slot.bgra.as_mut() {
+                Some(shown) => std::mem::swap(shown, buf),
+                None => slot.bgra = Some(std::mem::replace(buf, vec![0u8; buf.len()])),
+            }
+            slot.number += 1;
+            slot.at_us = at_us;
+            drop(slot);
+            self.arrived.notify_all();
+        }
+
+        /// The newest picture's number (0: none yet).
+        pub(crate) fn newest(&self) -> u64 {
+            self.lock().number
+        }
+
+        /// Waits up to `wait` for a picture newer than `after`. Returns the
+        /// newest's number.
+        pub(crate) fn wait_newer(&self, after: u64, wait: Duration) -> u64 {
+            let slot = self.lock();
+            let (slot, _) = self
+                .arrived
+                .wait_timeout_while(slot, wait, |slot| slot.number <= after)
+                .unwrap_or_else(|e| e.into_inner());
+            slot.number
+        }
+
+        /// Copies the newest picture into `bgra`: its number and when it came.
+        pub(crate) fn copy_newest(&self, bgra: &mut Vec<u8>) -> Option<(u64, u64)> {
+            let slot = self.lock();
+            let picture = slot.bgra.as_ref()?;
+            bgra.clear();
+            bgra.extend_from_slice(picture);
+            Some((slot.number, slot.at_us))
+        }
     }
 
     impl Drop for WaylandScreenCaster {
@@ -1358,6 +1735,23 @@ mod imp {
             // The stream is only readable through the PipeWire connection
             // the portal opens for this session.
             let remote = open_pipewire_remote(&conn, &session_path_str)?;
+            // The portal's size is in the compositor's logical pixels. Under
+            // fractional scaling (GNOME, KDE) the stream itself is larger, and
+            // sizing the picture by the portal's number would scale every
+            // frame down: the stream's own size is the screen's.
+            let (src_w, src_h) = match Self::stream_size(&remote, node_id) {
+                Some(size) => {
+                    if size != (src_w, src_h) {
+                        tracing::info!(
+                            stream = format!("{}x{}", size.0, size.1),
+                            portal = format!("{src_w}x{src_h}"),
+                            "the screen is larger than the portal says"
+                        );
+                    }
+                    size
+                }
+                None => (src_w, src_h),
+            };
 
             Ok(Negotiated { conn, session: session_path_str, remote, node_id, src_w, src_h })
         }
@@ -1365,26 +1759,16 @@ mod imp {
         /// The fd number the portal's PipeWire connection gets in the capture process.
         const REMOTE_FD: i32 = 3;
 
-        /// Starts gst-launch reading the stream through `remote` and writing
-        /// raw BGRx frames of `dst_w` x `dst_h` to its stdout.
-        #[allow(clippy::type_complexity)]
-        fn spawn_pipeline(
-            remote: &std::os::fd::OwnedFd,
-            node_id: u32,
-            dst_w: u32,
-            dst_h: u32,
-        ) -> Option<(std::process::Child, Arc<Mutex<Option<Vec<u8>>>>)> {
-            use std::io::Read;
+        /// gst-launch with `args`, the portal's PipeWire connection `remote` as
+        /// its fd [`Self::REMOTE_FD`], and its output piped.
+        fn gst_launch(remote: &std::os::fd::OwnedFd, args: Vec<String>) -> std::process::Command {
             use std::os::fd::AsRawFd;
             use std::os::unix::process::CommandExt;
             use std::process::{Command, Stdio};
 
             let raw = remote.as_raw_fd();
             let mut cmd = Command::new("gst-launch-1.0");
-            cmd.args(pipeline_args(node_id, dst_w, dst_h))
-                .stdin(Stdio::null())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::null());
+            cmd.args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
             // SAFETY: runs in the child between fork and exec and only calls
             // async-signal-safe functions (dup2, fcntl) on descriptors we own.
             unsafe {
@@ -1400,10 +1784,62 @@ mod imp {
                     Ok(())
                 });
             }
-            let mut child = cmd.spawn().ok()?;
+            cmd
+        }
+
+        /// The size stream `node_id` comes at, in pixels: one picture read
+        /// through `remote` without scaling, its size as GStreamer reports it.
+        /// The process ends by itself after that picture, so the connection is
+        /// left between messages for the pipeline that follows it.
+        fn stream_size(remote: &std::os::fd::OwnedFd, node_id: u32) -> Option<(u32, u32)> {
+            use std::io::BufRead;
+
+            let mut child = Self::gst_launch(remote, probe_args(node_id)).spawn().ok()?;
+            let stdout = child.stdout.take()?;
+            let (tx, rx) = std::sync::mpsc::channel();
+            let reader =
+                std::thread::Builder::new().name("wayland-screencast-probe".into()).spawn(move || {
+                    let mut found = None;
+                    // Read to the end: the process mustn't block on a full pipe.
+                    for line in std::io::BufReader::new(stdout).lines().map_while(Result::ok) {
+                        if found.is_none()
+                            && let Some(size) = caps_size(&line)
+                        {
+                            found = Some(size);
+                            let _ = tx.send(size);
+                        }
+                    }
+                });
+            let size = reader.ok().and_then(|_| rx.recv_timeout(PROBE_WAIT).ok());
+            let deadline = Instant::now() + PROBE_EXIT_WAIT;
+            while matches!(child.try_wait(), Ok(None)) && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            if matches!(child.try_wait(), Ok(None)) {
+                let _ = child.kill();
+            }
+            let _ = child.wait();
+            if size.is_none() {
+                tracing::info!("can't tell the screen stream's size; using the portal's");
+            }
+            size
+        }
+
+        /// Starts gst-launch reading the stream through `remote` and writing
+        /// raw BGRx frames of `dst_w` x `dst_h` to its stdout. GNOME sends a
+        /// picture when the screen changes: each wakes the capture loop.
+        fn spawn_pipeline(
+            remote: &std::os::fd::OwnedFd,
+            node_id: u32,
+            dst_w: u32,
+            dst_h: u32,
+        ) -> Option<(std::process::Child, Arc<FrameSlot>)> {
+            use std::io::Read;
+
+            let mut child = Self::gst_launch(remote, pipeline_args(node_id, dst_w, dst_h)).spawn().ok()?;
 
             let mut stdout = child.stdout.take()?;
-            let latest_frame: Arc<Mutex<Option<Vec<u8>>>> = Arc::new(Mutex::new(None));
+            let latest_frame = Arc::new(FrameSlot::default());
             let frame_slot = Arc::clone(&latest_frame);
             let frame_bytes = (dst_w as usize) * (dst_h as usize) * 4;
 
@@ -1412,17 +1848,15 @@ mod imp {
                 .spawn(move || {
                     let mut buf = vec![0u8; frame_bytes];
                     while stdout.read_exact(&mut buf).is_ok() {
+                        // The moment the picture reached the app: what its
+                        // packets' time says, and the phone measures from.
+                        let at_us = monotonic_us();
                         for chunk in buf.as_chunks_mut::<4>().0 {
                             chunk[3] = 0xFF;
                         }
                         // The new frame takes the slot, and the one it held
                         // is read over next: no copy or allocation per frame.
-                        let mut slot = frame_slot.lock().unwrap_or_else(|e| e.into_inner());
-                        if let Some(shown) = slot.as_mut() {
-                            std::mem::swap(shown, &mut buf);
-                        } else {
-                            *slot = Some(std::mem::replace(&mut buf, vec![0u8; frame_bytes]));
-                        }
+                        frame_slot.put(&mut buf, at_us);
                     }
                 })
                 .ok()?;
@@ -1430,9 +1864,12 @@ mod imp {
             Some((child, latest_frame))
         }
 
-        fn start(dst_w: u32, dst_h: u32) -> Option<Self> {
-            Self::open(2, None, |_, _| (dst_w, dst_h))
-                .inspect_err(|error| tracing::debug!(%error, "can't share the screen"))
+        /// Opens a session with the pointer drawn in, read at the size `dims`
+        /// picks for the screen's. `prompt` hears when the portal likely asks
+        /// someone at the PC first.
+        fn start(prompt: Option<CapturePrompt>, dims: impl FnOnce(u32, u32) -> (u32, u32)) -> Option<Self> {
+            Self::open(2, prompt, dims)
+                .inspect_err(|error| tracing::info!(%error, "can't share the screen"))
                 .ok()
         }
 
@@ -1452,7 +1889,6 @@ mod imp {
                 session: n.session,
                 remote: n.remote,
                 node_id: n.node_id,
-                started: Instant::now(),
                 src_w: n.src_w,
                 src_h: n.src_h,
                 dst_w,
@@ -1467,43 +1903,22 @@ mod imp {
             self.child.as_mut().is_some_and(|c| matches!(c.try_wait(), Ok(None)))
         }
 
-        fn capture(&mut self, dst_w: u32, dst_h: u32, bgra: &mut Vec<u8>) -> Option<(u32, u32)> {
+        /// The slot of the pipeline reading the screen at `dst_w` x `dst_h`,
+        /// restarted at that size if it reads another.
+        fn slot_at(&mut self, dst_w: u32, dst_h: u32) -> Option<Arc<FrameSlot>> {
             if (self.dst_w, self.dst_h) != (dst_w, dst_h) {
                 if let Some(mut old) = self.child.take() {
                     let _ = old.kill();
                     let _ = old.wait();
                 }
                 let (child, latest_frame) = Self::spawn_pipeline(&self.remote, self.node_id, dst_w, dst_h)?;
-                self.started = Instant::now();
                 self.dst_w = dst_w;
                 self.dst_h = dst_h;
                 self.child = Some(child);
                 self.latest_frame = latest_frame;
             }
-
-            // The first frame can take a while (the pipeline negotiates
-            // formats); after that a frame is late only for a moment.
-            let wait = if self.started.elapsed() < Duration::from_secs(3) {
-                Duration::from_secs(3).saturating_sub(self.started.elapsed())
-            } else {
-                Duration::from_millis(250)
-            };
             // Its last frame would otherwise show as a live screen for good.
-            if !self.alive() {
-                return None;
-            }
-            let deadline = Instant::now() + wait;
-            loop {
-                if let Some(frame) = self.latest_frame.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
-                    bgra.clear();
-                    bgra.extend_from_slice(frame);
-                    return Some((self.src_w, self.src_h));
-                }
-                if Instant::now() >= deadline {
-                    return None;
-                }
-                std::thread::sleep(Duration::from_millis(10));
-            }
+            self.alive().then(|| Arc::clone(&self.latest_frame))
         }
     }
 
@@ -1555,22 +1970,67 @@ mod imp {
         .into()
     }
 
-    fn capture_screen_wayland(dst_w: u32, dst_h: u32, bgra: &mut Vec<u8>) -> Option<(u32, u32)> {
-        if !is_wayland_screencast_available() {
-            return None;
+    /// gst-launch arguments that print (`-v`) the caps of one picture of
+    /// stream `node_id`, read as the capture pipeline reads it but not scaled.
+    pub(crate) fn probe_args(node_id: u32) -> Vec<String> {
+        [
+            "-v".to_owned(),
+            "pipewiresrc".to_owned(),
+            format!("fd={}", WaylandScreenCaster::REMOTE_FD),
+            format!("path={node_id}"),
+            "num-buffers=1".to_owned(),
+            "!".to_owned(),
+            "videoconvert".to_owned(),
+            "!".to_owned(),
+            "video/x-raw,format=BGRx".to_owned(),
+            "!".to_owned(),
+            "fakesink".to_owned(),
+        ]
+        .into()
+    }
+
+    /// The picture size in a `gst-launch-1.0 -v` caps line, such as
+    /// `/GstPipeline:pipeline0/GstPipeWireSrc:pipewiresrc0.GstPad:src: caps =
+    /// video/x-raw, format=(string)BGRx, width=(int)2560, height=(int)1600, ...`.
+    pub(crate) fn caps_size(line: &str) -> Option<(u32, u32)> {
+        let (_, caps) = line.split_once("caps = video/x-raw")?;
+        let field = |name: &str| -> Option<u32> {
+            let (_, rest) = caps.split_once(name)?;
+            let digits = rest.find(|c: char| !c.is_ascii_digit()).map_or(rest, |end| &rest[..end]);
+            digits.parse().ok().filter(|v| (1..=16_384).contains(v))
+        };
+        Some((field(", width=(int)")?, field(", height=(int)")?))
+    }
+
+    /// Whether the screen is read through the ScreenCast portal (Wayland).
+    fn uses_screencast() -> bool {
+        std::env::var_os("WAYLAND_DISPLAY").is_some() && is_wayland_screencast_available()
+    }
+
+    /// The screen's size in pixels: its screencast's on Wayland, opened at
+    /// the size a stream of at most `max_size` captures if there's none yet
+    /// (`prompt` hears when the portal asks first), and `None` if it can't
+    /// be; the root window's on X11.
+    fn screen_dimensions(max_size: u32, prompt: Option<CapturePrompt>) -> Option<(u32, u32)> {
+        if !uses_screencast() {
+            return Some(primary_screen_dimensions());
         }
         let mut guard = WAYLAND_CASTER.lock().unwrap_or_else(|e| e.into_inner());
-        if guard.is_none() {
-            *guard = WaylandScreenCaster::start(dst_w, dst_h);
+        if guard.as_mut().is_none_or(|c| !c.alive()) {
+            *guard = WaylandScreenCaster::start(prompt, |w, h| StreamSize::new(w, h, max_size).picture);
         }
-        let caster = guard.as_mut()?;
-        let res = caster.capture(dst_w, dst_h, bgra);
-        // A late frame is skipped; only a stopped capture ends the session
-        // (starting a new one would ask the user again).
-        if res.is_none() && !caster.alive() {
+        guard.as_ref().map(|caster| (caster.src_w, caster.src_h))
+    }
+
+    /// The screencast's pictures at `dst_w` x `dst_h`, as they come. `None`
+    /// once it stopped, and then it's let go.
+    fn screencast_slot(dst_w: u32, dst_h: u32) -> Option<Arc<FrameSlot>> {
+        let mut guard = WAYLAND_CASTER.lock().unwrap_or_else(|e| e.into_inner());
+        let slot = guard.as_mut()?.slot_at(dst_w, dst_h);
+        if slot.is_none() {
             *guard = None;
         }
-        res
+        slot
     }
 
     fn stop_wayland_screencast() {
@@ -1586,6 +2046,9 @@ mod imp {
 
     /// How long after asking for the screen the portal is taken to show its dialog.
     const PROMPT_AFTER: Duration = Duration::from_millis(1500);
+    /// How long the stream's size is waited for, and then the probe's end.
+    const PROBE_WAIT: Duration = Duration::from_secs(3);
+    const PROBE_EXIT_WAIT: Duration = Duration::from_secs(1);
     /// How long a screenshot waits for the screen's first picture.
     const STILL_WAIT: Duration = Duration::from_secs(5);
     /// The first picture of a new stream can be half drawn: a screenshot is the
@@ -1639,14 +2102,14 @@ mod imp {
         let deadline = Instant::now() + STILL_WAIT;
         let mut first_at: Option<Instant> = None;
         let frame = loop {
-            let ready = latest.lock().unwrap_or_else(|e| e.into_inner()).is_some();
+            let ready = latest.newest() > 0;
             if ready && first_at.is_none() {
                 first_at = Some(Instant::now());
             }
             let settled = first_at.is_some_and(|at| at.elapsed() >= STILL_SETTLE);
             let ended = !matches!(child.try_wait(), Ok(None));
             if settled || ended || Instant::now() >= deadline {
-                break latest.lock().unwrap_or_else(|e| e.into_inner()).take();
+                break latest.lock().bgra.take();
             }
             std::thread::sleep(Duration::from_millis(10));
         };
@@ -1735,8 +2198,8 @@ mod imp {
                         }
                         (Arc::clone(&caster.latest_frame), caster.dst_w, caster.dst_h)
                     };
-                    let latest = slot.lock().unwrap_or_else(|e| e.into_inner());
-                    let Some(picture) = latest.as_ref() else { return FeedFrame::NotYet };
+                    let latest = slot.lock();
+                    let Some(picture) = latest.bgra.as_ref() else { return FeedFrame::NotYet };
                     if scale_bgra(picture, src_w, src_h, width, height, bgra) {
                         FeedFrame::Got
                     } else {
@@ -1778,18 +2241,14 @@ mod imp {
         true
     }
 
+    /// The X11 screen (all of it, pointer drawn in, or `region` without it)
+    /// at `dst_w` x `dst_h`, nearest pixel. Returns the size it was read at.
     fn capture_screen(
         region: Option<crate::sys::browser::Rect>,
         dst_w: u32,
         dst_h: u32,
         bgra: &mut Vec<u8>,
     ) -> Option<(u32, u32)> {
-        if region.is_none()
-            && std::env::var_os("WAYLAND_DISPLAY").is_some()
-            && let Some(dims) = capture_screen_wayland(dst_w, dst_h, bgra)
-        {
-            return Some(dims);
-        }
         with_x11_display(|api, dpy| unsafe {
             let root = (api.default_root_window)(dpy);
             let mut attrs: XWindowAttributes = std::mem::zeroed();
@@ -1894,6 +2353,36 @@ mod imp {
         })
     }
 
+    /// How long the loop waits for a new picture before it looks again at
+    /// what else may have changed (a keyframe asked for, the stop, the stats).
+    const IDLE_WAIT: Duration = Duration::from_millis(50);
+    /// How often a held stream is looked at again.
+    const HOLD_POLL: Duration = Duration::from_millis(5);
+    /// A keyframe at least this often, also of a still screen: a phone that
+    /// lost its place without noticing finds it again.
+    const SAFETY_KEYFRAME: Duration = Duration::from_secs(30);
+    /// How often the stats line is logged.
+    const STATS_EVERY: Duration = Duration::from_secs(10);
+    /// A keyframe the running encoder can't make comes from a new one, at most this often.
+    const REBUILD_FOR_KEYFRAME_EVERY: Duration = Duration::from_millis(1400);
+    /// A screencast that stopped this soon after it opened isn't opened again.
+    const RECAST_AFTER: Duration = Duration::from_secs(10);
+    /// `mirror.notice` codes for the phone (docs/protocol/mirror.md §2): the
+    /// portal asks someone at this PC first; the player's window is gone.
+    const NOTICE_PROMPT: &str = "prompt";
+    const NOTICE_NO_WINDOW: &str = "no_window";
+
+    /// Tells the phone something about the screen it's shown (`mirror.notice`).
+    fn tell_phone(peer: DeviceId, code: &'static str) {
+        if let Some(node) = core_host::node() {
+            core_host::spawn(async move {
+                if let Err(error) = node.mirror_notice(peer, g7link_core::MIRROR_SCREEN, code).await {
+                    tracing::debug!(%error, code, "couldn't tell the phone");
+                }
+            });
+        }
+    }
+
     fn run_capture_loop(
         peer: DeviceId,
         options: MirrorStart,
@@ -1911,15 +2400,14 @@ mod imp {
             return;
         };
 
-        // Give the phone's PcMirrorView TextureView and MediaCodec a brief moment to
-        // mount before sending the initial MirrorConfig and IDR keyframe.
-        std::thread::sleep(Duration::from_millis(120));
-
         let fps = options.fps.clamp(10, 60);
-        let max_bitrate = options.bitrate.clamp(500_000, 20_000_000);
+        let asked = options.bitrate.clamp(MIN_BITRATE, MAX_BITRATE);
+        let floor = bitrate_floor(asked);
+        // The most this stream is given, from its size once that's known.
+        let mut ceiling = asked;
         // Lowered when the link can't keep up (frames dropped to hold the delay down),
         // raised back once it has been clean for a while.
-        let mut bitrate = max_bitrate;
+        let mut bitrate = asked;
         let frame_interval = Duration::from_micros(1_000_000 / u64::from(fps));
         let dur_hns = (10_000_000 / u64::from(fps)) as i64;
 
@@ -1930,16 +2418,36 @@ mod imp {
         };
 
         let mut bgra = Vec::new();
+        // The last picture encoded, to tell one that didn't change.
+        let mut last_bgra = Vec::new();
         let mut nv12 = Vec::new();
-        let mut stream_dims: Option<(u32, u32)> = None;
+        let mut stream_size: Option<StreamSize> = None;
+        let mut encoded_size: Option<StreamSize> = None;
+        // The longest side asked for; lower when encoding falls to software.
+        let mut max_size = options.max_size;
         let mut encoder: Option<ScreenEncoder> = None;
+        let mut encoder_name = String::new();
         let started = Instant::now();
         let mut last_reinit = Instant::now() - Duration::from_secs(5);
+        let mut rebuild_for_keyframe = false;
         let mut last_drop: Option<Instant> = None;
         let mut last_rate_change = Instant::now();
         let mut link_measured = false;
+        // Busy measures of the link in a row: one alone may be a moment's doze.
+        let mut busy_in_row = 0u32;
         let mut stats = Stats::default();
         let mut stats_since = Instant::now();
+        // The pictures: which was sent last, when it reached the app, and
+        // where the next comes from.
+        let mut gate = FrameGate::default();
+        let mut slot: Option<Arc<FrameSlot>> = None;
+        let mut timer_frames = 0u64;
+        let mut last_at_us = 0u64;
+        let mut last_pts_us = 0u64;
+        let mut keyframe_due = false;
+        let mut last_keyframe = Instant::now();
+        let mut cast_opened: Option<Instant> = None;
+        let prompt: CapturePrompt = Arc::new(move || tell_phone(peer, NOTICE_PROMPT));
         // Play on phone: the player's picture instead of the screen, and the
         // PC's sound to that phone while it watches. The picture's place comes
         // in physical pixels; so does this thread's capture.
@@ -1956,7 +2464,19 @@ mod imp {
         }
 
         while !stop.load(Ordering::Relaxed) {
-            let tick_start = Instant::now();
+            if stats_since.elapsed() >= STATS_EVERY {
+                let pace = sender.take_stats();
+                let pace = Pacing {
+                    holds: pace.holds,
+                    held: pace.held,
+                    shortest_trip: pace.shortest_trip,
+                    p95_trip: pace.p95_trip,
+                };
+                let size = encoded_size.map_or((0, 0), |s| s.encoded);
+                stats.log(&peer, size, &encoder_name, bitrate, &pace, stats_since.elapsed());
+                stats = Stats::default();
+                stats_since = Instant::now();
+            }
 
             let place = watched.as_ref().and_then(crate::play_on_phone::Watched::place);
             if watched.is_some() && place.is_none() && started.elapsed() < FIND_WINDOW {
@@ -1968,6 +2488,7 @@ mod imp {
                 // The player's window can't be found. Not the screen instead:
                 // that would show the phone whatever else is on it.
                 tracing::info!(%peer, "can't find the player's window; stopping");
+                tell_phone(peer, NOTICE_NO_WINDOW);
                 crate::bridge::app::show_message(crate::i18n::tr!(
                     "PcMirror",
                     "Can't find the player's window. Play the video on this PC again, then turn on Play on phone."
@@ -1976,11 +2497,14 @@ mod imp {
             }
             if let Some(place) = place {
                 let r = place.on_screen;
-                let dims =
-                    target_dimensions((r.right - r.left) as u32, (r.bottom - r.top) as u32, options.max_size);
-                if stream_dims != Some(dims) {
+                let size = StreamSize::new(
+                    u32::try_from(r.right - r.left).unwrap_or(0),
+                    u32::try_from(r.bottom - r.top).unwrap_or(0),
+                    max_size,
+                );
+                if stream_size != Some(size) {
                     // A new size (the window moved to full screen, say): a new stream config.
-                    stream_dims = Some(dims);
+                    stream_size = Some(size);
                     encoder = None;
                 }
                 // The window's own pixels, whatever is in front of it; the
@@ -1994,28 +2518,58 @@ mod imp {
                 }
             }
 
-            let (dst_w, dst_h) = match stream_dims {
-                Some(dims) => dims,
+            let size = match stream_size {
+                Some(size) => size,
                 None => {
-                    let (src_w, src_h) = primary_screen_dimensions();
-                    let dims = target_dimensions(src_w, src_h, options.max_size);
-                    stream_dims = Some(dims);
-                    dims
+                    let Some((src_w, src_h)) = screen_dimensions(max_size, Some(prompt.clone())) else {
+                        tracing::info!(%peer, "can't read this PC's screen; stopping");
+                        break;
+                    };
+                    let size = StreamSize::new(src_w, src_h, max_size);
+                    stream_size = Some(size);
+                    size
                 }
             };
+            let (dst_w, dst_h) = size.encoded;
+            let (pic_w, pic_h) = size.picture;
+            if encoded_size != Some(size) {
+                // Pictures of another size: none to send again.
+                encoded_size = Some(size);
+                gate.restart();
+            }
 
             // A keyframe on request comes from the running encoder. Rebuilding it (a new
             // stream config plus a full keyframe) is the fallback for encoders that can't.
-            let requested_kf = force_keyframe.swap(false, Ordering::SeqCst);
-            let keyframe_in_place =
-                requested_kf && encoder.as_ref().is_some_and(ScreenEncoder::request_keyframe);
+            let mut requested_kf = force_keyframe.swap(false, Ordering::SeqCst);
+            if !keyframe_due && encoder.is_some() && last_keyframe.elapsed() >= SAFETY_KEYFRAME {
+                requested_kf = true;
+            }
+            if requested_kf {
+                if encoder.as_ref().is_some_and(ScreenEncoder::request_keyframe) {
+                    keyframe_due = true;
+                } else {
+                    rebuild_for_keyframe = true;
+                }
+            }
             let need_reinit = encoder.is_none()
-                || (requested_kf
-                    && !keyframe_in_place
-                    && last_reinit.elapsed() >= Duration::from_millis(1400));
+                || (rebuild_for_keyframe && last_reinit.elapsed() >= REBUILD_FOR_KEYFRAME_EVERY);
 
             if need_reinit {
+                // What this size needs, up to what the phone asked for. A backed-off
+                // rate stays backed off; one at the old ceiling moves to the new.
+                let sized = stream_bitrate(asked, dst_w, dst_h, fps).max(floor);
+                bitrate = if bitrate >= ceiling { sized } else { bitrate.clamp(floor, sized) };
+                if sized != ceiling {
+                    tracing::info!(%peer, size = format!("{dst_w}x{dst_h}"), bitrate = sized, "screen stream size");
+                }
+                ceiling = sized;
                 match new_pc_encoder_with_fallback(&mut codec, dst_w, dst_h, fps, bitrate) {
+                    Ok(enc) if enc.is_software() && dst_w.max(dst_h) > SOFTWARE_MAX_EDGE => {
+                        tracing::info!(%peer, "encoding in software: the stream goes at most {SOFTWARE_MAX_EDGE} wide");
+                        max_size = max_size.min(SOFTWARE_MAX_EDGE);
+                        stream_size = None;
+                        continue;
+                    }
                     Ok(enc) => {
                         let cfg = MirrorConfig {
                             codec: codec.clone(),
@@ -2026,8 +2580,12 @@ mod imp {
                         if matches!(sender.send(PacketKind::Config, 0, cfg.to_cbor()), MirrorSend::Closed) {
                             break;
                         }
+                        encoder_name = enc.name();
                         encoder = Some(enc);
                         last_reinit = Instant::now();
+                        rebuild_for_keyframe = false;
+                        // A new encoder starts with one; of the picture there is, if nothing newer comes.
+                        keyframe_due = true;
                         stats.rebuilds += 1;
                     }
                     Err(e) => {
@@ -2036,135 +2594,204 @@ mod imp {
                     }
                 }
             }
+            sender.set_rate(bitrate);
 
             // The link is held: the phone hasn't said it got what was sent. A picture made
-            // now would only be dropped, and a keyframe made for nothing costs the most. One
-            // asked for above stays asked for, and comes with the next picture that can go.
-            let held = sender.is_backed_up();
-            if held {
-                stats.dropped += 1;
+            // now would only wait, and one asked for above stays asked for: the newest
+            // picture goes the moment the hold ends.
+            if sender.is_held() || sender.is_backed_up() {
                 last_drop = Some(Instant::now());
+                std::thread::sleep(HOLD_POLL);
+                continue;
             }
-            let captured = if held {
-                false
-            } else {
-                match (place, window_capture.as_mut()) {
-                    (Some(place), Some(capture)) => capture.capture(place.in_window, dst_w, dst_h, &mut bgra),
-                    (Some(place), None) => {
-                        capture_screen(Some(place.on_screen), dst_w, dst_h, &mut bgra).is_some()
+
+            // The next picture: on Wayland, the moment the screen changed; on X11, and of
+            // Play on phone's window, on a timer. Never one already sent.
+            let now = Instant::now();
+            let picture = if place.is_none() && uses_screencast() {
+                let Some(current) = screencast_slot(pic_w, pic_h) else {
+                    // The screencast stopped: open it again (the choice is kept), unless
+                    // it keeps stopping.
+                    if cast_opened.is_some_and(|at| at.elapsed() < RECAST_AFTER) {
+                        tracing::info!(%peer, "the screencast keeps stopping; stopping");
+                        break;
                     }
-                    (None, _) => capture_screen(None, dst_w, dst_h, &mut bgra).is_some(),
+                    cast_opened = Some(Instant::now());
+                    stream_size = None;
+                    continue;
+                };
+                if !slot.as_ref().is_some_and(|s| Arc::ptr_eq(s, &current)) {
+                    // A new pipeline: its pictures are numbered afresh.
+                    gate.restart();
+                    slot = Some(Arc::clone(&current));
+                }
+                match gate.next(current.newest(), keyframe_due, frame_interval, now) {
+                    Next::New(_) => {
+                        current.copy_newest(&mut bgra).map(|(number, at_us)| (number, at_us, true))
+                    }
+                    Next::Again => gate.sent().map(|number| (number, last_at_us, false)),
+                    Next::Pace(wait) => {
+                        std::thread::sleep(wait);
+                        None
+                    }
+                    Next::Idle => {
+                        current.wait_newer(gate.sent().unwrap_or(0), IDLE_WAIT);
+                        None
+                    }
+                }
+            } else {
+                match gate.next(timer_frames + 1, keyframe_due, frame_interval, now) {
+                    Next::Pace(wait) => {
+                        std::thread::sleep(wait);
+                        None
+                    }
+                    _ => {
+                        let captured = match (place, window_capture.as_mut()) {
+                            (Some(place), Some(capture)) => {
+                                capture.capture(place.in_window, pic_w, pic_h, &mut bgra)
+                            }
+                            (Some(place), None) => {
+                                capture_screen(Some(place.on_screen), pic_w, pic_h, &mut bgra).is_some()
+                            }
+                            (None, _) => capture_screen(None, pic_w, pic_h, &mut bgra).is_some(),
+                        };
+                        if captured {
+                            timer_frames += 1;
+                            Some((timer_frames, monotonic_us(), true))
+                        } else {
+                            std::thread::sleep(frame_interval);
+                            None
+                        }
+                    }
                 }
             };
-            if captured && let Some(enc) = encoder.as_mut() {
-                bgra_to_nv12(&bgra, dst_w as usize, dst_h as usize, &mut nv12);
-                let time_us = started.elapsed().as_micros() as u64;
-                let hns = (time_us * 10) as i64;
-                match enc.encode(&nv12, hns, dur_hns, &stop) {
-                    Ok(packets) => {
-                        let mut send_failed = false;
-                        for (is_keyframe, bytes) in packets {
-                            let kind = if is_keyframe { PacketKind::Keyframe } else { PacketKind::Frame };
-                            let len = bytes.len();
-                            match sender.send(kind, time_us, bytes) {
-                                MirrorSend::Queued => {
-                                    stats.frames += 1;
-                                    stats.bytes += len as u64;
-                                    if is_keyframe {
-                                        stats.keyframes += 1;
-                                    }
-                                }
-                                MirrorSend::Dropped => stats.dropped += 1,
-                                MirrorSend::NeedKeyframe => {
-                                    stats.dropped += 1;
-                                    last_drop = Some(Instant::now());
-                                    force_keyframe.store(true, Ordering::SeqCst);
-                                    // The link is slower than the stream: ask for less, at most every
-                                    // 2 s. A phone that reports what it gets lets this be measured instead.
-                                    if !link_measured && last_rate_change.elapsed() >= Duration::from_secs(2)
-                                    {
-                                        let lower = (bitrate / 4 * 3).max(MIN_BITRATE);
-                                        if lower < bitrate && enc.set_bitrate(lower) {
-                                            bitrate = lower;
-                                            last_rate_change = Instant::now();
-                                        }
-                                    }
-                                }
-                                MirrorSend::Closed => {
-                                    send_failed = true;
-                                    break;
-                                }
-                            }
-                        }
-                        if send_failed {
-                            break;
-                        }
-                        // Video got ahead of the link, which says how much it carries. Leave
-                        // room for sound and keyframes, and at most halve it: one bad moment
-                        // on Wi-Fi shouldn't leave the picture blurry for a minute.
-                        if let Some((rate, bytes)) = sender.link_measure() {
-                            link_measured = true;
-                            last_drop = Some(Instant::now());
-                            let busy = bytes >= MIN_MEASURED_BYTES;
-                            if busy && last_rate_change.elapsed() >= Duration::from_secs(1) {
-                                let room = u32::try_from(rate / 10 * 7).unwrap_or(u32::MAX);
-                                let lower = room.max(bitrate / 2).max(MIN_BITRATE);
-                                if lower < bitrate && enc.set_bitrate(lower) {
-                                    bitrate = lower;
-                                    last_rate_change = Instant::now();
+            let Some((number, at_us, fresh)) = picture else { continue };
+            let Some(enc) = encoder.as_mut() else { continue };
+
+            if fresh {
+                if bgra == last_bgra {
+                    stats.unchanged += 1;
+                }
+                let converting = Instant::now();
+                bgra_to_nv12_padded(
+                    &bgra,
+                    pic_w as usize,
+                    pic_h as usize,
+                    dst_w as usize,
+                    dst_h as usize,
+                    &mut nv12,
+                );
+                stats.convert.push(converting.elapsed());
+                std::mem::swap(&mut bgra, &mut last_bgra);
+            }
+            // Taken, also if it can't be sent: a picture is tried once.
+            gate.encoded(number, Instant::now());
+            if nv12.is_empty() {
+                continue;
+            }
+            last_at_us = at_us;
+            // The encoder's own clock only goes forward, also for a picture sent again.
+            let pts_us = at_us.max(last_pts_us + 1);
+            last_pts_us = pts_us;
+            let hns = i64::try_from(pts_us.saturating_mul(10)).unwrap_or(i64::MAX);
+            let encoding = Instant::now();
+            match enc.encode(&nv12, hns, dur_hns, &stop) {
+                Ok(packets) => {
+                    stats.encode.push(encoding.elapsed());
+                    let mut send_failed = false;
+                    for (is_keyframe, bytes) in packets {
+                        let kind = if is_keyframe { PacketKind::Keyframe } else { PacketKind::Frame };
+                        let len = bytes.len();
+                        // Stamped with when the picture reached this app, on the clock the
+                        // phone times (`mirror.clock`).
+                        match sender.send(kind, at_us, bytes) {
+                            MirrorSend::Queued => {
+                                stats.frames += 1;
+                                stats.bytes += len as u64;
+                                if is_keyframe {
+                                    stats.keyframes += 1;
+                                    keyframe_due = false;
+                                    last_keyframe = Instant::now();
                                 }
                             }
-                        }
-                        // Clean for a while: step the bitrate back up toward what the phone asked for.
-                        let clean = last_drop.is_none_or(|t| t.elapsed() >= RAISE_AFTER_CLEAN);
-                        if clean && bitrate < max_bitrate && last_rate_change.elapsed() >= RAISE_EVERY {
-                            let higher = (bitrate / 4 * 5).min(max_bitrate);
-                            if enc.set_bitrate(higher) {
-                                bitrate = higher;
-                                last_rate_change = Instant::now();
+                            MirrorSend::Dropped => stats.dropped += 1,
+                            MirrorSend::NeedKeyframe => {
+                                stats.dropped += 1;
+                                last_drop = Some(Instant::now());
+                                force_keyframe.store(true, Ordering::SeqCst);
+                                // The link is slower than the stream: ask for less, at most every
+                                // 2 s. A phone that reports what it gets lets this be measured instead.
+                                if !link_measured && last_rate_change.elapsed() >= Duration::from_secs(2) {
+                                    let lower = (bitrate / 4 * 3).max(floor);
+                                    if lower < bitrate && enc.set_bitrate(lower) {
+                                        bitrate = lower;
+                                        last_rate_change = Instant::now();
+                                    }
+                                }
+                            }
+                            MirrorSend::Closed => {
+                                send_failed = true;
+                                break;
                             }
                         }
                     }
-                    Err(e) => {
-                        if stop.load(Ordering::Relaxed) {
-                            break;
+                    if send_failed {
+                        break;
+                    }
+                    // Video got ahead of the link, which says how much it carries. Leave
+                    // room for sound and keyframes, and at most halve it: one bad moment
+                    // on Wi-Fi shouldn't leave the picture blurry for a minute. Only a
+                    // second busy measure in a row counts: one alone may be a doze.
+                    if let Some((rate, bytes)) = sender.link_measure() {
+                        link_measured = true;
+                        last_drop = Some(Instant::now());
+                        busy_in_row = if bytes >= MIN_MEASURED_BYTES { busy_in_row + 1 } else { 0 };
+                        if busy_in_row >= 2 && last_rate_change.elapsed() >= Duration::from_secs(1) {
+                            let room = u32::try_from(rate / 10 * 7).unwrap_or(u32::MAX);
+                            let lower = room.max(bitrate / 2).max(floor);
+                            if lower < bitrate && enc.set_bitrate(lower) {
+                                bitrate = lower;
+                                last_rate_change = Instant::now();
+                                busy_in_row = 0;
+                            }
                         }
-                        #[cfg(linux_ffmpeg_video)]
-                        if enc.next_encoder(&codec, dst_w, dst_h, fps, bitrate) {
-                            tracing::warn!(error = %e, codec, "Video encoding failed; trying another encoder");
-                            stats.rebuilds += 1;
-                            continue;
+                    }
+                    // Clean for a while: step the bitrate back up toward what the phone asked for.
+                    let clean = last_drop.is_none_or(|t| t.elapsed() >= RAISE_AFTER_CLEAN);
+                    if clean && bitrate < ceiling && last_rate_change.elapsed() >= RAISE_EVERY {
+                        let higher = (bitrate / 4 * 5).min(ceiling);
+                        if enc.set_bitrate(higher) {
+                            bitrate = higher;
+                            last_rate_change = Instant::now();
                         }
-                        if codec == "h265" {
-                            tracing::warn!(error = %e, "HEVC screen encoding failed; using H.264");
-                            codec = "h264".into();
-                        } else {
-                            tracing::warn!(error = %e, "PC mirror frame encode error; rebuilding the encoder");
-                        }
-                        encoder = None;
                     }
                 }
-            }
-
-            if stats_since.elapsed() >= Duration::from_secs(10) {
-                let secs = stats_since.elapsed().as_secs_f64();
-                tracing::info!(
-                    %peer,
-                    fps = format!("{:.1}", stats.frames as f64 / secs),
-                    kbps = (stats.bytes as f64 * 8.0 / secs / 1000.0) as u64,
-                    keyframes = stats.keyframes,
-                    dropped = stats.dropped,
-                    rebuilds = stats.rebuilds,
-                    bitrate,
-                    "sharing this PC's screen"
-                );
-                stats = Stats::default();
-                stats_since = Instant::now();
-            }
-
-            let elapsed = tick_start.elapsed();
-            if let Some(rem) = frame_interval.checked_sub(elapsed) {
-                std::thread::sleep(rem);
+                Err(e) => {
+                    if stop.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    #[cfg(linux_ffmpeg_video)]
+                    if enc.next_encoder(&codec, dst_w, dst_h, fps, bitrate) {
+                        tracing::warn!(error = %e, codec, "Video encoding failed; trying another encoder");
+                        stats.rebuilds += 1;
+                        encoder_name = enc.name();
+                        // The next encoder starts with a keyframe, of this picture again.
+                        keyframe_due = true;
+                        if enc.is_software() && dst_w.max(dst_h) > SOFTWARE_MAX_EDGE {
+                            max_size = max_size.min(SOFTWARE_MAX_EDGE);
+                            stream_size = None;
+                            encoder = None;
+                        }
+                        continue;
+                    }
+                    if codec == "h265" {
+                        tracing::warn!(error = %e, "HEVC screen encoding failed; using H.264");
+                        codec = "h264".into();
+                    } else {
+                        tracing::warn!(error = %e, "PC mirror frame encode error; rebuilding the encoder");
+                    }
+                    encoder = None;
+                }
             }
         }
 
@@ -2305,12 +2932,164 @@ mod imp {
         #[test]
         fn computes_target_dimensions_and_nv12() {
             let (w, h) = target_dimensions(1920, 1080, 1280);
-            assert_eq!(w % 16, 0);
-            assert_eq!(h % 16, 0);
+            assert_eq!((w % 2, h % 2), (0, 0));
             let bgra = vec![128u8; (w as usize) * (h as usize) * 4];
             let mut nv12 = Vec::new();
             bgra_to_nv12(&bgra, w as usize, h as usize, &mut nv12);
             assert_eq!(nv12.len(), (w as usize) * (h as usize) * 3 / 2);
+        }
+
+        #[test]
+        fn the_screen_goes_at_its_own_size() {
+            // Not rounded to a block size, as it was (1360 x 768): every pixel resampled.
+            assert_eq!(target_dimensions(1366, 768, MAX_EDGE), (1366, 768));
+            assert_eq!(target_dimensions(1920, 1080, MAX_EDGE), (1920, 1080));
+            assert_eq!(target_dimensions(2560, 1440, MAX_EDGE), (2560, 1440));
+            assert_eq!(target_dimensions(2560, 1600, MAX_EDGE), (2560, 1600));
+            assert_eq!(target_dimensions(1440, 2560, MAX_EDGE), (1440, 2560), "a monitor on its side");
+            assert_eq!(target_dimensions(800, 600, MAX_EDGE), (800, 600), "never scaled up");
+            assert_eq!(target_dimensions(1365, 767, MAX_EDGE), (1366, 768), "odd sides round up to even");
+        }
+
+        #[test]
+        fn larger_screens_scale_down_to_the_longest_side() {
+            assert_eq!(target_dimensions(3840, 2160, MAX_EDGE), (2560, 1440));
+            assert_eq!(target_dimensions(3840, 2160, 8192), (2560, 1440), "a phone can't ask for more");
+            assert_eq!(target_dimensions(5120, 2160, MAX_EDGE), (2560, 1080));
+            // The data saver's 1280.
+            assert_eq!(target_dimensions(1920, 1080, 1280), (1280, 720));
+            assert_eq!(target_dimensions(2560, 1440, 1280), (1280, 720));
+            let (w, h) = target_dimensions(1366, 768, 1280);
+            assert_eq!(w, 1280);
+            assert!((718..=720).contains(&h) && h % 2 == 0, "{h}");
+        }
+
+        #[test]
+        fn an_odd_screen_is_captured_whole_and_padded() {
+            let size = StreamSize::new(1365, 767, MAX_EDGE);
+            assert_eq!(size.encoded, (1366, 768));
+            assert_eq!(size.picture, (1365, 767), "captured at its own size, not stretched");
+            let scaled = StreamSize::new(3840, 2160, MAX_EDGE);
+            assert_eq!(scaled.picture, scaled.encoded);
+
+            // A 3 x 1 picture (red, green, blue) in a 4 x 2 frame.
+            let src = [0, 0, 255, 255, 0, 255, 0, 255, 255, 0, 0, 255];
+            let mut nv12 = Vec::new();
+            bgra_to_nv12_padded(&src, 3, 1, 4, 2, &mut nv12);
+            assert_eq!(nv12.len(), 4 * 2 * 3 / 2);
+            assert_eq!(nv12[..4], [63, 172, 32, 32], "red, green, blue, and blue repeated");
+            assert_eq!(nv12[4..8], nv12[..4], "the last row repeats too");
+            bgra_to_nv12_padded(&src[..8], 3, 1, 4, 2, &mut nv12);
+            assert!(nv12.is_empty(), "a picture shorter than its size says is refused");
+            bgra_to_nv12_padded(&src, 3, 1, 3, 2, &mut nv12);
+            assert!(nv12.is_empty(), "an odd frame is refused");
+        }
+
+        #[test]
+        fn the_bitrate_follows_the_size() {
+            assert_eq!(bitrate_for(1920, 1080, 30), 8_000_000);
+            let qhd = bitrate_for(2560, 1440, 30);
+            assert!((12_000_000..=16_000_000).contains(&qhd), "{qhd}");
+            assert!(bitrate_for(2560, 1600, 30) <= SHARP_MAX_BITRATE);
+            assert!(bitrate_for(1920, 1080, 60) > bitrate_for(1920, 1080, 30), "more frames, more bits");
+            assert_eq!(bitrate_for(1366, 768, 30), 4_047_407, "the owner's 1366 x 768 panel");
+            assert_eq!(bitrate_for(640, 480, 30), SAVER_BITRATE, "small screens still get enough for text");
+            // Sharp asks for up to the most; the size decides.
+            assert_eq!(stream_bitrate(SHARP_MAX_BITRATE, 1920, 1080, 30), 8_000_000);
+            assert_eq!(stream_bitrate(MAX_BITRATE, 3840, 2160, 30), SHARP_MAX_BITRATE);
+        }
+
+        #[test]
+        fn the_data_saver_keeps_the_old_rate_and_floor() {
+            // The phone's data saver asks for 1280 at 4 Mbit/s, as its 720p setting did.
+            let (w, h) = target_dimensions(1920, 1080, 1280);
+            assert_eq!(stream_bitrate(4_000_000, w, h, 30), 4_000_000);
+            assert_eq!(bitrate_floor(4_000_000), MIN_BITRATE);
+            // A sharp picture isn't backed off under 2 Mbit/s.
+            assert_eq!(bitrate_floor(16_000_000), 2_000_000);
+            assert_eq!(bitrate_floor(8_000_000), 2_000_000, "an older phone's 1080p setting");
+        }
+
+        #[test]
+        fn reads_the_stream_size_from_gstreamer() {
+            let line = "/GstPipeline:pipeline0/GstPipeWireSrc:pipewiresrc0.GstPad:src: caps = video/x-raw, \
+                        format=(string)BGRx, width=(int)2560, height=(int)1600, framerate=(fraction)0/1";
+            assert_eq!(caps_size(line), Some((2560, 1600)));
+            let dmabuf = "/GstPipeline:pipeline0/GstPipeWireSrc:pipewiresrc0.GstPad:src: caps = \
+                          video/x-raw(memory:DMABuf), format=(string)DMA_DRM, \
+                          drm-format=(string)XR24:0x0100000000000002, width=(int)1366, height=(int)768";
+            assert_eq!(caps_size(dmabuf), Some((1366, 768)));
+            assert_eq!(caps_size("Setting pipeline to PAUSED ..."), None);
+            assert_eq!(
+                caps_size("caps = video/x-raw, format=(string)BGRx, width=(int)0, height=(int)768"),
+                None
+            );
+            assert_eq!(caps_size("caps = audio/x-raw, width=(int)16, height=(int)16"), None);
+
+            let args = probe_args(57);
+            assert_eq!(args[0], "-v", "the caps are what's read: not quiet");
+            assert!(args.contains(&"fd=3".to_owned()));
+            assert!(args.contains(&"path=57".to_owned()));
+            assert!(args.contains(&"num-buffers=1".to_owned()), "it ends by itself");
+            assert!(!args.iter().any(|a| a.contains("width=")), "not scaled");
+        }
+
+        /// The SPS's `level_idc` in an Annex-B H.264 stream.
+        fn h264_level(data: &[u8]) -> Option<u8> {
+            data.windows(7).find(|w| w[..3] == [0, 0, 1] && (w[3] & 0x1f) == 7).map(|w| w[6])
+        }
+
+        /// Whether H.264 `level` (times ten) covers `width` x `height` at `fps`
+        /// (Table A-1: frame size and macroblock rate).
+        fn level_covers(level: u8, width: u32, height: u32, fps: u32) -> bool {
+            let (max_fs, max_mbps) = match level {
+                30 => (1_620, 40_500),
+                31 => (3_600, 108_000),
+                32 => (5_120, 216_000),
+                40 | 41 => (8_192, 245_760),
+                42 => (8_704, 522_240),
+                50 => (22_080, 589_824),
+                51 => (36_864, 983_040),
+                52 => (36_864, 2_073_600),
+                60..=62 => (139_264, 4_177_920),
+                _ => return false,
+            };
+            let mbs = width.div_ceil(16) * height.div_ceil(16);
+            mbs <= max_fs && mbs * fps <= max_mbps
+        }
+
+        #[test]
+        fn large_screens_encode_at_a_level_that_covers_them() {
+            assert!(level_covers(51, 2560, 1440, 60), "level 5.1: 1440p at 60");
+            assert!(level_covers(51, 2560, 1600, 60));
+            assert!(!level_covers(40, 2560, 1440, 30));
+            let level_of = |enc: &mut ScreenEncoder, w: u32, h: u32| {
+                let nv12 = vec![128u8; (w as usize) * (h as usize) * 3 / 2];
+                let stop = AtomicBool::new(false);
+                let first = enc.encode(&nv12, 0, 333_333, &stop).expect("encode");
+                first.iter().find_map(|(_, data)| h264_level(data)).expect("a keyframe with its SPS")
+            };
+            // Software goes up to SOFTWARE_MAX_EDGE.
+            for (w, h) in [(1920, 1200), (1366, 768)] {
+                let rate = bitrate_for(w, h, 30);
+                let mut enc = ScreenEncoder::from(Codec::OpenH264(
+                    OpenH264Encoder::new(w, h, 30, rate).expect("OpenH264"),
+                ));
+                let level = level_of(&mut enc, w, h);
+                assert!(level_covers(level, w, h, 30), "OpenH264 picked level {level} for {w}x{h}");
+            }
+            // Hardware, where this machine has it, the whole way.
+            let (w, h) = (2560, 1600);
+            match new_pc_encoder("h264", w, h, 30, bitrate_for(w, h, 30)) {
+                Ok(mut enc) if !enc.is_software() => {
+                    let level = level_of(&mut enc, w, h);
+                    assert!(
+                        level_covers(level, w, h, 30),
+                        "the hardware encoder picked level {level} for {w}x{h}"
+                    );
+                }
+                _ => eprintln!("no hardware H.264 encoder here"),
+            }
         }
 
         #[test]
@@ -2368,9 +3147,10 @@ mod imp {
 
         #[test]
         fn encodes_nv12_frames_and_decodes_back() {
-            let (w, h) = target_dimensions(1920, 1080, 1280);
-            assert_eq!(w % 16, 0);
-            assert_eq!(h % 16, 0);
+            // The owner's 1366 x 768 panel: neither side a multiple of 16. The
+            // encoder pads to whole blocks and crops, so it decodes at that size.
+            let (w, h) = target_dimensions(1366, 768, MAX_EDGE);
+            assert_eq!((w, h), (1366, 768));
 
             let mut enc = new_pc_encoder("h264", w, h, 30, 4_000_000).expect("ScreenEncoder");
             let mut dec = crate::sys::h264::Decoder::new_for_codec("h264").expect("H264 Decoder");
@@ -2407,8 +3187,9 @@ mod imp {
         #[test]
         fn keyframes_come_on_request_without_rebuilding_the_encoder() {
             let (w, h) = target_dimensions(1280, 720, 1280);
-            let mut enc =
-                ScreenEncoder::OpenH264(OpenH264Encoder::new(w, h, 30, 2_000_000).expect("OpenH264"));
+            let mut enc = ScreenEncoder::from(Codec::OpenH264(
+                OpenH264Encoder::new(w, h, 30, 2_000_000).expect("OpenH264"),
+            ));
             let mut nv12 = Vec::new();
             bgra_to_nv12(&vec![128u8; (w as usize) * (h as usize) * 4], w as usize, h as usize, &mut nv12);
             let stop = AtomicBool::new(false);
@@ -2419,12 +3200,170 @@ mod imp {
                     .filter(|(keyframe, data)| *keyframe && has_h264_idr(data))
                     .count()
             };
-            // The first frame is a keyframe; the next few (well inside the 2 s GOP) are not.
+            // The first frame is a keyframe; the next few (well inside the 30 s GOP) are not.
             assert_eq!(keyframes_after(&mut enc, 0, 1), 1, "the stream starts with a keyframe");
             assert_eq!(keyframes_after(&mut enc, 1, 5), 0, "no keyframes mid-GOP unprompted");
             assert!(enc.request_keyframe(), "the H.264 encoder takes keyframe requests");
             assert_eq!(keyframes_after(&mut enc, 6, 2), 1, "a requested keyframe arrives promptly");
             assert!(enc.set_bitrate(1_000_000), "the bitrate changes in place");
+        }
+
+        /// Which of `count` pictures of a bar moving across a `w` x `h` screen
+        /// came out as keyframes (each picture differs from the last).
+        fn keyframes_of_a_moving_bar(enc: &mut ScreenEncoder, w: u32, h: u32, count: i64) -> Vec<i64> {
+            let stop = AtomicBool::new(false);
+            let mut keyframes = Vec::new();
+            let mut bgra = vec![0u8; (w * h * 4) as usize];
+            let mut nv12 = Vec::new();
+            for i in 0..count {
+                for (px, chunk) in bgra.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+                    let x = (px % w as usize) as i64;
+                    *chunk =
+                        if (x - i * 4).rem_euclid(i64::from(w)) < 40 { [255; 4] } else { [40, 40, 40, 255] };
+                }
+                bgra_to_nv12(&bgra, w as usize, h as usize, &mut nv12);
+                for (keyframe, _) in enc.encode(&nv12, i * 333_333, 333_333, &stop).expect("encode") {
+                    if keyframe {
+                        keyframes.push(i);
+                    }
+                }
+            }
+            keyframes
+        }
+
+        #[test]
+        fn the_stream_has_no_periodic_keyframes() {
+            // Two seconds of a changing screen used to bring a keyframe; now none comes unasked.
+            let mut enc = new_pc_encoder("h264", 640, 360, 30, 2_000_000).expect("an H.264 encoder");
+            let keyframes = keyframes_of_a_moving_bar(&mut enc, 640, 360, 90);
+            assert_eq!(
+                keyframes.len(),
+                1,
+                "three seconds of changes, one keyframe: the first ({keyframes:?})"
+            );
+            assert!(keyframes[0] <= 1, "{keyframes:?}");
+        }
+
+        #[test]
+        fn recordings_keep_a_keyframe_every_two_seconds() {
+            // To seek in: the same encoder, made for a recording.
+            let mut enc =
+                ScreenEncoder::new_for_codec("h264", 640, 360, 30, 2_000_000).expect("an H.264 encoder");
+            let keyframes = keyframes_of_a_moving_bar(&mut enc, 640, 360, 90);
+            assert_eq!(keyframes.len(), 2, "{keyframes:?}");
+            assert!(keyframes[0] <= 1 && (60..=62).contains(&keyframes[1]), "{keyframes:?}");
+        }
+
+        const FPS30: Duration = Duration::from_micros(33_333);
+
+        #[test]
+        fn the_same_picture_is_never_encoded_twice() {
+            let t = Instant::now();
+            let mut gate = FrameGate::default();
+            assert_eq!(gate.next(0, false, FPS30, t), Next::Idle, "nothing yet");
+            assert_eq!(gate.next(0, true, FPS30, t), Next::Idle, "no picture to make a keyframe of");
+            assert_eq!(gate.next(1, false, FPS30, t), Next::New(1), "the first, at once");
+            gate.encoded(1, t);
+            let later = t + Duration::from_millis(100);
+            assert_eq!(gate.next(1, false, FPS30, later), Next::Idle, "a still screen: nothing to send");
+            assert_eq!(
+                gate.next(4, false, FPS30, later),
+                Next::New(4),
+                "the newest, skipping what it replaced"
+            );
+            gate.encoded(4, later);
+            assert_eq!(gate.next(4, false, FPS30, later + FPS30), Next::Idle);
+            assert_eq!(gate.next(3, false, FPS30, later + FPS30), Next::Idle, "never an older one");
+            // A run of numbers, one at a time, each sent once.
+            let mut sent = Vec::new();
+            let mut now = later;
+            for newest in [5, 5, 6, 6, 6, 7, 9, 9] {
+                now += FPS30;
+                if let Next::New(n) = gate.next(newest, false, FPS30, now) {
+                    gate.encoded(n, now);
+                    sent.push(n);
+                }
+            }
+            assert_eq!(sent, [5, 6, 7, 9]);
+        }
+
+        #[test]
+        fn pictures_go_at_most_fps_a_second() {
+            let t = Instant::now();
+            let mut gate = FrameGate::default();
+            gate.encoded(1, t);
+            let soon = t + Duration::from_millis(10);
+            assert_eq!(gate.next(2, false, FPS30, soon), Next::Pace(FPS30 - Duration::from_millis(10)));
+            assert_eq!(gate.next(2, true, FPS30, soon), Next::Pace(FPS30 - Duration::from_millis(10)));
+            assert_eq!(gate.next(2, false, FPS30, t + FPS30), Next::New(2), "the moment it may");
+        }
+
+        #[test]
+        fn a_keyframe_asked_for_comes_of_an_unchanged_picture() {
+            let t = Instant::now();
+            let mut gate = FrameGate::default();
+            gate.encoded(7, t);
+            let later = t + Duration::from_secs(1);
+            assert_eq!(gate.next(7, true, FPS30, later), Next::Again, "the still screen, as a keyframe");
+            assert_eq!(
+                gate.next(8, true, FPS30, later),
+                Next::New(8),
+                "or the newer picture, when there is one"
+            );
+            // A restarted capture numbers afresh: its pictures aren't the ones sent.
+            gate.restart();
+            assert_eq!(gate.sent(), None);
+            assert_eq!(gate.next(0, true, FPS30, later), Next::Idle, "nothing to send again");
+            assert_eq!(gate.next(1, false, FPS30, later), Next::New(1), "a low number from the new capture");
+        }
+
+        #[test]
+        fn pictures_wake_the_loop_numbered_and_stamped() {
+            let slot = Arc::new(FrameSlot::default());
+            assert_eq!(slot.newest(), 0);
+            let mut out = Vec::new();
+            assert_eq!(slot.copy_newest(&mut out), None);
+            assert_eq!(slot.wait_newer(0, Duration::from_millis(5)), 0, "nothing came");
+
+            let writer = Arc::clone(&slot);
+            let reader = std::thread::spawn(move || {
+                let mut buf = vec![1u8; 8];
+                std::thread::sleep(Duration::from_millis(20));
+                writer.put(&mut buf, 1_000);
+                buf
+            });
+            let woke = Instant::now();
+            assert_eq!(slot.wait_newer(0, Duration::from_secs(5)), 1, "woken by the picture");
+            assert!(woke.elapsed() < Duration::from_secs(4));
+            let mut buf = reader.join().unwrap();
+            assert_eq!(slot.copy_newest(&mut out), Some((1, 1_000)));
+            assert_eq!(out, [1u8; 8]);
+            // The next goes in the buffer the reader got back; the slot keeps the newest.
+            buf.fill(2);
+            slot.put(&mut buf, 2_000);
+            assert_eq!(slot.copy_newest(&mut out), Some((2, 2_000)));
+            assert_eq!(out, [2u8; 8]);
+            assert_eq!(buf, [1u8; 8], "the one it replaced, to be read over");
+            assert_eq!(slot.wait_newer(2, Duration::from_millis(5)), 2, "nothing newer than the newest");
+        }
+
+        #[test]
+        fn the_clock_is_the_monotonic_one_in_microseconds() {
+            let first = monotonic_us();
+            std::thread::sleep(Duration::from_millis(3));
+            let second = monotonic_us();
+            assert!(first > 0 && second >= first + 3_000, "{first} {second}");
+        }
+
+        #[test]
+        fn the_stats_line_gives_medians_and_tails() {
+            let mut samples: Vec<Duration> = (1..=100).map(Duration::from_millis).collect();
+            samples.reverse();
+            assert_eq!(percentile_ms(&mut samples, 50), Some(50.0));
+            assert_eq!(percentile_ms(&mut samples, 95), Some(95.0));
+            assert_eq!(p50_p95(&mut samples), "50.0/95.0");
+            assert_eq!(p50_p95(&mut []), "-");
+            assert_eq!(percentile_ms(&mut [Duration::from_micros(1500)], 95), Some(1.5));
         }
     }
 }

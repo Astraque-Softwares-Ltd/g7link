@@ -83,7 +83,7 @@ Item {
         width: 16
         height: 16
         path: group.icon
-        color: group.failed ? Theme.error : Theme.surfaceContentVariant
+        color: group.failed ? AgentPalette.failed : Theme.surfaceContentVariant
     }
     Txt {
         anchors.left: glyph.right

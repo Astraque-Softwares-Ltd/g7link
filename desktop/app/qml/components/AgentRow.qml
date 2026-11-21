@@ -5,7 +5,10 @@ import app.g7link
 
 // A thread or a session in the Agents list: a state dot, the title and how
 // long ago, then the agent, the folder and what it's doing; a running one
-// adds "Now:" and the time it has been working.
+// adds "Now:" and the time it has been working. An unread thread's title is
+// bolder; a fork's line starts "Fork of …", a brought-in one's "Brought in".
+// On hover a thread offers Pin, Archive and its menu; Ctrl+click picks
+// several; F2 renames it in place.
 FocusScope {
     id: row
     // A row of Agents.threads or Agents.sessions.
@@ -14,26 +17,55 @@ FocusScope {
     property bool selected: false
     // Date.now(), ticking while something runs.
     property real now: Date.now()
+    // Several threads are being picked: a box shows whether this one is.
+    property bool picking: false
+    property bool picked: false
+    // The title is being renamed in place.
+    property bool renaming: false
+    // The host keeps marks (pin, archive, the menu).
+    property bool marks: false
     signal clicked
+    // Ctrl+click, or the box: picked or not.
+    signal pickToggled
+    signal pinRequested
+    signal archiveRequested
+    // The thread's menu, at (x, y) in the window.
+    signal menuRequested(real x, real y)
+    signal renameRequested
+    signal renamed(string title)
+    signal renameCancelled
 
     readonly property string phase: item.state || ""
     readonly property bool running: phase === "working" || phase === "waiting"
     readonly property bool showsStep: (phase === "working" || (session && phase === "needs_you")) && (item.step || "").length > 0
     readonly property real since: (item.since_ms || 0) > 0 ? item.since_ms : (item.updated_ms || 0)
 
-    // The state's colour; a guess is drawn as a ring.
-    readonly property color dot: {
-        switch (phase) {
-        case "waiting":
-        case "needs_you": return Theme.tintAmber
-        case "working": return Theme.tintBlue
-        case "done":
-        case "idle": return Theme.tintTeal
-        case "failed": return Theme.error
-        default: return Theme.outline
-        }
-    }
+    // The state's colour and shape (plans/agent-colour.md §2.9): a spinner
+    // ring working, a filled dot with a bang needing you, an x failed, a
+    // check done, a hollow ring paused; a guess is a hollow amber ring.
     readonly property bool ring: session && item.guess === true && phase === "needs_you"
+    readonly property bool unread: !session && item.unread === true
+    readonly property bool pinned: !session && item.pinned === true
+    readonly property bool archived: !session && item.archived === true
+    readonly property real snoozedUntil: session ? 0 : (item.snoozedUntil || 0)
+    readonly property bool showsActions: !session && marks && !picking && !renaming && (mouse.containsMouse || row.activeFocus)
+    // What the line under the title starts with: where the thread came from.
+    readonly property string origin: {
+        if (session)
+            return ""
+        if (snoozedUntil > 0)
+            return qsTr("Snoozed until %1").arg(snoozeTime(snoozedUntil))
+        if (((item.forkOf || {}).title || "").length > 0)
+            return qsTr("Fork of %1").arg(item.forkOf.title)
+        return item.found === true ? qsTr("Brought in") : ""
+    }
+    // "18:00" today, else "Tomorrow 09:00"-like: the day and the time.
+    function snoozeTime(ms) {
+        const when = new Date(ms)
+        const time = when.toLocaleTimeString(Qt.locale(), Locale.ShortFormat)
+        return new Date(row.now).toDateString() === when.toDateString()
+            ? time : when.toLocaleDateString(Qt.locale(), "ddd") + " " + time
+    }
 
     // What it's doing, after the agent and the folder.
     readonly property string doing: {
@@ -85,6 +117,14 @@ FocusScope {
         return h > 0 ? h + ":" + String(m).padStart(2, "0") + ":" + s : m + ":" + s
     }
 
+    onRenamingChanged: {
+        if (renaming) {
+            renameInput.text = row.item.title || ""
+            renameInput.selectAll()
+            renameInput.forceActiveFocus()
+        }
+    }
+
     implicitHeight: texts.implicitHeight + 16
     activeFocusOnTab: true
     Accessible.role: Accessible.ListItem
@@ -92,8 +132,17 @@ FocusScope {
     Accessible.description: [row.item.agent_name, row.item.folder, row.doing].filter((s) => (s || "").length > 0).join(", ")
     Accessible.onPressAction: row.clicked()
     Keys.onPressed: (event) => {
+        if (row.renaming)
+            return
         if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter || event.key === Qt.Key_Space) {
             row.clicked()
+            event.accepted = true
+        } else if (event.key === Qt.Key_F2 && !row.session && row.marks) {
+            row.renameRequested()
+            event.accepted = true
+        } else if (event.key === Qt.Key_Menu && !row.session && row.marks) {
+            const p = row.mapToItem(null, row.width - 8, row.height / 2)
+            row.menuRequested(p.x, p.y)
             event.accepted = true
         }
     }
@@ -108,7 +157,7 @@ FocusScope {
         anchors.fill: parent
         radius: Theme.rowRadius
         color: Theme.selection
-        on: row.selected
+        on: row.selected || row.picked
     }
     Rectangle {
         anchors.fill: parent
@@ -122,26 +171,60 @@ FocusScope {
         id: mouse
         anchors.fill: parent
         hoverEnabled: true
+        acceptedButtons: Qt.LeftButton | Qt.RightButton
         cursorShape: Qt.PointingHandCursor
-        onClicked: row.clicked()
+        onClicked: (mouseEvent) => {
+            if (row.renaming)
+                return
+            if (mouseEvent.button === Qt.RightButton) {
+                if (!row.session && row.marks) {
+                    const p = row.mapToItem(null, mouseEvent.x, mouseEvent.y)
+                    row.menuRequested(p.x, p.y)
+                }
+            } else if (!row.session && row.marks && (row.picking || (mouseEvent.modifiers & Qt.ControlModifier))) {
+                row.pickToggled()
+            } else {
+                row.clicked()
+            }
+        }
     }
 
-    Rectangle {
+    AgentStateMark {
         id: dotMark
-        x: Theme.rowPadding
+        visible: !row.picking
+        x: Theme.rowPadding - 2
         y: 8 + Math.round((titleText.lineHeight - height) / 2)
-        width: 8
-        height: 8
-        radius: 4
-        color: row.ring ? "transparent" : row.dot
-        border.width: row.ring ? 1.5 : 0
-        border.color: row.dot
+        phase: row.phase
+        guess: row.ring
+    }
+    // The box while several are picked.
+    Rectangle {
+        visible: row.picking
+        x: Theme.rowPadding - 3
+        y: 8 + Math.round((titleText.lineHeight - height) / 2)
+        width: 14
+        height: 14
+        radius: 3
+        color: row.picked ? Theme.accent : "transparent"
+        border.width: row.picked ? 0 : 1.2
+        border.color: Theme.outline
+        Accessible.role: Accessible.CheckBox
+        Accessible.checked: row.picked
+        Accessible.name: qsTr("Select %1").arg(row.item.title || "")
+        Icon {
+            visible: row.picked
+            anchors.centerIn: parent
+            width: 11
+            height: 11
+            path: Icons.check
+            color: Theme.accentContent
+        }
     }
 
     Column {
         id: texts
         anchors.left: dotMark.right
-        anchors.leftMargin: 10
+        anchors.leftMargin: 8
         anchors.right: parent.right
         anchors.rightMargin: Theme.rowPadding
         y: 8
@@ -152,25 +235,105 @@ FocusScope {
             height: titleText.height
             Txt {
                 id: titleText
+                visible: !row.renaming
                 anchors.left: parent.left
-                anchors.right: ageText.left
+                anchors.right: rowEnd.left
                 anchors.rightMargin: 8
                 text: row.item.title || ""
-                weight: 500
+                weight: row.unread ? 650 : 500
                 maximumLineCount: 1
             }
-            Txt {
-                id: ageText
+            // Rename in place: Enter keeps it, Esc leaves it as it was.
+            Rectangle {
+                visible: row.renaming
+                anchors.left: parent.left
                 anchors.right: parent.right
                 anchors.verticalCenter: titleText.verticalCenter
-                text: row.ago(row.item.updated_ms || 0)
-                role: "bodySmall"
-                muted: true
+                height: titleText.height + 4
+                radius: 4
+                color: Theme.surface
+                border.width: 2
+                border.color: Theme.accent
+                TextInput {
+                    id: renameInput
+                    x: 4
+                    width: parent.width - 8
+                    anchors.verticalCenter: parent.verticalCenter
+                    clip: true
+                    maximumLength: 80
+                    font.family: Theme.fontUi
+                    font.pixelSize: Theme.typography.body.size
+                    font.weight: row.unread ? 650 : 500
+                    color: Theme.surfaceContent
+                    selectionColor: Theme.selection
+                    selectedTextColor: Theme.surfaceContent
+                    selectByMouse: true
+                    Accessible.name: qsTr("Rename")
+                    Keys.onReturnPressed: row.renamed(renameInput.text)
+                    Keys.onEnterPressed: row.renamed(renameInput.text)
+                    Keys.onEscapePressed: row.renameCancelled()
+                    onActiveFocusChanged: if (!activeFocus && row.renaming) row.renameCancelled()
+                }
+            }
+            Row {
+                id: rowEnd
+                anchors.right: parent.right
+                anchors.verticalCenter: titleText.verticalCenter
+                spacing: 4
+                visible: !row.renaming
+                Icon {
+                    visible: row.pinned && !row.showsActions
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: 12
+                    height: 12
+                    path: Icons.pin
+                    color: Theme.surfaceContentVariant
+                }
+                Txt {
+                    id: ageText
+                    visible: !row.showsActions
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: row.ago(row.item.updated_ms || 0)
+                    role: "bodySmall"
+                    muted: true
+                }
+                IconButton {
+                    visible: row.showsActions
+                    width: 24
+                    height: 24
+                    iconSize: 14
+                    iconPath: Icons.pin
+                    label: row.pinned ? qsTr("Unpin") : qsTr("Pin")
+                    checked: row.pinned
+                    onClicked: row.pinRequested()
+                }
+                IconButton {
+                    visible: row.showsActions
+                    width: 24
+                    height: 24
+                    iconSize: 14
+                    iconPath: Icons.tray
+                    label: row.archived ? qsTr("Unarchive") : qsTr("Archive")
+                    onClicked: row.archiveRequested()
+                }
+                IconButton {
+                    id: moreButton
+                    visible: row.showsActions
+                    width: 24
+                    height: 24
+                    iconSize: 14
+                    iconPath: Icons.more
+                    label: qsTr("More")
+                    onClicked: {
+                        const p = moreButton.mapToItem(null, moreButton.width, moreButton.height)
+                        row.menuRequested(p.x, p.y)
+                    }
+                }
             }
         }
         Txt {
             width: parent.width
-            text: [row.item.agent_name, row.item.folder, row.doing].filter((s) => (s || "").length > 0).join(" · ")
+            text: [row.origin, row.item.agent_name, row.item.folder, row.doing].filter((s) => (s || "").length > 0).join(" · ")
             role: "bodySmall"
             muted: true
             maximumLineCount: 1

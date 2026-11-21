@@ -3,8 +3,9 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import app.g7link
 
-// "3 files changed +26 −7" under a finished turn's answer: each file opens
-// to that turn's edits of it.
+// "3 files changed +26 −7" under a finished turn's answer. From the turn's
+// restore point (`recorded`) it opens the diff, at the file clicked;
+// otherwise each file opens to that turn's edits of it.
 Item {
     id: changes
     required property int depth
@@ -13,6 +14,10 @@ Item {
     required property int adds
     required property int dels
     required property int more
+    required property bool recorded
+
+    // The diff of the turn, at `path` ("" for its first file).
+    signal openDiff(int turn, string path)
 
     readonly property var list: {
         try {
@@ -41,8 +46,37 @@ Item {
             y: 6
             width: parent.width - 12
             Item {
+                id: head
                 width: parent.width
                 height: 30
+                Accessible.role: changes.recorded ? Accessible.Button : Accessible.StaticText
+                Accessible.name: headText.text
+                Accessible.onPressAction: if (changes.recorded) changes.openDiff(changes.turn, "")
+                Rectangle {
+                    anchors.fill: parent
+                    radius: Theme.radiusSm
+                    color: Theme.surfaceContentVariant
+                    opacity: changes.recorded && headHover.hovered ? 0.06 : 0
+                }
+                HoverHandler {
+                    id: headHover
+                }
+                MouseArea {
+                    anchors.fill: parent
+                    enabled: changes.recorded
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: changes.openDiff(changes.turn, "")
+                }
+                Icon {
+                    visible: changes.recorded
+                    anchors.right: parent.right
+                    anchors.rightMargin: 6
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: 14
+                    height: 14
+                    path: Icons.chevronRight
+                    color: Theme.surfaceContentVariant
+                }
                 Row {
                     x: 6
                     anchors.verticalCenter: parent.verticalCenter
@@ -55,6 +89,7 @@ Item {
                         color: Theme.surfaceContentVariant
                     }
                     Txt {
+                        id: headText
                         anchors.verticalCenter: parent.verticalCenter
                         text: qsTr("%n file(s) changed", "", changes.list.length + changes.more)
                         role: "bodySmall"
@@ -64,13 +99,13 @@ Item {
                         anchors.verticalCenter: parent.verticalCenter
                         text: "+" + changes.adds
                         role: "bodySmall"
-                        color: Theme.tintGreen
+                        color: AgentPalette.inserted
                     }
                     Txt {
                         anchors.verticalCenter: parent.verticalCenter
                         text: "−" + changes.dels
                         role: "bodySmall"
-                        color: Theme.error
+                        color: AgentPalette.deleted
                     }
                 }
             }
@@ -83,9 +118,15 @@ Item {
                     readonly property string fileKey: "c:" + changes.turn + ":" + index
                     width: column.width
                     height: 26
+                    function activate() {
+                        if (changes.recorded)
+                            changes.openDiff(changes.turn, file.modelData.path)
+                        else
+                            Agents.toggle(file.fileKey)
+                    }
                     Accessible.role: Accessible.Button
                     Accessible.name: modelData.path
-                    Accessible.onPressAction: Agents.toggle(file.fileKey)
+                    Accessible.onPressAction: file.activate()
                     Rectangle {
                         anchors.fill: parent
                         radius: Theme.radiusSm
@@ -121,12 +162,12 @@ Item {
                         Txt {
                             text: "+" + file.modelData.adds
                             role: "caption"
-                            color: Theme.tintGreen
+                            color: AgentPalette.inserted
                         }
                         Txt {
                             text: "−" + file.modelData.dels
                             role: "caption"
-                            color: Theme.error
+                            color: AgentPalette.deleted
                         }
                     }
                     HoverHandler {
@@ -135,7 +176,7 @@ Item {
                     MouseArea {
                         anchors.fill: parent
                         cursorShape: Qt.PointingHandCursor
-                        onClicked: Agents.toggle(file.fileKey)
+                        onClicked: file.activate()
                     }
                 }
             }
@@ -143,7 +184,7 @@ Item {
                 visible: changes.more > 0
                 x: 6
                 height: visible ? 24 : 0
-                text: qsTr("%n more file(s)", "", changes.more)
+                text: changes.recorded ? qsTr("and %1 more").arg(changes.more) : qsTr("%n more file(s)", "", changes.more)
                 role: "caption"
                 muted: true
             }

@@ -19,12 +19,19 @@ Item {
     readonly property var messages: { try { return JSON.parse(Messages.messages) } catch (e) { return [] } }
     readonly property var contacts: { try { return JSON.parse(PhoneCall.contacts) } catch (e) { return [] } }
     readonly property var availableApps: { try { return JSON.parse(Messages.availableApps) } catch (e) { return [] } }
-    readonly property var openThread: threads.find(t => t.id === Messages.thread) || null
+    // The open conversation, also a chat cleared on the phone that the list
+    // no longer has.
+    readonly property var openThread: { try { return JSON.parse(Messages.current) } catch (e) { return null } }
+    readonly property bool openCleared: !!openThread && !!openThread.cleared
     readonly property bool ready: Messages.status === "ready"
     // Conversations matching the search box.
     readonly property string query: search.text.trim().toLocaleLowerCase()
     readonly property var shownThreads: query.length === 0 ? threads
         : threads.filter(t => (t.title + " " + t.addresses + " " + (t.appName || "") + " " + (t.lastSender || "") + " " + t.snippet).toLocaleLowerCase().indexOf(query) >= 0)
+    // Rows shown under "On your phone now"; with none (and no search), the
+    // section says so.
+    readonly property int liveShown: shownThreads.filter(t => t.section === "live").length
+    readonly property bool liveEmptyShown: liveShown === 0 && query.length === 0 && page.deviceId.length > 0
 
     // Contacts matching the "To" field when starting a new message.
     readonly property string recipientQuery: toField.text.trim().toLocaleLowerCase()
@@ -57,8 +64,11 @@ Item {
     // A sender that takes no replies (a name, a short code) can't be called either.
     readonly property bool canCallThread: !!openThread && !openThread.isChat && !openThread.group
         && openThread.addresses.length > 0 && openThread.canReply && !openThread.shortCode && PhoneCall.canDial
-    readonly property string footerLabel: unreadCount > 0 ? qsTr("Messages · %1 unread").arg(unreadCount) : qsTr("Messages")
-    readonly property int unreadCount: threads.reduce((sum, t) => sum + (t.unread > 0 ? t.unread : 0), 0)
+    readonly property string footerLabel: Messages.liveCount > 0 && Messages.unreadCount > 0
+        ? qsTr("Messages · %1 on your phone now · %2 unread").arg(Messages.liveCount).arg(Messages.unreadCount)
+        : Messages.liveCount > 0 ? qsTr("Messages · %1 on your phone now").arg(Messages.liveCount)
+        : Messages.unreadCount > 0 ? qsTr("Messages · %1 unread").arg(Messages.unreadCount)
+        : qsTr("Messages")
     readonly property var primaryAction: chatOpen && !composer.inputDisabled
         ? ({ label: qsTr("Send"), keys: "Enter", run: () => composer.send() })
         : ({ label: qsTr("New message"), keys: "Ctrl N", run: () => page.startNew() })
@@ -83,8 +93,12 @@ Item {
                   tint: Theme.tintTeal, enabled: !PhoneCall.dialing,
                   run: () => PhoneCall.dial(page.openThread.addresses) },
             ] : []),
-            { label: qsTr("Remove conversation from PC"), icon: Icons.trash, tint: Theme.tintRed,
-              enabled: !!page.openThread && !!page.openThread.isChat,
+            { label: qsTr("Keep this chat on the PC"), icon: Icons.pin,
+              checked: !!page.openThread && !!page.openThread.kept,
+              enabled: !!page.openThread && !!page.openThread.isChat && (!page.openCleared || page.openThread.canKeep),
+              run: () => page.toggleKept() },
+            { label: qsTr("Remove conversation"), icon: Icons.trash, tint: Theme.tintRed,
+              enabled: !!page.openThread && !!page.openThread.isChat && !!page.openThread.canRemove,
               run: () => { if (page.openThread) Messages.deleteChatThread(page.openThread.id) } },
             { label: qsTr("Close conversation"), icon: Icons.close, keys: "Esc", enabled: page.chatOpen,
               run: () => page.closeChat() },
@@ -114,6 +128,12 @@ Item {
                 composer.focusText()
             }
         }
+    }
+
+    // The pin: keeps the open chat on this PC after it leaves the phone, or stops.
+    function toggleKept() {
+        if (page.openThread && page.openThread.isChat)
+            Messages.setKept(page.openThread.id, !page.openThread.kept)
     }
 
     // Back to the list: nothing open.
@@ -321,7 +341,7 @@ Item {
             y: 8
             width: parent.width - 16
             height: 34
-            text: qsTr("Conversations")
+            text: qsTr("Messages")
             actionText: qsTr("New")
             actionIcon: Icons.plus
             enabled: page.ready
@@ -414,6 +434,51 @@ Item {
             }
             onMovementEnded: notePlace()
             onFlickEnded: notePlace()
+            // Chats on the phone now, then texts and kept chats.
+            section.property: "section"
+            section.criteria: ViewSection.FullString
+            section.delegate: SectionHead {
+                required property string section
+                width: threadList.width
+                live: section === "live"
+                // Apart from the chats above it.
+                topGap: !live && page.liveShown > 0 ? 8 : 0
+            }
+            // No chat on the phone now: its section stays, saying so.
+            header: Item {
+                width: threadList.width
+                height: page.liveEmptyShown ? emptyLive.height + noneLive.height + 8 : 0
+                visible: page.liveEmptyShown
+                SectionHead {
+                    id: emptyLive
+                    width: parent.width
+                    live: true
+                }
+                Item {
+                    id: noneLive
+                    anchors.top: emptyLive.bottom
+                    width: parent.width
+                    height: 52
+                    Icon {
+                        id: noneLiveIcon
+                        x: Theme.rowPadding + 6
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: 16; height: 16
+                        path: Icons.check
+                        color: Theme.surfaceContentVariant
+                    }
+                    Txt {
+                        anchors.left: noneLiveIcon.right
+                        anchors.leftMargin: 16
+                        anchors.right: parent.right
+                        anchors.rightMargin: Theme.rowPadding
+                        anchors.verticalCenter: parent.verticalCenter
+                        role: "bodySmall"
+                        muted: true
+                        text: qsTr("Nothing waiting on your phone.")
+                    }
+                }
+            }
             delegate: ThreadRow {
                 required property var modelData
                 width: threadList.width
@@ -421,7 +486,7 @@ Item {
             }
             Txt {
                 anchors.centerIn: parent
-                visible: (page.ready || Messages.hasChatThreads) && page.shownThreads.length === 0
+                visible: (page.ready || Messages.hasChatThreads) && page.shownThreads.length === 0 && !page.liveEmptyShown
                 muted: true
                 text: page.query.length > 0 ? qsTr("No matches") : qsTr("No conversations")
             }
@@ -491,11 +556,31 @@ Item {
             }
         }
 
-        Txt {
+        Column {
             anchors.centerIn: parent
+            width: Math.min(parent.width - 32, 380)
+            spacing: 8
             visible: !page.openThread && !page.composing && list.visible
-            muted: true
-            text: qsTr("Pick a conversation")
+            Icon {
+                anchors.horizontalCenter: parent.horizontalCenter
+                width: 28; height: 28
+                path: Icons.messages
+                color: Theme.tintBlue
+            }
+            Txt {
+                width: parent.width
+                horizontalAlignment: Text.AlignHCenter
+                weight: 500
+                text: qsTr("Pick a conversation")
+            }
+            Txt {
+                width: parent.width
+                horizontalAlignment: Text.AlignHCenter
+                wrapMode: Text.WordWrap
+                role: "bodySmall"
+                muted: true
+                text: qsTr("App chats show here while their notification is on your phone. Reply from here, or pin one, to keep it.")
+            }
         }
 
         Item {
@@ -549,9 +634,17 @@ Item {
                         const t = page.openThread
                         if (!t)
                             return ""
-                        const app = t.isChat ? (t.appName || Messages.currentAppName) : "SMS"
-                        return !t.isChat && t.title !== t.addresses && t.addresses.length > 0
-                            ? t.addresses + " · " + app : app
+                        if (!t.isChat)
+                            return t.title !== t.addresses && t.addresses.length > 0 ? t.addresses + " · SMS" : "SMS"
+                        const name = t.appName || Messages.currentAppName
+                        const app = t.group ? qsTr("%1 group").arg(name) : name
+                        if (t.cleared)
+                            return qsTr("%1 · cleared on the phone at %2").arg(app)
+                                .arg(new Date(t.retiredMs).toLocaleTimeString(Qt.locale(), Locale.ShortFormat))
+                        if (!t.live)
+                            return qsTr("%1 · not on the phone now").arg(app)
+                        return t.newCount > 0 ? qsTr("%1 · on your phone now · %n new", "", t.newCount).arg(app)
+                            : qsTr("%1 · on your phone now").arg(app)
                     }
                 }
             }
@@ -570,11 +663,20 @@ Item {
                     label: page.openThread ? qsTr("Call %1").arg(page.openThread.title) : qsTr("Call")
                     onClicked: if (page.openThread) PhoneCall.dial(page.openThread.addresses)
                 }
+                // Cleared on the phone, it's kept from the line above the box instead.
+                IconButton {
+                    visible: !!page.openThread && !!page.openThread.isChat && !page.openCleared
+                    checked: !!page.openThread && !!page.openThread.kept
+                    iconPath: Icons.pin
+                    label: qsTr("Keep this chat on the PC")
+                    onClicked: page.toggleKept()
+                }
                 IconButton {
                     visible: !!page.openThread && !!page.openThread.isChat
+                    enabled: !!page.openThread && !!page.openThread.canRemove
                     iconPath: Icons.trash
                     iconColor: Theme.tintRed
-                    label: qsTr("Remove conversation from PC")
+                    label: qsTr("Remove conversation")
                     onClicked: if (page.openThread) Messages.deleteChatThread(page.openThread.id)
                 }
                 IconButton {
@@ -713,7 +815,7 @@ Item {
         ListView {
             id: messageList
             anchors.top: chatHeader.bottom
-            anchors.bottom: attachmentBar.visible ? attachmentBar.top : composerBar.top
+            anchors.bottom: attachmentBar.visible ? attachmentBar.top : clearedBar.visible ? clearedBar.top : composerBar.top
             anchors.bottomMargin: 8
             width: parent.width
             visible: !!page.openThread
@@ -862,6 +964,63 @@ Item {
             }
         }
 
+        // A chat cleared on the phone, still open: it goes when closed, unless kept.
+        Item {
+            id: clearedBar
+            visible: page.openCleared && !page.composing
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.bottom: composerBar.top
+            height: 44
+            Accessible.role: Accessible.StatusBar
+            Accessible.name: clearedText.text
+
+            Rectangle {
+                width: parent.width
+                height: 1
+                color: Theme.line
+            }
+            Icon {
+                id: clearedIcon
+                x: 16
+                anchors.verticalCenter: parent.verticalCenter
+                width: 16; height: 16
+                path: Icons.info
+                color: Theme.surfaceContentVariant
+            }
+            Txt {
+                id: clearedText
+                anchors.left: clearedIcon.right
+                anchors.leftMargin: 10
+                anchors.right: keepButton.left
+                anchors.rightMargin: 10
+                anchors.verticalCenter: parent.verticalCenter
+                role: "bodySmall"
+                text: qsTr("Cleared on the phone. It leaves this PC when you close it.")
+            }
+            Button {
+                id: keepButton
+                anchors.right: closeClearedButton.left
+                anchors.rightMargin: 8
+                anchors.verticalCenter: parent.verticalCenter
+                variant: "outline"
+                size: "sm"
+                // Not once the PC has let it go (open for over a day).
+                enabled: !!page.openThread && !!page.openThread.canKeep
+                text: qsTr("Keep on this PC")
+                onClicked: if (page.openThread) Messages.setKept(page.openThread.id, true)
+            }
+            Button {
+                id: closeClearedButton
+                anchors.right: parent.right
+                anchors.rightMargin: 16
+                anchors.verticalCenter: parent.verticalCenter
+                size: "sm"
+                text: qsTr("Close")
+                onClicked: page.closeChat()
+            }
+        }
+
         // Writing a text or a reply in a chat app.
         Item {
             id: composerBar
@@ -869,7 +1028,7 @@ Item {
             anchors.left: parent.left
             anchors.right: parent.right
             anchors.bottom: parent.bottom
-            height: composer.inputDisabled ? noReply.implicitHeight + 28 : composer.height + 24
+            height: composer.inputDisabled && !composer.cleared ? noReply.implicitHeight + 28 : composer.height + 24
 
             Rectangle {
                 width: parent.width
@@ -885,12 +1044,14 @@ Item {
                 anchors.leftMargin: 16
                 anchors.rightMargin: 16
                 anchors.verticalCenter: parent.verticalCenter
-                visible: composer.inputDisabled
+                visible: composer.inputDisabled && !composer.cleared
                 muted: true
                 wrapMode: Text.Wrap
                 horizontalAlignment: Text.AlignHCenter
                 text: composer.chatReplyDisabled
-                    ? qsTr("Replies work while the notification is on your phone")
+                    ? (!!page.openThread && page.openThread.live && !Messages.online
+                        ? qsTr("%1 isn't connected").arg(page.deviceName)
+                        : qsTr("Replies work while the notification is on your phone"))
                     : composer.smsReplyDisabled
                         ? qsTr("%1 doesn't accept replies").arg(page.openThread.title)
                         : qsTr("Group texts can't be sent from the PC yet")
@@ -922,8 +1083,10 @@ Item {
 
             Rectangle {
                 id: composer
-                visible: !inputDisabled
+                // Cleared on the phone: the box stays, off, saying why.
+                visible: !inputDisabled || cleared
                 readonly property bool isChat: Messages.currentIsChat && !page.composing
+                readonly property bool cleared: isChat && page.openCleared
                 readonly property bool groupSms: !isChat && !!page.openThread && page.openThread.group
                 readonly property bool chatReplyDisabled: isChat && !Messages.currentCanReply
                 readonly property bool smsReplyDisabled: !isChat && !!page.openThread && !page.openThread.canReply
@@ -1037,7 +1200,8 @@ Item {
                             visible: input.text.length === 0
                             muted: true
                             width: input.width
-                            text: composer.isChat
+                            text: composer.cleared ? qsTr("Replies need the notification on the phone")
+                                : composer.isChat
                                 ? qsTr("Reply in %1").arg(Messages.currentAppName)
                                 : Messages.hasAttachment
                                     ? qsTr("Caption (optional)")
@@ -1051,7 +1215,7 @@ Item {
             }
             Button {
                 id: sendButton
-                visible: !composer.inputDisabled
+                visible: !composer.inputDisabled || composer.cleared
                 anchors.right: parent.right
                 anchors.rightMargin: 16
                 anchors.bottom: composer.bottom
@@ -1063,19 +1227,50 @@ Item {
         }
     }
 
+    // A section of the list: "On your phone now" and how many, or
+    // "Conversations".
+    component SectionHead: Item {
+        id: head
+        property bool live
+        property real topGap: 0
+        height: topGap + 30
+        SectionLabel {
+            y: head.topGap
+            anchors.left: parent.left
+            anchors.right: sectionDetail.left
+            height: 30
+            text: !head.live ? qsTr("Conversations")
+                : Messages.online ? qsTr("On your phone now")
+                : qsTr("On your phone when last connected")
+        }
+        Txt {
+            id: sectionDetail
+            anchors.right: parent.right
+            anchors.rightMargin: Theme.rowPadding
+            y: head.topGap
+            height: 30
+            role: "caption"
+            muted: true
+            text: head.live ? String(page.liveShown)
+                : Messages.appFilter.length === 0 ? qsTr("SMS and kept chats") : ""
+        }
+    }
+
     // A conversation in the list: name and time, then the latest text.
     component ThreadRow: Item {
         id: row
         property var thread
         readonly property bool selected: thread.id === Messages.thread
         readonly property bool isChat: !!thread.isChat
+        // A kept chat whose notification left the phone.
+        readonly property bool away: isChat && !thread.live
         // Only the phone's own SMS app can mark texts read, so the one being
         // read here would otherwise keep its unread look.
         readonly property int unread: selected ? 0 : thread.unread
         height: 52
         activeFocusOnTab: true
         Accessible.role: Accessible.ListItem
-        Accessible.name: thread.title + (isChat && thread.appName ? " (" + thread.appName + ")" : "") + ". " + thread.snippet
+        Accessible.name: thread.title + (isChat && thread.appName ? " (" + thread.appName + ")" : "") + ". " + thread.line
         Accessible.onPressAction: open()
         function open() {
             page.composing = false
@@ -1161,6 +1356,7 @@ Item {
                     width: Math.min(implicitWidth, parent.width - when.width - (appTag.visible ? appTag.implicitWidth + 16 : 8))
                     text: row.thread.title
                     weight: 500
+                    muted: row.away
                 }
                 Txt {
                     id: appTag
@@ -1189,13 +1385,7 @@ Item {
                     anchors.left: parent.left
                     anchors.right: badge.visible ? badge.left : parent.right
                     anchors.rightMargin: 8
-                    text: {
-                        const s = row.thread.snippet || ""
-                        const sender = row.thread.lastSender || ""
-                        if (row.isChat && row.thread.group && sender.length > 0 && s.indexOf(sender + ":") !== 0)
-                            return sender + ": " + s
-                        return s
-                    }
+                    text: row.thread.line || ""
                     role: "bodySmall"
                     muted: row.unread === 0
                     maximumLineCount: 1

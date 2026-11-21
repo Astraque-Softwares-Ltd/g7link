@@ -67,7 +67,7 @@ Rectangle {
                 text: queue.held ? qsTr("Waiting: the last turn didn't finish.")
                                  : qsTr("Sent when %1 finishes.").arg(queue.agentName)
                 role: "bodySmall"
-                color: queue.held ? Theme.tintAmber : Theme.surfaceContentVariant
+                color: queue.held ? AgentPalette.needsYou : Theme.surfaceContentVariant
             }
             MouseArea {
                 width: 160

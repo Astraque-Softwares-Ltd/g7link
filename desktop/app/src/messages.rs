@@ -13,8 +13,8 @@ use std::{
 };
 
 use g7link_core::{
-    ChatMessageRecord, ChatThreadRecord, DeviceId, Error, LinkState, NodeEvent, SmsAttachment, SmsMessage,
-    SmsPart, SmsReplyKind, SmsThread, sms_reply_kind,
+    ChatMessageRecord, ChatThreadRecord, DeviceId, Error, LinkState, Node, NodeEvent, SmsAttachment,
+    SmsMessage, SmsPart, SmsReplyKind, SmsThread, sms_reply_kind,
 };
 use serde_json::{Value, json};
 
@@ -118,6 +118,16 @@ struct State {
     /// When each conversation was last read here, by thread ID. Android lets only
     /// the default SMS app mark texts read, so the phone keeps counting them.
     seen: HashMap<String, i64>,
+    /// The open chat as the store last had it. It stays shown after the list
+    /// drops it (cleared on the phone and not kept) until it's closed.
+    open_chat: Option<ChatThreadRecord>,
+    /// The store still has [`State::open_chat`], so it can still be kept.
+    open_chat_stored: bool,
+    /// How many of the open chat's messages were new when it was opened.
+    open_chat_new: u32,
+    /// The phone is connected: live chats take replies, and removing one
+    /// can clear its notification there.
+    online: bool,
     /// Bumped when the phone changes, so late answers are dropped.
     generation: u64,
 }
@@ -190,6 +200,7 @@ pub fn clear_cache() {
         s.loading_older = false;
         s.recent.clear();
         s.seen.clear();
+        forget_open_chat(s);
     });
     changed();
 }
@@ -260,8 +271,19 @@ pub fn cache_stats() -> (usize, usize, u64) {
 pub struct View {
     pub device: Option<DeviceId>,
     pub status: Status,
+    /// The list: chats on the phone now (`section` "live"), then texts and
+    /// kept chats ("kept"), each newest first.
     pub threads: Value,
+    /// Rows in the list's "live" section.
+    pub live_count: usize,
+    /// Unread messages in the list.
+    pub unread_count: u64,
+    /// The phone is connected.
+    pub online: bool,
     pub thread: Option<String>,
+    /// The open conversation's row (`null` for none), also for a chat the
+    /// list no longer has: it's `cleared` then.
+    pub current: Value,
     pub messages: Value,
     pub more: bool,
     pub loading_older: bool,
@@ -307,7 +329,7 @@ fn app_tabs(s: &State) -> Value {
         json!({ "key": SMS_TAB, "label": "SMS", "icon": icon(s.sms_app_icon.as_ref()) }),
     ];
     let mut listed = HashSet::new();
-    for ct in &s.chat_threads {
+    for ct in s.chat_threads.iter().filter(|ct| is_listed(ct)) {
         if !ct.app.is_empty() && listed.insert(ct.app.as_str()) {
             let label = if ct.app_name.trim().is_empty() { ct.app.clone() } else { ct.app_name.clone() };
             tabs.push(json!({ "key": ct.app, "label": label, "icon": icon(s.app_icons.get(&ct.app)) }));
@@ -316,42 +338,57 @@ fn app_tabs(s: &State) -> Value {
     Value::Array(tabs)
 }
 
+/// The list's sections: chats whose notification is on the phone now, then
+/// texts and the chats kept on this PC.
+const LIVE: &str = "live";
+const KEPT: &str = "kept";
+
+/// A mirrored app chat's ID (`chat:<app>:...`), not a text conversation's.
+fn is_chat(thread: &str) -> bool {
+    thread.starts_with("chat:")
+}
+
+/// A chat the list shows: on the phone now, or kept on this PC.
+fn is_listed(chat: &ChatThreadRecord) -> bool {
+    chat.active || chat.kept
+}
+
+/// The open chat: as last read, or from the list until then.
+fn open_chat_record(s: &State) -> Option<&ChatThreadRecord> {
+    let id = s.thread.as_deref().filter(|id| is_chat(id))?;
+    s.open_chat
+        .as_ref()
+        .filter(|c| c.thread_id == id)
+        .or_else(|| s.chat_threads.iter().find(|c| c.thread_id == id))
+}
+
 fn view_of(s: &State) -> View {
-    let mut combined: Vec<(i64, String, Value)> = Vec::new();
+    // (live, date, ID, row)
+    let mut rows: Vec<(bool, i64, &str, Value)> = Vec::new();
     if in_tab(&s.app_filter, None) {
-        let sms_app = s.sms_app.clone().unwrap_or_default();
-        let sms_icon = s.sms_app_icon.as_ref().map(|p| crate::icons::file_url(p)).unwrap_or_default();
         for t in &s.threads {
-            let mut json = thread_json(t, s.photos.get(&t.id));
-            json["app"] = json!(sms_app);
-            json["appIcon"] = json!(sms_icon);
-            if s.seen.get(&t.id).is_some_and(|seen| *seen >= t.date) {
-                json["unread"] = json!(0);
-            }
-            combined.push((t.date, t.id.clone(), json));
+            rows.push((false, t.date, &t.id, sms_row(s, t)));
         }
     }
-    for ct in &s.chat_threads {
+    for ct in s.chat_threads.iter().filter(|ct| is_listed(ct)) {
         if in_tab(&s.app_filter, Some(ct.app.as_str())) {
-            combined.push((
-                ct.updated_ms,
-                ct.thread_id.clone(),
-                chat_thread_json(ct, s.photos.get(&ct.thread_id), s.app_icons.get(&ct.app)),
-            ));
+            rows.push((ct.active, ct.updated_ms, &ct.thread_id, chat_row(s, ct)));
         }
     }
-    combined.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
-    let threads = Value::Array(combined.into_iter().map(|(_, _, v)| v).collect());
+    rows.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1)).then_with(|| a.2.cmp(b.2)));
+    let live_count = rows.iter().filter(|r| r.0).count();
+    let unread_count = rows.iter().filter_map(|r| r.3["unread"].as_u64()).sum();
+    let threads = Value::Array(rows.into_iter().map(|(_, _, _, v)| v).collect());
     let available_apps = app_tabs(s);
 
     let open_id = s.thread.as_deref();
-    let current_is_chat = open_id.is_some_and(|id| id.starts_with("chat:"));
+    let current_is_chat = open_id.is_some_and(is_chat);
     let (current_app_name, current_can_reply, current_is_group) = if current_is_chat {
-        let ct = open_id.and_then(|id| s.chat_threads.iter().find(|c| c.thread_id == id));
+        let ct = open_chat_record(s);
         (
             ct.map(|c| if c.app_name.trim().is_empty() { "Chat".into() } else { c.app_name.clone() })
                 .unwrap_or_else(|| "Chat".into()),
-            ct.is_some_and(|c| c.active && c.reply_action_id.is_some()),
+            ct.is_some_and(|c| takes_chat_replies(c, s.online)),
             ct.is_some_and(|c| c.is_group),
         )
     } else {
@@ -392,7 +429,11 @@ fn view_of(s: &State) -> View {
         device: s.device,
         status: s.status,
         threads,
+        live_count,
+        unread_count,
+        online: s.online,
         thread: s.thread.clone(),
+        current: current_of(s),
         messages,
         more: if current_is_chat { false } else { s.more },
         loading_older: if current_is_chat { false } else { s.loading_older },
@@ -443,7 +484,67 @@ fn thread_json(t: &SmsThread, photo: Option<&PathBuf>) -> Value {
         "shortCode": t.addresses.iter().any(|a| sms_reply_kind(a) == SmsReplyKind::ShortCode),
         "lastSender": "",
         "active": true,
+        "section": KEPT,
+        "live": false,
+        "kept": false,
+        "line": t.snippet,
     })
+}
+
+/// A text conversation's row: with the phone's SMS app, and read when it was
+/// read here.
+fn sms_row(s: &State, t: &SmsThread) -> Value {
+    let mut json = thread_json(t, s.photos.get(&t.id));
+    json["app"] = json!(s.sms_app.clone().unwrap_or_default());
+    json["appIcon"] = json!(s.sms_app_icon.as_ref().map(|p| crate::icons::file_url(p)).unwrap_or_default());
+    if s.seen.get(&t.id).is_some_and(|seen| *seen >= t.date) {
+        json["unread"] = json!(0);
+    }
+    json
+}
+
+fn chat_row(s: &State, t: &ChatThreadRecord) -> Value {
+    chat_thread_json(t, s.photos.get(&t.thread_id), s.app_icons.get(&t.app), s.online)
+}
+
+/// Whether a reply typed here can go: through the notification on a
+/// connected phone.
+fn takes_chat_replies(t: &ChatThreadRecord, online: bool) -> bool {
+    t.active && t.reply_action_id.is_some() && online
+}
+
+/// A chat's second line in the list: the latest message, by whom in a group,
+/// and for a kept chat whose notification is gone, that it is.
+fn chat_line(t: &ChatThreadRecord) -> String {
+    let sender = t.last_sender.as_deref().unwrap_or_default();
+    let line = if t.is_group && !sender.is_empty() && !t.snippet.starts_with(&format!("{sender}:")) {
+        format!("{sender}: {}", t.snippet)
+    } else {
+        t.snippet.clone()
+    };
+    if t.active { line } else { tr!("Messages", "%1 · Not on the phone now", line) }
+}
+
+/// The open conversation as the page shows it (`null` for none). A chat
+/// carries where it stands: `cleared` when its notification left the phone
+/// and it isn't kept, so it goes when closed, unless it's kept (`canKeep`
+/// while the store still has it).
+fn current_of(s: &State) -> Value {
+    let Some(id) = s.thread.as_deref() else { return Value::Null };
+    if !is_chat(id) {
+        return s.threads.iter().find(|t| t.id == id).map_or(Value::Null, |t| sms_row(s, t));
+    }
+    let Some(chat) = open_chat_record(s) else { return Value::Null };
+    let cleared = !is_listed(chat);
+    let mut json = chat_row(s, chat);
+    json["cleared"] = json!(cleared);
+    json["canKeep"] = json!(cleared && s.open_chat_stored);
+    json["retiredMs"] = json!(chat.retired_ms.unwrap_or_default());
+    json["newCount"] = json!(s.open_chat_new);
+    // Removing a live chat clears it on the phone too; done here alone, the
+    // phone's next list would bring it back.
+    json["canRemove"] = json!(!chat.active || s.online);
+    json
 }
 
 /// Whether a text can reach everyone in a conversation: not a sender name like "M-PESA".
@@ -451,7 +552,12 @@ pub(crate) fn takes_replies(addresses: &[String]) -> bool {
     addresses.iter().all(|a| sms_reply_kind(a) != SmsReplyKind::NoReply)
 }
 
-fn chat_thread_json(t: &ChatThreadRecord, photo: Option<&PathBuf>, app_icon: Option<&PathBuf>) -> Value {
+fn chat_thread_json(
+    t: &ChatThreadRecord,
+    photo: Option<&PathBuf>,
+    app_icon: Option<&PathBuf>,
+    online: bool,
+) -> Value {
     json!({
         "id": t.thread_id,
         "title": t.title,
@@ -465,9 +571,13 @@ fn chat_thread_json(t: &ChatThreadRecord, photo: Option<&PathBuf>, app_icon: Opt
         "app": t.app,
         "appName": if t.app_name.trim().is_empty() { &t.app } else { &t.app_name },
         "appIcon": app_icon.map(|p| crate::icons::file_url(p)).unwrap_or_default(),
-        "canReply": t.active && t.reply_action_id.is_some(),
+        "canReply": takes_chat_replies(t, online),
         "lastSender": t.last_sender.clone().unwrap_or_default(),
         "active": t.active,
+        "section": if t.active { LIVE } else { KEPT },
+        "live": t.active,
+        "kept": t.kept,
+        "line": chat_line(t),
     })
 }
 
@@ -572,24 +682,45 @@ pub fn set_app_filter(app: String) {
     }
 }
 
-/// Deletes a persisted MessagingStyle chat conversation locally.
+/// "Remove conversation": deletes a chat from this PC at once and, while its
+/// notification is on the phone, clears it there too. A live chat waits for
+/// the phone: removed here alone, the phone's next list would bring it back.
 pub fn delete_chat_thread(thread_id: String) {
+    let Some(node) = core_host::node() else { return };
+    let Some(device) = state(|s| {
+        let chat = s.open_chat.iter().chain(&s.chat_threads).find(|c| c.thread_id == thread_id);
+        if chat.is_some_and(|c| c.active) && !s.online {
+            return None;
+        }
+        s.chat_threads.retain(|t| t.thread_id != thread_id);
+        if s.thread.as_deref() == Some(&thread_id) {
+            close(s);
+        }
+        s.device
+    }) else {
+        return;
+    };
+    changed();
+    core_host::spawn(async move {
+        if let Err(e) = node.remove_chat_thread(device, &thread_id).await {
+            crate::notifications::report(&e);
+        }
+    });
+}
+
+/// Keeps a chat on this PC after its notification leaves the phone (the
+/// pin), or stops keeping it.
+pub fn set_chat_kept(thread_id: String, kept: bool) {
     let Some(device) = state(|s| s.device) else { return };
     let Some(node) = core_host::node() else { return };
-    if node.delete_chat_thread(device, &thread_id) {
-        state(|s| {
-            s.chat_threads.retain(|t| t.thread_id != thread_id);
-            if s.thread.as_deref() == Some(&thread_id) {
-                s.thread = None;
-                s.chat_messages.clear();
-            }
-        });
-        changed();
+    if node.set_chat_kept(device, &thread_id, kept) {
+        load_chat_threads();
     }
 }
 
 /// Shows `device`'s messages (again: reloads).
 pub fn open_device(device: DeviceId) {
+    let online = phone_online(device);
     let same = state(|s| {
         let same = s.device == Some(device);
         if !same {
@@ -600,6 +731,7 @@ pub fn open_device(device: DeviceId) {
                 ..State::default()
             };
         }
+        s.online = online;
         same
     });
     if !same {
@@ -608,13 +740,74 @@ pub fn open_device(device: DeviceId) {
     load_threads();
 }
 
-/// Synchronously refreshes persisted `MessagingStyle` chat threads from SQLite.
+/// Whether `device` is connected now.
+fn phone_online(device: DeviceId) -> bool {
+    core_host::host()
+        .hub
+        .read(|s| s.device(&device).is_some_and(|d| matches!(d.link, LinkState::Online { .. })))
+}
+
+/// The open chat from the store, read: its row (`None` once the store has
+/// let it go) and its latest messages.
+type OpenChatRead = (String, Option<ChatThreadRecord>, Vec<ChatMessageRecord>);
+
+fn read_open_chat(node: &Node, device: DeviceId, thread: String) -> OpenChatRead {
+    let _ = node.mark_chat_thread_read(device, &thread);
+    let chat = node.chat_thread(device, &thread);
+    let messages = if chat.is_some() { node.chat_messages(device, &thread, PAGE) } else { Vec::new() };
+    (thread, chat, messages)
+}
+
+/// Shows what the store has of the open chat now. One the store no longer
+/// has stays as last seen, with its messages, until it's closed.
+fn apply_open_chat(s: &mut State, (thread, chat, messages): OpenChatRead) {
+    if s.thread.as_deref() != Some(&thread) {
+        return;
+    }
+    match chat {
+        Some(chat) => {
+            s.open_chat = Some(chat);
+            s.open_chat_stored = true;
+            s.chat_messages = messages;
+        }
+        None => {
+            s.open_chat_stored = false;
+            // Deleted while open: it can't be replied to or kept now.
+            if let Some(chat) = s.open_chat.as_mut() {
+                chat.active = false;
+                chat.kept = false;
+                chat.unread = 0;
+                if chat.retired_ms.is_none() {
+                    chat.retired_ms = Some(now_ms());
+                }
+            }
+        }
+    }
+}
+
+/// The open chat and what's known of it, as for none open.
+fn forget_open_chat(s: &mut State) {
+    s.open_chat = None;
+    s.open_chat_stored = false;
+    s.open_chat_new = 0;
+}
+
+/// Synchronously refreshes persisted `MessagingStyle` chat threads from
+/// SQLite, and the open chat, which the list may no longer have.
 pub fn load_chat_threads() {
     let Some(device) = state(|s| s.device) else { return };
     let Some(node) = core_host::node() else { return };
+    let online = phone_online(device);
+    // Read before listing, so the list has no badge for what's on screen.
+    let open = state(|s| s.thread.clone().filter(|t| is_chat(t))).map(|t| read_open_chat(&node, device, t));
     let chat_threads = node.chat_threads(device);
-    let (photos, app_icons) = save_chat_assets(device, &chat_threads);
-    let open_chat = state(|s| {
+    let open_record = open.as_ref().and_then(|(_, chat, _)| chat.as_ref());
+    // Saved, shown and pruned in turn, so no file is pruned between being
+    // saved and being shown.
+    let assets = CHAT_ASSETS.lock().unwrap_or_else(|e| e.into_inner());
+    let (photos, app_icons) = save_chat_assets(device, chat_threads.iter().chain(open_record));
+    let shown = state(|s| {
+        s.online = online;
         s.chat_threads = chat_threads;
         s.photos.extend(photos);
         s.app_icons.extend(app_icons);
@@ -622,24 +815,18 @@ pub fn load_chat_threads() {
             s.status = Status::Ready;
         }
         if !s.app_filter.is_empty()
-            && s.app_filter != "sms"
-            && !s.chat_threads.iter().any(|ct| ct.app == s.app_filter)
+            && s.app_filter != SMS_TAB
+            && !s.chat_threads.iter().any(|ct| is_listed(ct) && ct.app == s.app_filter)
         {
             s.app_filter.clear();
         }
-        s.thread.clone().filter(|t| t.starts_with("chat:"))
+        if let Some(open) = open {
+            apply_open_chat(s, open);
+        }
+        s.photos.values().chain(s.app_icons.values()).cloned().collect::<HashSet<_>>()
     });
-    if let Some(thread) = open_chat {
-        let _ = node.mark_chat_thread_read(device, &thread);
-        let msgs = node.chat_messages(device, &thread, PAGE);
-        let refreshed = node.chat_threads(device);
-        state(|s| {
-            s.chat_threads = refreshed;
-            if s.thread.as_deref() == Some(&thread) {
-                s.chat_messages = msgs;
-            }
-        });
-    }
+    prune_chat_assets(&files_dir(), &shown);
+    drop(assets);
     changed();
 }
 
@@ -726,10 +913,30 @@ fn save_photos(device: DeviceId, threads: &[SmsThread]) -> HashMap<String, PathB
         .collect()
 }
 
+/// Held while chat pictures are saved, shown and pruned.
+static CHAT_ASSETS: Mutex<()> = Mutex::new(());
+
+/// Deletes the saved chat pictures (`chat-avatar-*`, `chat-app-*`) that
+/// nothing shows: a chat's picture outlives the chat otherwise, and every
+/// chat's ID, which names its picture, changed with the store's schema v11.
+fn prune_chat_assets(dir: &Path, shown: &HashSet<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let chat_picture = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.starts_with("chat-avatar-") || n.starts_with("chat-app-"));
+        if chat_picture && !shown.contains(&path) {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
 /// Saves chat conversation avatars and app icons to disk for QML `RoundedImage`.
-fn save_chat_assets(
+fn save_chat_assets<'a>(
     device: DeviceId,
-    threads: &[ChatThreadRecord],
+    threads: impl IntoIterator<Item = &'a ChatThreadRecord>,
 ) -> (HashMap<String, PathBuf>, HashMap<String, PathBuf>) {
     let dir = files_dir();
     if std::fs::create_dir_all(&dir).is_err() {
@@ -769,43 +976,51 @@ fn save_chat_assets(
     (photos, app_icons)
 }
 
+/// Makes `thread` the open conversation, the one left going among the recent
+/// ones (a chat the list no longer has goes for good). False when it
+/// already was open.
+fn switch_to(s: &mut State, thread: &str) -> bool {
+    if s.thread.as_deref() == Some(thread) {
+        return false;
+    }
+    let left = s.thread.replace(thread.to_owned());
+    let messages = std::mem::take(&mut s.messages);
+    if let Some(left) = left.filter(|t| !is_chat(t)) {
+        remember_recent(s, left, messages);
+    }
+    if let Some(at) = s.recent.iter().position(|(t, _)| t == thread) {
+        s.messages = s.recent.remove(at).1;
+    }
+    s.chat_messages.clear();
+    forget_open_chat(s);
+    s.more = false;
+    s.staged_attachment = None;
+    true
+}
+
 /// Opens a conversation: its latest messages.
 pub fn open_thread(thread: String) {
-    let is_chat = thread.starts_with("chat:");
-    let (device, seen) = state(|s| {
+    let (device, switched, seen) = state(|s| {
         s.compose_to = None;
         s.compose_name = None;
-        if s.thread.as_deref() != Some(&thread) {
-            let left = s.thread.replace(thread.clone());
-            let messages = std::mem::take(&mut s.messages);
-            if let Some(left) = left.filter(|t| !t.starts_with("chat:")) {
-                remember_recent(s, left, messages);
-            }
-            if let Some(at) = s.recent.iter().position(|(t, _)| *t == thread) {
-                s.messages = s.recent.remove(at).1;
-            }
-            s.chat_messages.clear();
-            s.more = false;
-            s.staged_attachment = None;
-        }
+        let switched = switch_to(s, &thread);
         let date = s.threads.iter().find(|t| t.id == thread).map(|t| t.date);
-        (s.device, date.and_then(|date| note_seen(s, &thread, date)))
+        (s.device, switched, date.and_then(|date| note_seen(s, &thread, date)))
     });
     if let Some((device, seen)) = seen {
         std::thread::spawn(move || save_seen(device, &seen));
     }
-    if is_chat {
-        if let (Some(device), Some(node)) = (device, core_host::node()) {
-            let _ = node.mark_chat_thread_read(device, &thread);
-            let msgs = node.chat_messages(device, &thread, PAGE);
-            let refreshed = node.chat_threads(device);
+    if is_chat(&thread) {
+        // What was new when it was opened, for its header.
+        if switched && let (Some(device), Some(node)) = (device, core_host::node()) {
+            let new = node.chat_thread(device, &thread).map_or(0, |c| c.unread);
             state(|s| {
-                s.chat_threads = refreshed;
                 if s.thread.as_deref() == Some(&thread) {
-                    s.chat_messages = msgs;
+                    s.open_chat_new = new;
                 }
             });
         }
+        load_chat_threads();
         changed();
     } else {
         changed();
@@ -836,6 +1051,7 @@ pub fn start_chat(device: DeviceId, number: String, name: String) {
             s.thread = None;
             s.messages.clear();
             s.chat_messages.clear();
+            forget_open_chat(s);
             s.more = false;
             s.compose_to = Some(number.clone());
             s.compose_name = (!name.is_empty() && name != number).then_some(name);
@@ -1295,6 +1511,8 @@ fn send_chat_reply(thread_id: String, body: String) {
         let result = node.reply_chat_thread(device, &thread_id, text).await;
         let refreshed_threads = node.chat_threads(device);
         let refreshed_messages = node.chat_messages(device, &thread_id, PAGE);
+        // A reply keeps the chat: its pin shows it.
+        let refreshed_chat = node.chat_thread(device, &thread_id);
         state(|s| {
             s.sending = false;
             // Only for the phone still shown; and a reply that failed stays,
@@ -1303,6 +1521,10 @@ fn send_chat_reply(thread_id: String, body: String) {
                 s.chat_threads = refreshed_threads;
                 if result.is_ok() && s.thread.as_deref() == Some(&thread_id) {
                     s.chat_messages = refreshed_messages;
+                    if let Some(chat) = refreshed_chat {
+                        s.open_chat = Some(chat);
+                        s.open_chat_stored = true;
+                    }
                 }
             }
         });
@@ -1431,16 +1653,20 @@ pub fn reload() {
 /// Closes the open conversation (for writing a new one).
 pub fn close_thread() {
     PENDING_OPEN.lock().unwrap_or_else(|e| e.into_inner()).take();
-    state(|s| {
-        s.thread = None;
-        s.compose_to = None;
-        s.compose_name = None;
-        s.messages.clear();
-        s.chat_messages.clear();
-        s.more = false;
-        s.staged_attachment = None;
-    });
+    state(close);
     changed();
+}
+
+/// Nothing open. A chat the list no longer has goes with it.
+fn close(s: &mut State) {
+    s.thread = None;
+    s.compose_to = None;
+    s.compose_name = None;
+    s.messages.clear();
+    s.chat_messages.clear();
+    forget_open_chat(s);
+    s.more = false;
+    s.staged_attachment = None;
 }
 
 pub fn on_event(event: &NodeEvent) {
@@ -1590,7 +1816,14 @@ mod tests {
             active: true,
             avatar: None,
             app_icon: None,
+            kept: false,
+            retired_ms: None,
         }
+    }
+
+    /// A chat whose notification left the phone, kept on this PC.
+    fn kept(chat: ChatThreadRecord) -> ChatThreadRecord {
+        ChatThreadRecord { active: false, kept: true, retired_ms: Some(chat.updated_ms + 1), ..chat }
     }
 
     fn listed(s: &State) -> Vec<String> {
@@ -1598,19 +1831,29 @@ mod tests {
         view.threads.as_array().unwrap().iter().map(|t| t["id"].as_str().unwrap().to_owned()).collect()
     }
 
+    fn sections(s: &State) -> Vec<String> {
+        let view = view_of(s);
+        view.threads.as_array().unwrap().iter().map(|t| t["section"].as_str().unwrap().to_owned()).collect()
+    }
+
     #[test]
     fn tabs_filter_texts_and_each_chat_app() {
         let mut s = State {
             threads: vec![SmsThread { id: "sms1".into(), date: 30, ..thread(&["+1555"], &[]) }],
+            // On the phone now, then kept: a tab filters both sections.
             chat_threads: vec![
                 chat("chat:wa:Sam", "com.whatsapp", "WhatsApp", 40),
-                chat("chat:tg:Ana", "org.telegram.messenger", "", 20),
-                chat("chat:wa:Family", "com.whatsapp", "WhatsApp", 10),
+                kept(chat("chat:tg:Ana", "org.telegram.messenger", "", 20)),
+                kept(chat("chat:wa:Family", "com.whatsapp", "WhatsApp", 10)),
             ],
             sms_app: Some("com.google.android.apps.messaging".into()),
             ..State::default()
         };
-        assert_eq!(listed(&s), ["chat:wa:Sam", "sms1", "chat:tg:Ana", "chat:wa:Family"], "All, newest first");
+        assert_eq!(
+            listed(&s),
+            ["chat:wa:Sam", "sms1", "chat:tg:Ana", "chat:wa:Family"],
+            "All: on the phone now, then the rest newest first"
+        );
         s.app_filter = SMS_TAB.into();
         assert_eq!(listed(&s), ["sms1"]);
         s.app_filter = "com.whatsapp".into();
@@ -1699,6 +1942,270 @@ mod tests {
         // A list the phone was too busy to load is worth another try, not "off".
         assert_eq!(Status::of(&Error::Busy), Status::Failed);
         assert_eq!(Status::of(&Error::Denied), Status::Off);
+    }
+
+    fn message(id: i64, thread: &str, text: &str) -> ChatMessageRecord {
+        ChatMessageRecord {
+            id,
+            peer: DeviceId([1; 32]),
+            thread_id: thread.into(),
+            sender: Some("Ana".into()),
+            text: text.into(),
+            time_ms: id,
+            self_sent: false,
+            avatar: None,
+        }
+    }
+
+    #[test]
+    fn live_chats_come_first_and_texts_and_kept_chats_follow() {
+        let s = State {
+            threads: vec![
+                SmsThread { id: "sms-new".into(), date: 90, ..thread(&["+1555"], &[]) },
+                SmsThread { id: "sms-old".into(), date: 10, ..thread(&["+1666"], &[]) },
+            ],
+            chat_threads: vec![
+                kept(ChatThreadRecord {
+                    snippet: "See you".into(),
+                    ..chat("chat:wa:i:kept", "com.whatsapp", "WhatsApp", 50)
+                }),
+                chat("chat:wa:i:live-old", "com.whatsapp", "WhatsApp", 20),
+                chat("chat:tg:i:live-new", "org.telegram.messenger", "Telegram", 30),
+                // Cleared on the phone and not kept: not the list's, even if handed one.
+                ChatThreadRecord {
+                    active: false,
+                    retired_ms: Some(70),
+                    ..chat("chat:wa:i:gone", "com.whatsapp", "WhatsApp", 60)
+                },
+            ],
+            ..State::default()
+        };
+        assert_eq!(
+            listed(&s),
+            ["chat:tg:i:live-new", "chat:wa:i:live-old", "sms-new", "chat:wa:i:kept", "sms-old"]
+        );
+        assert_eq!(sections(&s), ["live", "live", "kept", "kept", "kept"]);
+        let rows = view_of(&s).threads;
+        let row = |id: &str| rows.as_array().unwrap().iter().find(|r| r["id"] == id).unwrap().clone();
+        assert_eq!(row("chat:wa:i:kept")["line"], "See you · Not on the phone now");
+        assert_eq!(row("chat:wa:i:kept")["live"], false);
+        assert_eq!(row("chat:wa:i:kept")["kept"], true);
+        assert_eq!(row("chat:tg:i:live-new")["live"], true);
+        assert_eq!(row("sms-new")["kept"], false, "a text isn't a kept chat");
+    }
+
+    #[test]
+    fn a_chat_that_is_live_and_kept_is_listed_once_under_live() {
+        let s = State {
+            chat_threads: vec![ChatThreadRecord {
+                kept: true,
+                snippet: "Saa tatu".into(),
+                ..chat("chat:wa:i:both", "com.whatsapp", "WhatsApp", 40)
+            }],
+            ..State::default()
+        };
+        assert_eq!(listed(&s), ["chat:wa:i:both"]);
+        assert_eq!(sections(&s), ["live"]);
+        let view = view_of(&s);
+        assert_eq!(view.threads[0]["kept"], true, "its pin shows as on");
+        assert_eq!(view.threads[0]["line"], "Saa tatu", "nothing says it left the phone");
+        assert_eq!(view.live_count, 1);
+    }
+
+    #[test]
+    fn the_open_chat_stays_when_its_row_retires() {
+        let id = "chat:com.whatsapp:i:family";
+        let live = ChatThreadRecord {
+            reply_action_id: Some("reply".into()),
+            is_group: true,
+            ..chat(id, "com.whatsapp", "WhatsApp", 40)
+        };
+        let read =
+            |chat: &ChatThreadRecord| (id.to_owned(), Some(chat.clone()), vec![message(1, id, "Saa tatu")]);
+        let mut s = State { online: true, thread: Some(id.into()), open_chat_new: 6, ..State::default() };
+        s.chat_threads = vec![live.clone()];
+        apply_open_chat(&mut s, read(&live));
+        let view = view_of(&s);
+        assert_eq!(view.current["id"], id);
+        assert_eq!(view.current["live"], true);
+        assert_eq!(view.current["cleared"], false);
+        assert_eq!(view.current["newCount"], 6);
+        assert!(view.current_can_reply);
+        assert!(view.current_is_group);
+
+        // Cleared on the phone: the store stops listing it, and has it retired.
+        let retired = ChatThreadRecord { active: false, retired_ms: Some(50), ..live.clone() };
+        s.chat_threads.clear();
+        apply_open_chat(&mut s, read(&retired));
+        let view = view_of(&s);
+        assert!(listed(&s).is_empty(), "it leaves the list at once");
+        assert_eq!(view.current["id"], id, "and stays open");
+        assert_eq!(view.current["cleared"], true);
+        assert_eq!(view.current["canKeep"], true);
+        assert_eq!(view.current["retiredMs"], 50);
+        assert!(!view.current_can_reply);
+        assert!(view.current_is_group);
+        assert_eq!(view.current_app_name, "WhatsApp");
+        assert_eq!(view.messages.as_array().unwrap().len(), 1);
+
+        // Kept on this PC: under Conversations, and it isn't leaving.
+        let pinned = ChatThreadRecord { kept: true, ..retired.clone() };
+        s.chat_threads = vec![pinned.clone()];
+        apply_open_chat(&mut s, read(&pinned));
+        assert_eq!(sections(&s), ["kept"]);
+        assert_eq!(view_of(&s).current["cleared"], false);
+        assert_eq!(view_of(&s).current["kept"], true);
+
+        // Unpinned again, then open for over a day: the store lets it go.
+        s.chat_threads.clear();
+        apply_open_chat(&mut s, read(&retired));
+        apply_open_chat(&mut s, (id.to_owned(), None, Vec::new()));
+        let view = view_of(&s);
+        assert_eq!(view.current["cleared"], true, "still shown");
+        assert_eq!(view.current["canKeep"], false, "nothing to keep now");
+        assert_eq!(view.messages.as_array().unwrap().len(), 1, "its messages stay until it's closed");
+
+        // A new message brings it back on the phone.
+        s.chat_threads = vec![live.clone()];
+        apply_open_chat(&mut s, read(&live));
+        let view = view_of(&s);
+        assert_eq!(view.current["cleared"], false);
+        assert_eq!(view.current["live"], true);
+        assert!(view.current_can_reply);
+        assert_eq!(listed(&s), [id]);
+    }
+
+    #[test]
+    fn a_chat_deleted_while_open_takes_no_reply() {
+        let id = "chat:com.whatsapp:i:sam";
+        let live = ChatThreadRecord {
+            reply_action_id: Some("reply".into()),
+            ..chat(id, "com.whatsapp", "WhatsApp", 40)
+        };
+        let mut s = State { online: true, thread: Some(id.into()), ..State::default() };
+        apply_open_chat(&mut s, (id.to_owned(), Some(live), Vec::new()));
+        assert!(view_of(&s).current_can_reply);
+        // Gone from the store (its cache cleared, say) with nothing retiring it first.
+        apply_open_chat(&mut s, (id.to_owned(), None, Vec::new()));
+        let view = view_of(&s);
+        assert!(!view.current_can_reply);
+        assert_eq!(view.current["cleared"], true);
+        assert_eq!(view.current["canKeep"], false);
+        assert_eq!(view.current["unread"], 0);
+    }
+
+    #[test]
+    fn the_cleared_chat_goes_when_it_is_closed() {
+        let id = "chat:com.whatsapp:i:family";
+        let retired = ChatThreadRecord {
+            active: false,
+            retired_ms: Some(50),
+            ..chat(id, "com.whatsapp", "WhatsApp", 40)
+        };
+        let open_cleared = |s: &mut State| {
+            assert!(switch_to(s, id));
+            apply_open_chat(s, (id.to_owned(), Some(retired.clone()), vec![message(1, id, "Saa tatu")]));
+            assert_eq!(view_of(s).current["cleared"], true);
+        };
+        let mut s = State {
+            threads: vec![SmsThread { id: "sms1".into(), ..thread(&["+1555"], &[]) }],
+            ..State::default()
+        };
+
+        open_cleared(&mut s);
+        close(&mut s);
+        let view = view_of(&s);
+        assert_eq!(view.current, Value::Null);
+        assert!(view.messages.as_array().unwrap().is_empty());
+        assert_eq!(listed(&s), ["sms1"]);
+
+        // Opening another conversation lets it go as well.
+        open_cleared(&mut s);
+        assert!(switch_to(&mut s, "sms1"));
+        assert!(s.open_chat.is_none());
+        assert_eq!(view_of(&s).current["id"], "sms1");
+        assert_eq!(listed(&s), ["sms1"]);
+    }
+
+    #[test]
+    fn the_footer_counts_live_chats_and_unread() {
+        let mut s = State {
+            threads: vec![
+                SmsThread { id: "sms1".into(), date: 30, unread: 2, ..thread(&["+1555"], &[]) },
+                // Read here, though the phone still counts it.
+                SmsThread { id: "sms2".into(), date: 20, unread: 3, ..thread(&["+1666"], &[]) },
+            ],
+            chat_threads: vec![
+                ChatThreadRecord { unread: 4, ..chat("chat:wa:i:a", "com.whatsapp", "WhatsApp", 40) },
+                chat("chat:wa:i:b", "com.whatsapp", "WhatsApp", 35),
+                kept(chat("chat:tg:i:c", "org.telegram.messenger", "Telegram", 10)),
+            ],
+            seen: HashMap::from([("sms2".to_owned(), 20)]),
+            ..State::default()
+        };
+        let counts = |s: &State| {
+            let view = view_of(s);
+            (view.live_count, view.unread_count)
+        };
+        assert_eq!(counts(&s), (2, 6));
+        s.app_filter = SMS_TAB.into();
+        assert_eq!(counts(&s), (0, 2), "a tab counts what it shows");
+        s.app_filter = "org.telegram.messenger".into();
+        assert_eq!(counts(&s), (0, 0));
+        s.app_filter.clear();
+        s.threads.clear();
+        s.chat_threads.clear();
+        assert_eq!(counts(&s), (0, 0));
+    }
+
+    #[test]
+    fn a_live_chat_waits_for_the_phone_to_reply_or_be_removed() {
+        let id = "chat:com.whatsapp:i:sam";
+        let live = ChatThreadRecord {
+            reply_action_id: Some("reply".into()),
+            ..chat(id, "com.whatsapp", "WhatsApp", 40)
+        };
+        let mut s = State {
+            thread: Some(id.into()),
+            chat_threads: vec![live, kept(chat("chat:wa:i:kept", "com.whatsapp", "WhatsApp", 30))],
+            ..State::default()
+        };
+        let view = view_of(&s);
+        assert!(!view.online);
+        assert_eq!(listed(&s), [id, "chat:wa:i:kept"], "the rows stay");
+        assert!(!view.current_can_reply);
+        assert_eq!(view.current["canReply"], false);
+        assert_eq!(view.current["canRemove"], false, "removed here alone, the phone would bring it back");
+
+        s.online = true;
+        let view = view_of(&s);
+        assert!(view.current_can_reply);
+        assert_eq!(view.current["canRemove"], true);
+
+        // A kept chat already gone from the phone is removed from here alone.
+        s.online = false;
+        s.thread = Some("chat:wa:i:kept".into());
+        assert_eq!(view_of(&s).current["canRemove"], true);
+    }
+
+    #[test]
+    fn chat_pictures_nothing_shows_are_deleted() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = |name: &str| {
+            let path = dir.path().join(name);
+            std::fs::write(&path, b"x").unwrap();
+            path
+        };
+        let avatar = file("chat-avatar-0000000000000001.png");
+        let old_avatar = file("chat-avatar-0000000000000002.jpg");
+        let icon = file("chat-app-0000000000000003.png");
+        let old_icon = file("chat-app-0000000000000004.png");
+        let text_photo = file("sms-0000000000000005.jpg");
+        let other = file("notification-picture.png");
+        prune_chat_assets(dir.path(), &HashSet::from([avatar.clone(), icon.clone()]));
+        assert!(avatar.exists() && icon.exists());
+        assert!(!old_avatar.exists() && !old_icon.exists());
+        assert!(text_photo.exists() && other.exists(), "only chat pictures go");
     }
 
     #[test]

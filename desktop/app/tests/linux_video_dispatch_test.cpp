@@ -5,10 +5,31 @@
 #endif
 #include "../cpp/linux_video_codec.h"
 
+#include <cstdio>
+#include <cstdlib>
+#include <string>
+
 #ifndef TEST_LABEL
 #define TEST_LABEL "test"
 #endif
-namespace { int object; }
+namespace {
+int object;
+
+// Whether this adapter's label is in the space-separated list in `variable`: the test
+// main sets them to make adapters act as if their FFmpeg were missing, or had no encoder.
+bool named_in(const char* variable)
+{
+    const char* names = std::getenv(variable);
+    return names && (" " + std::string(names) + " ").find(" " TEST_LABEL " ") != std::string::npos;
+}
+}
+
+#ifdef TEST_BUILTIN
+#define TEST_RUNTIME_AVAILABLE builtin_video_runtime_available
+#else
+#define TEST_RUNTIME_AVAILABLE g7link_video_runtime_available
+#endif
+extern "C" bool TEST_RUNTIME_AVAILABLE() { return !named_in("G7LINK_TEST_MISSING"); }
 
 extern "C" void* g7link_video_decoder_create(bool, char*, size_t)
 {
@@ -25,8 +46,17 @@ extern "C" int g7link_video_decoder_send(void* p, const uint8_t*, size_t n, char
 { return p == &object ? static_cast<int>(n) : -1; }
 extern "C" int g7link_video_decoder_receive(void*, G7LinkDecodedNv12*, char*, size_t) { return 0; }
 extern "C" void g7link_video_decoder_flush(void*) {}
-extern "C" void* g7link_video_encoder_create(bool, int, int, int, int, char*, size_t)
+extern "C" void* g7link_video_encoder_create(bool, int, int, int, int, char* error, size_t capacity)
 {
+    // What an adapter whose FFmpeg is missing says, though the dispatcher shouldn't ask it.
+    if (named_in("G7LINK_TEST_MISSING")) {
+        std::snprintf(error, capacity, "Matching FFmpeg runtime libraries are unavailable");
+        return nullptr;
+    }
+    if (named_in("G7LINK_TEST_FAILING")) {
+        std::snprintf(error, capacity, "%s", TEST_LABEL " has no hardware encoder");
+        return nullptr;
+    }
 #ifdef TEST_AVAILABLE
     return &object;
 #else
@@ -70,7 +100,40 @@ extern "C" int g7link_video_aac_decoder_receive(void*, const int16_t**, size_t*,
 #else
 #include "../cpp/linux_video_codec.h"
 #include <cassert>
+#include <cstdlib>
 #include <cstring>
+
+static bool starts_with(const char* text, const char* prefix)
+{
+    return std::strncmp(text, prefix, std::strlen(prefix)) == 0;
+}
+
+// With adapters for FFmpeg 7 (no encoder), 8 and 9 in place: when 9's FFmpeg isn't installed
+// and 8 has no encoder, the reason is 8's, not 9's "Matching FFmpeg runtime libraries are
+// unavailable" that used to hide it; the built-in adapter is the last resort.
+static void reason_comes_from_an_installed_ffmpeg()
+{
+    setenv("G7LINK_TEST_MISSING", "ffmpeg9", 1);
+    setenv("G7LINK_TEST_FAILING", "ffmpeg8", 1);
+    char why[512]{};
+    void* encoder = g7link_video_encoder_create(false, 320, 240, 30, 123, why, sizeof(why));
+    if (encoder) {
+        assert(std::strcmp(g7link_video_encoder_backend(encoder), "builtin") == 0);
+        g7link_video_encoder_destroy(encoder);
+    } else {
+        assert(starts_with(why, "ffmpeg8: ffmpeg8 has no hardware encoder ("));
+        assert(!std::strstr(why, "Matching FFmpeg runtime libraries are unavailable"));
+        assert(std::strstr(why, "ffmpeg9: FFmpeg isn't installed"));
+        assert(std::strstr(why, "ffmpeg7: unavailable"));
+    }
+    // Nothing installed at all says so.
+    setenv("G7LINK_TEST_MISSING", "ffmpeg9 ffmpeg8 test builtin", 1);
+    why[0] = '\0';
+    assert(!g7link_video_encoder_create(false, 320, 240, 30, 123, why, sizeof(why)));
+    assert(starts_with(why, "no installed FFmpeg (ffmpeg9: FFmpeg isn't installed; ffmpeg8: FFmpeg isn't"));
+    unsetenv("G7LINK_TEST_MISSING");
+    unsetenv("G7LINK_TEST_FAILING");
+}
 
 int main(int argc, char** argv)
 {
@@ -113,5 +176,6 @@ int main(int argc, char** argv)
     g7link_video_decoder_destroy(decoder);
     g7link_video_aac_encoder_destroy(aac_encoder);
     g7link_video_aac_decoder_destroy(aac_decoder);
+    if (std::strcmp(expected, "ffmpeg9") == 0) reason_comes_from_an_installed_ffmpeg();
 }
 #endif

@@ -14,6 +14,8 @@ extern "C" {
 
 #include <algorithm>
 #include <array>
+#include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdio>
 #include <cstring>
@@ -191,6 +193,39 @@ struct DeviceOptions
     void set(const char* key, const char* value) { functions.check(functions.dict_set(&values, key, value, 0), key); }
 };
 
+// How an encoder sets its rate. VAAPI is told which; the others choose from the rate and peak.
+enum class RateMode { Driver, Variable, Constant, ConstantQuality };
+
+const char* rate_mode_name(RateMode mode)
+{
+    switch (mode) {
+    case RateMode::Variable: return "VBR";
+    case RateMode::Constant: return "CBR";
+    case RateMode::ConstantQuality: return "CQP";
+    case RateMode::Driver: break;
+    }
+    return "auto";
+}
+
+// A screen's quantizer within these: sharper costs bits a link can't carry, blurrier loses text.
+constexpr int MIN_QP = 18;
+constexpr int MAX_QP = 38;
+// A keyframe at the start and when asked for; the caller asks for one at least this often.
+constexpr int KEYFRAME_EVERY_SECONDS = 30;
+// VAAPI can't change its rate in place; a new encoder at the new rate, at most this often.
+constexpr auto REBUILD_EVERY = std::chrono::seconds(5);
+
+// The quantizer a constant-quality encoder (a driver offering nothing else, such as Intel's
+// low-power H.264 on Gen9 without HuC) gets for `bitrate`: 24 at a tenth of a bit per pixel,
+// six steps for each doubling or halving of the rate.
+int quantizer_for(int width, int height, int fps, int bitrate)
+{
+    const double pixels = static_cast<double>(width) * height * std::max(fps, 1);
+    const double bits_per_pixel = pixels > 0 ? bitrate / pixels : 0.1;
+    const double qp = 24.0 - 6.0 * std::log2(std::max(bits_per_pixel, 1e-6) / 0.1);
+    return std::clamp(static_cast<int>(std::lround(qp)), MIN_QP, MAX_QP);
+}
+
 void create_device(const Api& functions, AVHWDeviceType type, const std::string& id, AVBufferRef** device)
 {
     DeviceOptions options{functions};
@@ -203,6 +238,14 @@ void create_device(const Api& functions, AVHWDeviceType type, const std::string&
     functions.check(functions.device_create(device, type, selected, options.values, 0), "Create hardware device");
 }
 
+struct EncoderCandidate
+{
+    const AVCodec* codec;
+    std::string device;
+    bool low_power;
+    RateMode mode;
+};
+
 struct Encoder
 {
     const Api& functions = api();
@@ -213,6 +256,11 @@ struct Encoder
     AVPacket* packet = nullptr;
     AVHWDeviceType device_type = AV_HWDEVICE_TYPE_NONE;
     bool keyframe_requested = true;
+    // The quantizer of a constant-quality encoder; 0 for one that sets a rate.
+    int quantizer = 0;
+    // What the stats line calls it: the FFmpeg encoder, and how it sets its rate.
+    std::string label;
+    std::chrono::steady_clock::time_point built = std::chrono::steady_clock::now();
 
     ~Encoder()
     {
@@ -241,9 +289,17 @@ struct Encoder
         }
     }
 
-    void initialize(const AVCodec* codec, int width, int height, int fps, int bitrate, bool low_power = false,
-                    const std::string& device_id = {})
+    // The rate fields for `bitrate`: a variable rate peaks at one and a half times it.
+    void set_rate(int bitrate, RateMode mode)
     {
+        context->bit_rate = bitrate;
+        context->rc_max_rate = mode == RateMode::Constant ? bitrate : bitrate / 2 * 3;
+        context->rc_buffer_size = bitrate / 2;
+    }
+
+    void initialize(const EncoderCandidate& candidate, int width, int height, int fps, int bitrate)
+    {
+        const AVCodec* codec = candidate.codec;
         const AVCodecHWConfig* configuration = nullptr;
         for (int i = 0; (configuration = functions.hw_config(codec, i)); ++i) {
             if (configuration->device_type == AV_HWDEVICE_TYPE_QSV) {
@@ -256,7 +312,7 @@ struct Encoder
         }
         if (!configuration) throw std::runtime_error("No hardware encoder configuration");
         device_type = configuration->device_type;
-        create_device(functions, device_type, device_id, &device);
+        create_device(functions, device_type, candidate.device, &device);
         context = functions.alloc_context(codec);
         if (!context) throw std::bad_alloc();
         context->width = width;
@@ -265,16 +321,17 @@ struct Encoder
         context->framerate = AVRational{fps, 1};
         context->sample_aspect_ratio = AVRational{1, 1};
         context->pix_fmt = configuration->pix_fmt;
-        context->bit_rate = bitrate;
-        context->rc_max_rate = bitrate;
-        context->rc_buffer_size = bitrate / 2;
-        context->gop_size = fps * 2;
+        set_rate(bitrate, candidate.mode);
+        context->qmin = MIN_QP;
+        context->qmax = MAX_QP;
+        context->gop_size = fps * KEYFRAME_EVERY_SECONDS;
         context->max_b_frames = 0;
         context->flags |= AV_CODEC_FLAG_LOW_DELAY;
+        // High: CABAC and 8x8 transforms, which keep text sharp for fewer bits.
 #if LIBAVCODEC_VERSION_MAJOR >= 61
-        context->profile = codec->id == AV_CODEC_ID_HEVC ? AV_PROFILE_HEVC_MAIN : AV_PROFILE_H264_CONSTRAINED_BASELINE;
+        context->profile = codec->id == AV_CODEC_ID_HEVC ? AV_PROFILE_HEVC_MAIN : AV_PROFILE_H264_HIGH;
 #else
-        context->profile = codec->id == AV_CODEC_ID_HEVC ? FF_PROFILE_HEVC_MAIN : FF_PROFILE_H264_CONSTRAINED_BASELINE;
+        context->profile = codec->id == AV_CODEC_ID_HEVC ? FF_PROFILE_HEVC_MAIN : FF_PROFILE_H264_HIGH;
 #endif
         context->color_range = AVCOL_RANGE_MPEG;
         context->colorspace = AVCOL_SPC_BT709;
@@ -298,8 +355,19 @@ struct Encoder
         }
 
         configure_options();
-        if (configuration->device_type == AV_HWDEVICE_TYPE_VAAPI)
-            functions.set_optional_option(context->priv_data, "low_power", low_power ? "1" : "0");
+        label = codec->name;
+        if (device_type == AV_HWDEVICE_TYPE_VAAPI) {
+            functions.set_optional_option(context->priv_data, "low_power", candidate.low_power ? "1" : "0");
+            if (candidate.mode != RateMode::Driver)
+                functions.set_optional_option(context->priv_data, "rc_mode", rate_mode_name(candidate.mode));
+            if (candidate.mode == RateMode::ConstantQuality) {
+                quantizer = quantizer_for(width, height, fps, bitrate);
+                functions.set_optional_option(context->priv_data, "qp", std::to_string(quantizer).c_str());
+            }
+            if (candidate.low_power) label += " low-power";
+            label += std::string(" ") + rate_mode_name(candidate.mode);
+            if (quantizer) label += " " + std::to_string(quantizer);
+        }
         functions.check(functions.open(context, codec, nullptr), "Open video encoder");
 
         software = functions.frame_alloc();
@@ -341,13 +409,6 @@ void report(char* buffer, size_t capacity, const std::exception& error)
     if (capacity) std::snprintf(buffer, capacity, "%s", error.what());
 }
 
-struct EncoderCandidate
-{
-    const AVCodec* codec;
-    std::string device;
-    bool low_power;
-};
-
 struct EncoderBackend
 {
     AVHWDeviceType device_type;
@@ -375,16 +436,40 @@ struct EncoderSelection
     EncoderSelection(bool hevc, int width, int height, int fps, int bitrate)
         : width(width), height(height), fps(fps), bitrate(bitrate)
     {
+        // A rate the driver keeps to first, on each device; VAAPI is told which. A
+        // constant quantizer last, for drivers that offer nothing else.
+        std::vector<EncoderCandidate> constant_quality;
         for (const auto& backend : encoder_backends) {
             const AVCodec* codec = functions.find_encoder(hevc ? backend.hevc : backend.h264);
             if (!codec) continue;
-            for (const auto& device : video_devices(backend.device_type)) {
-                candidates.push_back({codec, device, false});
-                if (backend.device_type == AV_HWDEVICE_TYPE_VAAPI)
-                    candidates.push_back({codec, device, true});
+            const auto devices = video_devices(backend.device_type);
+            if (backend.device_type != AV_HWDEVICE_TYPE_VAAPI) {
+                for (const auto& device : devices) candidates.push_back({codec, device, false, RateMode::Driver});
+                continue;
+            }
+            for (const auto mode : {RateMode::Variable, RateMode::Constant}) {
+                for (const auto& device : devices) {
+                    candidates.push_back({codec, device, false, mode});
+                    candidates.push_back({codec, device, true, mode});
+                }
+            }
+            for (const auto& device : devices) {
+                constant_quality.push_back({codec, device, true, RateMode::ConstantQuality});
+                constant_quality.push_back({codec, device, false, RateMode::ConstantQuality});
             }
         }
+        candidates.insert(candidates.end(), constant_quality.begin(), constant_quality.end());
         select_next();
+    }
+
+    static std::string describe(const EncoderCandidate& candidate)
+    {
+        std::string name = std::string(candidate.codec->name) + "[" + candidate.device;
+        if (candidate.mode != RateMode::Driver) {
+            if (candidate.low_power) name += " low-power";
+            name += std::string(" ") + rate_mode_name(candidate.mode);
+        }
+        return name + "]";
     }
 
     void select_next()
@@ -395,14 +480,34 @@ struct EncoderSelection
             const auto& candidate = candidates[next_candidate++];
             try {
                 auto encoder = std::make_unique<Encoder>();
-                encoder->initialize(candidate.codec, width, height, fps, bitrate, candidate.low_power, candidate.device);
+                encoder->initialize(candidate, width, height, fps, bitrate);
                 current = std::move(encoder);
                 return;
             } catch (const std::exception& failure) {
-                failures += std::string(candidate.codec->name) + "[" + candidate.device + "]: " + failure.what() + "; ";
+                failures += describe(candidate) + ": " + failure.what() + "; ";
             }
         }
         throw std::runtime_error(failures.empty() ? "No hardware encoder is available" : failures);
+    }
+
+    // VAAPI's rate is fixed once it opens: the same encoder again at `rate`, which starts
+    // with a keyframe. Not within REBUILD_EVERY of the last; a constant quantizer only
+    // when the rate moves it.
+    bool rebuild(int rate)
+    {
+        if (!current || next_candidate == 0) return false;
+        const auto& candidate = candidates[next_candidate - 1];
+        if (candidate.mode == RateMode::ConstantQuality
+            && quantizer_for(width, height, fps, rate) == current->quantizer) {
+            bitrate = rate;
+            return true;
+        }
+        if (std::chrono::steady_clock::now() - current->built < REBUILD_EVERY) return false;
+        auto encoder = std::make_unique<Encoder>();
+        encoder->initialize(candidate, width, height, fps, rate);
+        current = std::move(encoder);
+        bitrate = rate;
+        return true;
     }
 
     Encoder& active()
@@ -759,6 +864,24 @@ struct AacDecoder
 };
 } // namespace
 
+#ifdef G7LINK_BUILTIN_VIDEO
+#define G7LINK_VIDEO_RUNTIME_AVAILABLE builtin_video_runtime_available
+#else
+#define G7LINK_VIDEO_RUNTIME_AVAILABLE g7link_video_runtime_available
+#endif
+
+// Whether the FFmpeg this was built against is installed. Only then does its failure to open
+// an encoder say anything about this machine (linux_video_dispatch.cpp).
+extern "C" bool G7LINK_VIDEO_RUNTIME_AVAILABLE()
+{
+    try {
+        api();
+        return true;
+    } catch (const std::exception&) {
+        return false;
+    }
+}
+
 extern "C" void* g7link_video_encoder_create(bool hevc, int width, int height, int fps, int bitrate,
                                                char* error, size_t capacity)
 {
@@ -786,7 +909,7 @@ extern "C" bool g7link_video_encoder_next_device(void* pointer, char* error, siz
 extern "C" const char* g7link_video_encoder_backend(const void* encoder)
 {
     const auto& selected = *static_cast<const EncoderSelection*>(encoder);
-    return selected.current ? selected.current->context->codec->name : "unavailable";
+    return selected.current ? selected.current->label.c_str() : "unavailable";
 }
 
 extern "C" int g7link_video_encoder_send(void* encoder, const uint8_t* bytes, size_t length, int64_t time_us,
@@ -834,17 +957,22 @@ extern "C" bool g7link_video_encoder_set_bitrate(void* pointer, int bitrate)
     if (bitrate <= 0) return false;
     // NVENC and QSV reconfigure these fields on the next submitted frame.
     if (encoder.device_type == AV_HWDEVICE_TYPE_CUDA || encoder.device_type == AV_HWDEVICE_TYPE_QSV) {
-        encoder.context->bit_rate = bitrate;
-        encoder.context->rc_max_rate = bitrate;
-        encoder.context->rc_buffer_size = bitrate / 2;
+        encoder.set_rate(bitrate, RateMode::Driver);
         selected.bitrate = bitrate;
         return true;
     }
     const auto* option = encoder.functions.find_option(encoder.context, "b", nullptr, 0, 0);
-    const bool changed = option && (option->flags & AV_OPT_FLAG_RUNTIME_PARAM)
-        && encoder.functions.integer_option(encoder.context, "b", bitrate, 0) >= 0;
-    if (changed) selected.bitrate = bitrate;
-    return changed;
+    if (option && (option->flags & AV_OPT_FLAG_RUNTIME_PARAM)
+        && encoder.functions.integer_option(encoder.context, "b", bitrate, 0) >= 0) {
+        selected.bitrate = bitrate;
+        return true;
+    }
+    // VAAPI: a new encoder at the new rate, if it's time for one. The old one stays on failure.
+    try {
+        return selected.rebuild(bitrate);
+    } catch (const std::exception&) {
+        return false;
+    }
 }
 
 extern "C" void* g7link_video_decoder_create(bool hevc, char* error, size_t capacity)

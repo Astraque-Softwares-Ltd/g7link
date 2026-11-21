@@ -83,6 +83,18 @@ pub mod qobject {
         #[qproperty(QString, composer_set)]
         /// The new-thread form's model control (JSON).
         #[qproperty(QString, new_picker)]
+        /// The Archived or Snoozed shelf's threads (JSON; `null` for the main list).
+        #[qproperty(QString, shelf)]
+        /// The list's search and its hits by thread (JSON).
+        #[qproperty(QString, search)]
+        /// "Bring in earlier sessions" (JSON, `{}` while it's closed).
+        #[qproperty(QString, bring_in)]
+        /// The diff (JSON, `{}` while it's closed).
+        #[qproperty(QString, diff)]
+        /// The rewind dialog (JSON, `{}` while it's closed).
+        #[qproperty(QString, rewind)]
+        /// The message to scroll to and light up: `{ gen, n, item }` (JSON).
+        #[qproperty(QString, focus)]
         type Agents = super::AgentsRust;
 
         /// The page is on screen (or left).
@@ -248,6 +260,96 @@ pub mod qobject {
         /// Hides or shows the details beside the transcript; remembered.
         #[qinvokable]
         fn hide_inspector(self: &Agents, hidden: bool);
+        /// The list shows "main", "archived" or "snoozed".
+        #[qinvokable]
+        fn show_shelf(self: &Agents, shelf: &QString);
+        /// Marks threads (a JSON list of ids, at most 50): "pin", "unpin",
+        /// "archive", "unarchive", "unread", "read", "snooze" (until
+        /// `until_ms`) or "unsnooze".
+        #[qinvokable]
+        fn mark(self: &Agents, ids: &QString, what: &QString, until_ms: f64);
+        #[qinvokable]
+        fn rename(self: &Agents, id: &QString, title: &QString);
+        /// Searches threads 150 ms after the last change.
+        #[qinvokable]
+        fn search_threads(self: &Agents, query: &QString, archived: bool);
+        /// Opens a search hit's thread at its message (`seq` "0": the newest).
+        #[qinvokable]
+        fn open_hit(self: &Agents, thread: &QString, seq: &QString);
+        /// "Bring in earlier sessions" opens: the host looks for sessions.
+        #[qinvokable]
+        fn import_open(self: &Agents);
+        #[qinvokable]
+        fn import_close(self: &Agents);
+        #[qinvokable]
+        fn import_query(self: &Agents, query: &QString);
+        /// "all", "claude" or "codex".
+        #[qinvokable]
+        fn import_agent(self: &Agents, agent: &QString);
+        #[qinvokable]
+        fn import_more(self: &Agents);
+        #[qinvokable]
+        fn import_pick(self: &Agents, id: &QString);
+        /// Picks every session of a folder, or leaves them.
+        #[qinvokable]
+        fn import_pick_group(self: &Agents, key: &QString);
+        #[qinvokable]
+        fn import_clear(self: &Agents);
+        /// Brings in the sessions picked, or only `only`.
+        #[qinvokable]
+        fn import_start(self: &Agents, only: &QString);
+        #[qinvokable]
+        fn import_cancel(self: &Agents);
+        /// Looks at a session before bringing it in.
+        #[qinvokable]
+        fn preview_open(self: &Agents, id: &QString);
+        #[qinvokable]
+        fn preview_close(self: &Agents);
+        /// Opens what a turn changed, at `path` ("" for its first file).
+        #[qinvokable]
+        fn diff_open(self: &Agents, turn: i32, path: &QString);
+        /// "turn" or "thread".
+        #[qinvokable]
+        fn diff_scope(self: &Agents, scope: &QString);
+        #[qinvokable]
+        fn diff_select(self: &Agents, index: i32);
+        /// The next (1) or previous (-1) file.
+        #[qinvokable]
+        fn diff_step(self: &Agents, by: i32);
+        #[qinvokable]
+        fn diff_close(self: &Agents);
+        /// Opens the dialog that asks before rewinding to before `turn`.
+        #[qinvokable]
+        fn rewind_open(self: &Agents, turn: i32);
+        /// "both", "conversation" or "files".
+        #[qinvokable]
+        fn rewind_choose(self: &Agents, choice: &QString);
+        /// "Also undo the changes made after the agent finished".
+        #[qinvokable]
+        fn rewind_later(self: &Agents, on: bool);
+        /// The Rewind button gained or lost the keyboard.
+        #[qinvokable]
+        fn rewind_focus(self: &Agents, focused: bool);
+        /// Rewind: "click", or "key" (counts only on the button reached with Tab).
+        #[qinvokable]
+        fn rewind_apply(self: &Agents, how: &QString);
+        #[qinvokable]
+        fn rewind_close(self: &Agents);
+        /// The conversation back to before `turn`, its message in the composer.
+        #[qinvokable]
+        fn edit_from_here(self: &Agents, turn: i32);
+        /// Undoes the open thread's last rewind.
+        #[qinvokable]
+        fn undo_rewind(self: &Agents);
+        /// A new thread from the open one, through `turn`; it opens.
+        #[qinvokable]
+        fn fork_turn(self: &Agents, turn: i32);
+        /// A folder's "Keep a restore point for each turn".
+        #[qinvokable]
+        fn set_folder_checkpoints(self: &Agents, id: &QString, on: bool);
+        /// Reads what the host keeps, for Setup.
+        #[qinvokable]
+        fn store_info(self: &Agents);
     }
 
     impl cxx_qt::Threading for Agents {}
@@ -336,6 +438,10 @@ pub mod qobject {
         #[qinvokable]
         #[cxx_name = "rowOfKey"]
         fn row_of_key(self: &AgentTimeline, key: &QString) -> i32;
+        /// The first row of an item, or -1.
+        #[qinvokable]
+        #[cxx_name = "rowOfItem"]
+        fn row_of_item(self: &AgentTimeline, item_id: &QString) -> i32;
     }
 
     impl cxx_qt::Threading for AgentTimeline {}
@@ -370,6 +476,12 @@ pub struct AgentsRust {
     popup: QString,
     composer_set: QString,
     new_picker: QString,
+    shelf: QString,
+    search: QString,
+    bring_in: QString,
+    diff: QString,
+    rewind: QString,
+    focus: QString,
     /// What was last shown, to set only what changed.
     last: Option<agents::View>,
 }
@@ -433,6 +545,24 @@ impl qobject::Agents {
         }
         if differs(|v| &v.new_picker) {
             self.as_mut().set_new_picker(QString::from(&view.new_picker));
+        }
+        if differs(|v| &v.shelf) {
+            self.as_mut().set_shelf(QString::from(&view.shelf));
+        }
+        if differs(|v| &v.search) {
+            self.as_mut().set_search(QString::from(&view.search));
+        }
+        if differs(|v| &v.import) {
+            self.as_mut().set_bring_in(QString::from(&view.import));
+        }
+        if differs(|v| &v.diff) {
+            self.as_mut().set_diff(QString::from(&view.diff));
+        }
+        if differs(|v| &v.rewind) {
+            self.as_mut().set_rewind(QString::from(&view.rewind));
+        }
+        if differs(|v| &v.focus) {
+            self.as_mut().set_focus(QString::from(&view.focus));
         }
         if differs(|v| &v.export_path) {
             let url = if view.export_path.is_empty() {
@@ -724,6 +854,152 @@ impl qobject::Agents {
     pub fn hide_inspector(&self, hidden: bool) {
         agents::set_panels(None, Some(hidden));
     }
+
+    pub fn show_shelf(&self, shelf: &QString) {
+        agents::show_shelf(&String::from(shelf));
+    }
+
+    pub fn mark(&self, ids: &QString, what: &QString, until_ms: f64) {
+        let ids: Vec<String> = serde_json::from_str(&String::from(ids)).unwrap_or_default();
+        // A time from the page: whole milliseconds, never negative.
+        let until = if until_ms.is_finite() && until_ms > 0.0 { until_ms as u64 } else { 0 };
+        agents::mark(ids, &String::from(what), until);
+    }
+
+    pub fn rename(&self, id: &QString, title: &QString) {
+        agents::rename(String::from(id), String::from(title));
+    }
+
+    pub fn search_threads(&self, query: &QString, archived: bool) {
+        agents::search(String::from(query), archived);
+    }
+
+    pub fn open_hit(&self, thread: &QString, seq: &QString) {
+        let seq = String::from(seq).parse().unwrap_or(0);
+        agents::open_hit(String::from(thread), seq);
+    }
+
+    pub fn import_open(&self) {
+        agents::import_open();
+    }
+
+    pub fn import_close(&self) {
+        agents::import_close();
+    }
+
+    pub fn import_query(&self, query: &QString) {
+        agents::import_query(String::from(query));
+    }
+
+    pub fn import_agent(&self, agent: &QString) {
+        agents::import_agent(&String::from(agent));
+    }
+
+    pub fn import_more(&self) {
+        agents::import_more();
+    }
+
+    pub fn import_pick(&self, id: &QString) {
+        agents::import_pick(String::from(id));
+    }
+
+    pub fn import_pick_group(&self, key: &QString) {
+        agents::import_pick_group(String::from(key));
+    }
+
+    pub fn import_clear(&self) {
+        agents::import_clear();
+    }
+
+    pub fn import_start(&self, only: &QString) {
+        agents::import_start(String::from(only));
+    }
+
+    pub fn import_cancel(&self) {
+        agents::import_cancel();
+    }
+
+    pub fn preview_open(&self, id: &QString) {
+        agents::preview_open(String::from(id));
+    }
+
+    pub fn preview_close(&self) {
+        agents::preview_close();
+    }
+
+    pub fn diff_open(&self, turn: i32, path: &QString) {
+        if let Ok(turn) = u32::try_from(turn) {
+            agents::diff_open(turn, String::from(path));
+        }
+    }
+
+    pub fn diff_scope(&self, scope: &QString) {
+        agents::diff_scope(&String::from(scope));
+    }
+
+    pub fn diff_select(&self, index: i32) {
+        if let Ok(index) = usize::try_from(index) {
+            agents::diff_select(index);
+        }
+    }
+
+    pub fn diff_step(&self, by: i32) {
+        agents::diff_step(by);
+    }
+
+    pub fn diff_close(&self) {
+        agents::diff_close();
+    }
+
+    pub fn rewind_open(&self, turn: i32) {
+        if let Ok(turn) = u32::try_from(turn) {
+            agents::rewind_open(turn);
+        }
+    }
+
+    pub fn rewind_choose(&self, choice: &QString) {
+        agents::rewind_choose(&String::from(choice));
+    }
+
+    pub fn rewind_later(&self, on: bool) {
+        agents::rewind_later(on);
+    }
+
+    pub fn rewind_focus(&self, focused: bool) {
+        agents::rewind_focus(focused);
+    }
+
+    pub fn rewind_apply(&self, how: &QString) {
+        agents::rewind_apply(&String::from(how));
+    }
+
+    pub fn rewind_close(&self) {
+        agents::rewind_close();
+    }
+
+    pub fn edit_from_here(&self, turn: i32) {
+        if let Ok(turn) = u32::try_from(turn) {
+            agents::edit_from_here(turn);
+        }
+    }
+
+    pub fn undo_rewind(&self) {
+        agents::undo_rewind();
+    }
+
+    pub fn fork_turn(&self, turn: i32) {
+        if let Ok(turn) = u32::try_from(turn) {
+            agents::fork_turn(turn);
+        }
+    }
+
+    pub fn set_folder_checkpoints(&self, id: &QString, on: bool) {
+        agents::set_folder_checkpoints(String::from(id), on);
+    }
+
+    pub fn store_info(&self) {
+        agents::store_info();
+    }
 }
 
 /// `href` as the page shows and opens it: an internationalised host in its
@@ -861,6 +1137,11 @@ impl qobject::AgentTimeline {
         let key = String::from(key);
         self.rows.iter().position(|r| r.key() == key).map_or(-1, |i| i as i32)
     }
+
+    pub fn row_of_item(&self, item_id: &QString) -> i32 {
+        let item_id = String::from(item_id);
+        self.rows.iter().position(|r| r.text(Role::ItemId) == item_id).map_or(-1, |i| i as i32)
+    }
 }
 
 #[cfg(test)]
@@ -874,7 +1155,12 @@ mod tests {
         let row = Row {
             key: "i:toolu_1".into(),
             kind: RowKind::Tool {
-                label: ToolLabel { class: ToolClass::Command, object: "cargo test".into(), more: 0 },
+                label: ToolLabel {
+                    class: ToolClass::Command,
+                    object: "cargo test".into(),
+                    more: 0,
+                    toks: Default::default(),
+                },
                 status: RowStatus::Running,
                 has_detail: true,
                 has_output: false,
@@ -887,6 +1173,7 @@ mod tests {
             depth: 1,
             item_id: "toolu_1".into(),
             seq: (1 << 40) | 3,
+            acts: Default::default(),
         };
         let row =
             agents::model_row(&row, agents::Extra::default(), "cargo test", &agents::CodePalette::default());

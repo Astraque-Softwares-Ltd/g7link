@@ -72,14 +72,14 @@ Item {
                 width: 14
                 height: 14
                 path: Icons.check
-                color: Theme.tintTeal
+                color: AgentPalette.done
             }
             Txt {
                 visible: !card.proposed
                 anchors.verticalCenter: parent.verticalCenter
                 text: card.status === "implemented" ? qsTr("Implemented") : qsTr("Replaced by a newer plan")
                 role: "bodySmall"
-                color: card.status === "implemented" ? Theme.tintTeal : Theme.surfaceContentVariant
+                color: card.status === "implemented" ? AgentPalette.done : Theme.surfaceContentVariant
             }
         }
         IconButton {

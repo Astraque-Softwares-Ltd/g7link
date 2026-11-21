@@ -59,6 +59,31 @@ Item {
     readonly property var popup: parse(Agents.popup, ({}))
     readonly property var composerSet: parse(Agents.composerSet, ({}))
     readonly property var newPicker: parse(Agents.newPicker, ({}))
+    // Phase 3: shelves, search, bringing in sessions, the diff, rewind.
+    readonly property bool historyOn: setup.history === true
+    readonly property bool undoOn: setup.undo === true
+    readonly property var shelfRows: parse(Agents.shelf, null)
+    readonly property var searchState: parse(Agents.search, ({}))
+    readonly property var importState: parse(Agents.bringIn, ({}))
+    readonly property var diffState: parse(Agents.diff, ({}))
+    readonly property var rewindState: parse(Agents.rewind, ({}))
+    readonly property var focusState: parse(Agents.focus, ({}))
+    // "all", "archived" or "snoozed".
+    property string shelf: "all"
+    // Threads picked with Ctrl+click, for the bulk bar.
+    property var picked: []
+    // The thread whose title is being renamed in place ("" for none).
+    property string renamingId: ""
+    // The thread the row menu is about.
+    property var menuRow: ({})
+    // The message a search hit opened, lit up for a moment.
+    property string highlightItem: ""
+    readonly property bool isPreview: openKind === "preview"
+    readonly property bool diffShown: isThread && diffState.turn !== undefined
+    readonly property bool readOnly: isThread && (info.readonly || "").length > 0
+    // Searching messages: the host's search replaces the sections.
+    readonly property string searchText: search.text
+    readonly property bool searching: historyOn && searchText.trim().length > 0
     // A usage window near its end, or reached: one amber line over the composer.
     readonly property var limit: composerState.limit || ({})
     readonly property var context: info.context || ({})
@@ -99,6 +124,7 @@ Item {
     readonly property bool isThread: openKind === "thread"
     readonly property bool isSession: openKind === "session"
     readonly property string shown: openKind.length > 0 ? openKind
+        : pane === "import" ? "import"
         : (pane === "setup" || (pane !== "new" && !ready) ? "setup" : "new")
     readonly property bool narrow: width < 720
     // On a narrow page the list fills it until something is picked.
@@ -174,8 +200,12 @@ Item {
     }
     readonly property var needsRows: threads.filter((t) => t.state === "waiting" && matches(t))
     readonly property var workingRows: threads.filter((t) => t.state === "working" && matches(t))
-    readonly property var recentRows: threads.filter((t) => t.state !== "waiting" && t.state !== "working" && matches(t))
+    readonly property var pinnedRows: threads.filter((t) => t.state !== "waiting" && t.state !== "working"
+                                                     && t.pinned === true && matches(t))
+    readonly property var recentRows: threads.filter((t) => t.state !== "waiting" && t.state !== "working"
+                                                     && t.pinned !== true && matches(t))
     readonly property var sessionRows: sessions.filter((s) => matches(s))
+    readonly property var shelfShown: (shelfRows || []).filter((t) => matches(t))
     readonly property string setupSummary: {
         const folders = (setup.folders || []).length
         let phones = 0
@@ -232,17 +262,6 @@ Item {
         case "failed": return qsTr("Failed")
         case "interrupted": return qsTr("Stopped")
         default: return ""
-        }
-    }
-    readonly property color stateColor: {
-        switch (phase) {
-        case "waiting":
-        case "needs_you": return Theme.tintAmber
-        case "working": return Theme.tintBlue
-        case "done":
-        case "idle": return Theme.tintTeal
-        case "failed": return Theme.error
-        default: return Theme.outline
         }
     }
     // Where it was started, for the header.
@@ -330,7 +349,72 @@ Item {
     }
     function openSetup() {
         Agents.close()
+        Agents.importClose()
         page.pane = "setup"
+        Agents.storeInfo()
+    }
+    function openImport() {
+        Agents.close()
+        page.pane = "import"
+        Agents.importOpen()
+    }
+    // A search hit: its thread, at the message (seq "0": the newest).
+    function openHit(thread, seq) {
+        page.pane = ""
+        page.detailsOpen = false
+        Agents.importClose()
+        Agents.openHit(thread, seq)
+    }
+    function markThreads(ids, what) {
+        if (ids.length > 0)
+            Agents.mark(JSON.stringify(ids), what, 0)
+    }
+    function togglePick(id) {
+        const at = page.picked.indexOf(id)
+        page.picked = at >= 0 ? page.picked.filter((x) => x !== id) : page.picked.concat([id]).slice(0, 50)
+    }
+    function openRowMenu(row, x, y) {
+        page.menuRow = row
+        const p = page.mapFromItem(null, x, y)
+        rowMenu.openAt(p.x, p.y, false, true)
+    }
+    // The snooze times for `ids`, at (x, y) on the page.
+    function snooze(ids, x, y, agentName, resets) {
+        snoozeMenu.ids = ids
+        snoozeMenu.agentName = agentName
+        snoozeMenu.limitResets = resets
+        snoozeMenu.show(x, y, y > page.height / 2)
+    }
+    // Lights up the message a hit opened at, once its row is in the timeline.
+    property int focusTries: 0
+    function applyFocus() {
+        const item = page.focusState.item || ""
+        if (item.length === 0)
+            return
+        const row = AgentTimeline.rowOfItem(item)
+        if (row < 0) {
+            if (page.focusTries++ < 20)
+                focusRetry.restart()
+            return
+        }
+        transcript.follow = false
+        transcript.positionViewAtIndex(row, ListView.Center)
+        page.highlightItem = item
+        highlightTimer.restart()
+    }
+    onFocusStateChanged: {
+        page.focusTries = 0
+        applyFocus()
+    }
+    Timer {
+        id: focusRetry
+        interval: 100
+        onTriggered: page.applyFocus()
+    }
+    Timer {
+        id: highlightTimer
+        interval: 1200
+        onTriggered: page.highlightItem = ""
     }
     function openRow(kind, id) {
         page.pane = ""
@@ -341,8 +425,24 @@ Item {
             Agents.openThread(id)
     }
     function back() {
+        if (page.diffShown) {
+            Agents.diffClose()
+            return
+        }
+        if (page.isPreview) {
+            Agents.previewClose()
+            return
+        }
         Agents.close()
+        if (page.pane === "import")
+            Agents.importClose()
         page.pane = ""
+    }
+    // "Bring in 1" from a preview: back to the list, where it shows how it goes.
+    function bringInPreview() {
+        const id = Agents.openId
+        Agents.previewClose()
+        Agents.importStart(id)
     }
     function addFolder(sessionId) {
         page.continueAfterAdd = sessionId
@@ -353,21 +453,12 @@ Item {
     // and skips its "needs you" and "finished" notifications.
     readonly property bool windowActive: Window.active
     onActiveChanged: Agents.pageVisible(active)
+    // Setup's History line: what the host keeps, read when it shows.
+    onShownChanged: if (shown === "setup") Agents.storeInfo()
     onWindowActiveChanged: Agents.windowActive(windowActive)
-    // Code in answers is coloured with the theme's glyph tints: never the
-    // diff's green and red, the needs-you amber or the primary lavender.
-    readonly property string codeColors: JSON.stringify({
-        comment: String(Theme.surfaceContentVariant),
-        keyword: String(Theme.tintPink),
-        string: String(Theme.tintTeal),
-        number: String(Theme.tintCoral),
-        constant: String(Theme.tintCoral),
-        type: String(Theme.tintBlue),
-        function: String(Theme.tintBlue),
-        tag: String(Theme.tintPink),
-        attribute: String(Theme.tintBlue),
-        inline: String(Theme.tintCoral)
-    })
+    // Code, tool targets, outputs and diff words, coloured by the agent
+    // palette (plans/agent-colour.md §2).
+    readonly property string codeColors: AgentPalette.bridgeJson
     onCodeColorsChanged: Agents.setCodeColors(codeColors)
     Component.onCompleted: {
         Agents.setCodeColors(codeColors)
@@ -390,6 +481,12 @@ Item {
     readonly property var primaryAction: {
         if (shown === "setup")
             return { label: qsTr("Add folder…"), keys: "Ctrl O", run: () => folderPicker.open() }
+        if (diffShown)
+            return { label: qsTr("Next file"), keys: "Ctrl J", run: () => Agents.diffStep(1) }
+        if (isPreview)
+            return { label: qsTr("Bring in %n", "", 1), keys: "", run: () => page.bringInPreview() }
+        if (shown === "import" && (importState.selected || 0) > 0)
+            return { label: qsTr("Bring in %n", "", importState.selected), keys: "", run: () => Agents.importStart("") }
         // With words in the composer, Ctrl+Enter never allows.
         if (canAllow && composer.sayWhy && composer.hasText)
             return { label: qsTr("Deny and send"), keys: "Enter", run: () => composer.submit(false) }
@@ -427,7 +524,11 @@ Item {
         { label: qsTr("Details"), icon: Icons.clipboardList, keys: "Ctrl ]", checked: page.detailsShown,
           enabled: page.isThread || page.isSession, run: () => page.toggleDetails() },
         { label: qsTr("Delete thread"), icon: Icons.trash, tint: Theme.tintRed, enabled: page.isThread && !page.running,
-          run: () => deleteSheet.open() },
+          run: () => deleteSheet.ask([Agents.openId]) },
+        { label: qsTr("Bring in earlier sessions"), icon: Icons.download, checked: page.shown === "import",
+          enabled: page.historyOn, run: () => page.openImport() },
+        { label: qsTr("Rename"), icon: Icons.edit, keys: "F2", enabled: page.historyOn && page.isThread,
+          run: () => page.renamingId = Agents.openId },
         { label: qsTr("Setup"), icon: Icons.settings, checked: page.shown === "setup", run: () => page.openSetup() },
         { label: qsTr("Add folder…"), icon: Icons.folder, tint: Theme.tintAmber, run: () => folderPicker.open() },
         { label: qsTr("Refresh"), icon: Icons.refresh, run: () => Agents.refresh() },
@@ -490,7 +591,26 @@ Item {
                  && !continueSheet.opened && !folderSheet.opened && !deleteSheet.opened && !restartSheet.opened
                  && !linkSheet.opened && !dockMenu.opened && !planMenu.opened && !threadPicker.opened
                  && !newFormPicker.opened && !composer.popupOpen && !AppController.commandPaletteOpen
+                 && !rewindDialog.opened && !rowMenu.opened && !snoozeMenu.opened && !bulkMenu.opened
+                 && page.renamingId.length === 0
         onActivated: page.back()
+    }
+    // The diff's files, one after another.
+    Shortcut {
+        sequence: "Ctrl+J"
+        enabled: page.active && page.diffShown
+        onActivated: Agents.diffStep(1)
+    }
+    Shortcut {
+        sequence: "Ctrl+K"
+        enabled: page.active && page.diffShown
+        onActivated: Agents.diffStep(-1)
+    }
+    Shortcut {
+        sequence: "F2"
+        enabled: page.active && page.historyOn && page.isThread && page.renamingId.length === 0
+                 && !composer.inputFocused
+        onActivated: page.renamingId = Agents.openId
     }
 
     FileDialog {
@@ -537,7 +657,17 @@ Item {
         property bool sessions: false
         property bool counted: true
         property real now: Date.now()
+        // Marks offered (the host keeps them), threads picked, the one being renamed.
+        property bool marks: false
+        property var pickedIds: []
+        property string renamingId: ""
         signal picked(string id)
+        signal pickToggled(string id)
+        signal markRequested(string id, string what)
+        signal menuRequested(var row, real x, real y)
+        signal renameRequested(string id)
+        signal renamed(string id, string title)
+        signal renameCancelled
         visible: rows.length > 0
         topPadding: 6
         Item {
@@ -569,11 +699,24 @@ Item {
                 item: modelData
                 session: section.sessions
                 now: section.now
+                marks: section.marks
+                picking: section.pickedIds.length > 0
+                picked: section.pickedIds.indexOf(modelData.id) >= 0
+                renaming: section.renamingId === modelData.id
                 selected: Agents.openKind === (section.sessions ? "session" : "thread") && Agents.openId === modelData.id
                 onClicked: section.picked(listRow.modelData.id)
+                onPickToggled: section.pickToggled(listRow.modelData.id)
+                onPinRequested: section.markRequested(listRow.modelData.id, listRow.modelData.pinned ? "unpin" : "pin")
+                onArchiveRequested: section.markRequested(listRow.modelData.id,
+                                                          listRow.modelData.archived ? "unarchive" : "archive")
+                onMenuRequested: (x, y) => section.menuRequested(listRow.modelData, x, y)
+                onRenameRequested: section.renameRequested(listRow.modelData.id)
+                onRenamed: (title) => section.renamed(listRow.modelData.id, title)
+                onRenameCancelled: section.renameCancelled()
             }
         }
     }
+
 
     // ---- The list ----
     Item {
@@ -616,6 +759,29 @@ Item {
                         search.text = ""
                         event.accepted = true
                     }
+                }
+                onTextChanged: if (page.historyOn) Agents.searchThreads(search.text, page.searchState.archived === true)
+                // Enter opens the first thread found, at its first message.
+                onAccepted: {
+                    const group = (page.searchState.groups || [])[0]
+                    if (page.searching && group)
+                        page.openHit(group.thread, ((group.hits || [])[0] || {}).seq || "0")
+                }
+            }
+            // The main list, or a shelf: archived, or snoozed until a time.
+            Segmented {
+                visible: page.historyOn && !page.searching
+                width: parent.width
+                options: [
+                    { value: "all", label: qsTr("All") },
+                    { value: "archived", label: qsTr("Archived") },
+                    { value: "snoozed", label: qsTr("Snoozed") }
+                ]
+                value: page.shelf
+                onPicked: (value) => {
+                    page.shelf = value
+                    page.picked = []
+                    Agents.showShelf(value === "all" ? "main" : value)
                 }
             }
             // The agent host is still the version from before an update, kept
@@ -668,7 +834,7 @@ Item {
             width: listPane.contentWidth - 16
             anchors.top: listTop.bottom
             anchors.topMargin: 4
-            anchors.bottom: setupRow.top
+            anchors.bottom: searchFoot.top
             anchors.bottomMargin: 4
             contentHeight: listColumn.height
             boundsBehavior: Flickable.StopAtBounds
@@ -677,36 +843,139 @@ Item {
                 id: listColumn
                 width: listFlick.width
                 bottomPadding: 8
-                ListSection {
+                // Search: the messages that match, grouped by thread.
+                AgentSearch {
+                    visible: page.searching
                     width: parent.width
-                    title: qsTr("Needs you")
-                    rows: page.needsRows
+                    search: page.searchState
                     now: page.now
-                    onPicked: (id) => page.openRow("thread", id)
+                    openId: page.isThread ? Agents.openId : ""
+                    onOpen: (thread, seq) => page.openHit(thread, seq)
+                    onArchivedToggled: (on) => Agents.searchThreads(page.searchText, on)
                 }
-                ListSection {
+                Column {
+                    visible: !page.searching && page.shelf === "all"
                     width: parent.width
-                    title: qsTr("Working")
-                    rows: page.workingRows
-                    now: page.now
-                    onPicked: (id) => page.openRow("thread", id)
+                    ListSection {
+                        width: parent.width
+                        title: qsTr("Needs you")
+                        rows: page.needsRows
+                        now: page.now
+                        marks: page.historyOn
+                        pickedIds: page.picked
+                        renamingId: page.renamingId
+                        onPicked: (id) => page.picked.length > 0 ? page.togglePick(id) : page.openRow("thread", id)
+                        onPickToggled: (id) => page.togglePick(id)
+                        onMarkRequested: (id, what) => page.markThreads([id], what)
+                        onMenuRequested: (row, x, y) => page.openRowMenu(row, x, y)
+                        onRenameRequested: (id) => page.renamingId = id
+                        onRenamed: (id, title) => {
+                            Agents.rename(id, title)
+                            page.renamingId = ""
+                        }
+                        onRenameCancelled: page.renamingId = ""
+                    }
+                    ListSection {
+                        width: parent.width
+                        title: qsTr("Working")
+                        rows: page.workingRows
+                        now: page.now
+                        marks: page.historyOn
+                        pickedIds: page.picked
+                        renamingId: page.renamingId
+                        onPicked: (id) => page.picked.length > 0 ? page.togglePick(id) : page.openRow("thread", id)
+                        onPickToggled: (id) => page.togglePick(id)
+                        onMarkRequested: (id, what) => page.markThreads([id], what)
+                        onMenuRequested: (row, x, y) => page.openRowMenu(row, x, y)
+                        onRenameRequested: (id) => page.renamingId = id
+                        onRenamed: (id, title) => {
+                            Agents.rename(id, title)
+                            page.renamingId = ""
+                        }
+                        onRenameCancelled: page.renamingId = ""
+                    }
+                    ListSection {
+                        width: parent.width
+                        title: qsTr("Pinned")
+                        rows: page.pinnedRows
+                        now: page.now
+                        marks: page.historyOn
+                        pickedIds: page.picked
+                        renamingId: page.renamingId
+                        onPicked: (id) => page.picked.length > 0 ? page.togglePick(id) : page.openRow("thread", id)
+                        onPickToggled: (id) => page.togglePick(id)
+                        onMarkRequested: (id, what) => page.markThreads([id], what)
+                        onMenuRequested: (row, x, y) => page.openRowMenu(row, x, y)
+                        onRenameRequested: (id) => page.renamingId = id
+                        onRenamed: (id, title) => {
+                            Agents.rename(id, title)
+                            page.renamingId = ""
+                        }
+                        onRenameCancelled: page.renamingId = ""
+                    }
+                    ListSection {
+                        width: parent.width
+                        title: qsTr("Recent")
+                        rows: page.recentRows
+                        counted: false
+                        now: page.now
+                        marks: page.historyOn
+                        pickedIds: page.picked
+                        renamingId: page.renamingId
+                        onPicked: (id) => page.picked.length > 0 ? page.togglePick(id) : page.openRow("thread", id)
+                        onPickToggled: (id) => page.togglePick(id)
+                        onMarkRequested: (id, what) => page.markThreads([id], what)
+                        onMenuRequested: (row, x, y) => page.openRowMenu(row, x, y)
+                        onRenameRequested: (id) => page.renamingId = id
+                        onRenamed: (id, title) => {
+                            Agents.rename(id, title)
+                            page.renamingId = ""
+                        }
+                        onRenameCancelled: page.renamingId = ""
+                    }
+
+                    ListSection {
+                        width: parent.width
+                        title: qsTr("On this PC")
+                        rows: page.sessionRows
+                        sessions: true
+                        counted: false
+                        now: page.now
+                        onPicked: (id) => page.openRow("session", id)
+                    }
                 }
-                ListSection {
+                // The Archived or Snoozed shelf.
+                Column {
+                    visible: !page.searching && page.shelf !== "all"
                     width: parent.width
-                    title: qsTr("Recent")
-                    rows: page.recentRows
-                    counted: false
-                    now: page.now
-                    onPicked: (id) => page.openRow("thread", id)
-                }
-                ListSection {
-                    width: parent.width
-                    title: qsTr("On this PC")
-                    rows: page.sessionRows
-                    sessions: true
-                    counted: false
-                    now: page.now
-                    onPicked: (id) => page.openRow("session", id)
+                    ListSection {
+                        width: parent.width
+                        title: page.shelf === "archived" ? qsTr("Archived") : qsTr("Snoozed")
+                        rows: page.shelfShown
+                        now: page.now
+                        marks: page.historyOn
+                        pickedIds: page.picked
+                        renamingId: page.renamingId
+                        onPicked: (id) => page.picked.length > 0 ? page.togglePick(id) : page.openRow("thread", id)
+                        onPickToggled: (id) => page.togglePick(id)
+                        onMarkRequested: (id, what) => page.markThreads([id], what)
+                        onMenuRequested: (row, x, y) => page.openRowMenu(row, x, y)
+                        onRenameRequested: (id) => page.renamingId = id
+                        onRenamed: (id, title) => {
+                            Agents.rename(id, title)
+                            page.renamingId = ""
+                        }
+                        onRenameCancelled: page.renamingId = ""
+                    }
+
+                    Txt {
+                        visible: page.shelfRows !== null && page.shelfShown.length === 0 && page.query.length === 0
+                        x: Theme.rowPadding
+                        topPadding: 12
+                        text: page.shelf === "archived" ? qsTr("Nothing archived.") : qsTr("Nothing snoozed.")
+                        role: "bodySmall"
+                        muted: true
+                    }
                 }
                 Txt {
                     visible: Agents.sessionsUnsupported && page.connected
@@ -721,6 +990,7 @@ Item {
                 }
                 Txt {
                     visible: page.threads.length === 0 && page.sessions.length === 0 && page.connected
+                             && page.shelf === "all" && !page.searching
                     x: Theme.rowPadding
                     width: parent.width - 2 * Theme.rowPadding
                     topPadding: 12
@@ -730,9 +1000,18 @@ Item {
                     wrapMode: Text.WordWrap
                     elide: Text.ElideNone
                 }
+                TextAction {
+                    visible: page.threads.length === 0 && page.connected && page.historyOn
+                             && page.shelf === "all" && !page.searching
+                    x: Theme.rowPadding
+                    text: qsTr("Bring in earlier sessions")
+                    iconPath: Icons.download
+                    onClicked: page.openImport()
+                }
                 Txt {
-                    visible: page.query.length > 0 && page.needsRows.length + page.workingRows.length
-                             + page.recentRows.length + page.sessionRows.length === 0
+                    visible: page.query.length > 0 && !page.searching && page.shelf === "all"
+                             && page.needsRows.length + page.workingRows.length + page.pinnedRows.length
+                                + page.recentRows.length + page.sessionRows.length === 0
                              && page.threads.length + page.sessions.length > 0
                     x: Theme.rowPadding
                     width: parent.width - 2 * Theme.rowPadding
@@ -752,8 +1031,25 @@ Item {
             anchors.rightMargin: -6
         }
 
+        // What search covers.
+        Txt {
+            id: searchFoot
+            visible: page.searching
+            x: 8 + Theme.rowPadding
+            width: listPane.contentWidth - 16 - 2 * Theme.rowPadding
+            height: visible ? implicitHeight : 0
+            anchors.bottom: setupRow.top
+            anchors.bottomMargin: visible ? 8 : 0
+            text: qsTr("Searches threads in G7. Bring in earlier sessions to search them.")
+            role: "bodySmall"
+            muted: true
+            wrapMode: Text.WordWrap
+            elide: Text.ElideNone
+        }
+
         ActionRow {
             id: setupRow
+            visible: page.picked.length === 0
             x: 8
             width: listPane.contentWidth - 16
             anchors.bottom: parent.bottom
@@ -764,6 +1060,82 @@ Item {
             meta: page.connected ? page.setupSummary : ""
             selected: page.shown === "setup" && !page.listOnly
             onClicked: page.openSetup()
+        }
+
+        // Several threads picked: what can be done to them all.
+        Rectangle {
+            id: bulkBar
+            readonly property var rows: page.threads.concat(page.shelfRows || [])
+                .filter((t) => page.picked.indexOf(t.id) >= 0)
+            readonly property bool allPinned: rows.length > 0 && rows.every((t) => t.pinned === true)
+            readonly property bool allArchived: rows.length > 0 && rows.every((t) => t.archived === true)
+            readonly property bool allSnoozed: rows.length > 0 && rows.every((t) => (t.snoozedUntil || 0) > 0)
+            visible: page.picked.length > 0
+            x: 8
+            width: listPane.contentWidth - 16
+            height: setupRow.height
+            anchors.bottom: parent.bottom
+            anchors.bottomMargin: 8
+            radius: Theme.rowRadius
+            color: Theme.selection
+            Txt {
+                x: 10
+                anchors.left: parent.left
+                anchors.right: bulkButtons.left
+                anchors.leftMargin: 10
+                anchors.verticalCenter: parent.verticalCenter
+                text: qsTr("%n selected", "", page.picked.length)
+                role: "bodySmall"
+                weight: 600
+                maximumLineCount: 1
+            }
+            Row {
+                id: bulkButtons
+                anchors.right: parent.right
+                anchors.rightMargin: 4
+                anchors.verticalCenter: parent.verticalCenter
+                IconButton {
+                    iconPath: Icons.pin
+                    label: bulkBar.allPinned ? qsTr("Unpin") : qsTr("Pin")
+                    onClicked: page.markThreads(page.picked, bulkBar.allPinned ? "unpin" : "pin")
+                }
+                IconButton {
+                    iconPath: Icons.tray
+                    label: bulkBar.allArchived ? qsTr("Unarchive") : qsTr("Archive")
+                    onClicked: {
+                        page.markThreads(page.picked, bulkBar.allArchived ? "unarchive" : "archive")
+                        page.picked = []
+                    }
+                }
+                IconButton {
+                    id: bulkSnooze
+                    iconPath: Icons.moon
+                    label: qsTr("Snooze")
+                    onClicked: {
+                        const p = page.mapFromItem(bulkSnooze, 0, 0)
+                        page.snooze(page.picked, p.x, p.y - 8, "", 0)
+                    }
+                }
+                IconButton {
+                    iconPath: Icons.trash
+                    label: qsTr("Delete")
+                    onClicked: deleteSheet.ask(page.picked)
+                }
+                IconButton {
+                    id: bulkMore
+                    iconPath: Icons.more
+                    label: qsTr("More")
+                    onClicked: {
+                        const p = page.mapFromItem(bulkMore, 0, 0)
+                        bulkMenu.openAt(p.x, p.y, true, false)
+                    }
+                }
+                IconButton {
+                    iconPath: Icons.close
+                    label: qsTr("Clear")
+                    onClicked: page.picked = []
+                }
+            }
         }
 
         Rectangle {
@@ -791,17 +1163,17 @@ Item {
             height: 56
             IconButton {
                 id: backButton
-                visible: page.narrow
+                visible: page.narrow || page.diffShown || page.isPreview || page.shown === "import"
                 x: 8
                 anchors.verticalCenter: parent.verticalCenter
                 iconPath: Icons.back
-                label: qsTr("Back to the list")
+                label: page.diffShown ? qsTr("Back to the thread") : qsTr("Back to the list")
                 onClicked: page.back()
             }
             // Hides or shows the thread list (Ctrl+[).
             IconButton {
                 id: listToggle
-                visible: !page.narrow
+                visible: !page.narrow && !backButton.visible
                 x: 8
                 anchors.verticalCenter: parent.verticalCenter
                 iconPath: page.listIcon
@@ -818,33 +1190,65 @@ Item {
                 spacing: 1
                 Txt {
                     width: parent.width
-                    text: page.shown === "setup" ? qsTr("Setup")
+                    text: page.diffShown ? qsTr("Changes")
+                        : page.shown === "setup" ? qsTr("Setup")
+                        : page.shown === "import" ? qsTr("Bring in earlier sessions")
                         : page.shown === "new" ? qsTr("New thread") : (page.info.title || "")
                     role: "title"
+                    maximumLineCount: 1
+                }
+                Txt {
+                    visible: page.diffShown || page.isPreview || page.shown === "import"
+                    width: parent.width
+                    text: page.diffShown ? (page.info.title || "")
+                        : page.isPreview ? [page.info.agent_name, page.info.shown_cwd,
+                                            new Date(page.info.updated_ms || 0).toLocaleDateString(Qt.locale(), Locale.ShortFormat)]
+                                           .filter((x) => (x || "").length > 0).join(" · ")
+                        : (page.importState.total || 0) > 0
+                            ? qsTr("%n sessions on this PC", "", page.importState.total) : ""
+                    role: "bodySmall"
+                    muted: true
                     maximumLineCount: 1
                 }
                 Row {
                     width: parent.width
                     spacing: 6
-                    visible: page.isThread || page.isSession
-                    Rectangle {
+                    visible: (page.isThread || page.isSession) && !page.diffShown
+                    AgentStateMark {
                         anchors.verticalCenter: parent.verticalCenter
-                        width: 7
-                        height: 7
-                        radius: 3.5
-                        readonly property bool ring: page.isSession && page.info.guess === true && page.phase === "needs_you"
-                        color: ring ? "transparent" : page.stateColor
-                        border.width: ring ? 1.5 : 0
-                        border.color: page.stateColor
+                        phase: page.phase
+                        guess: page.isSession && page.info.guess === true && page.phase === "needs_you"
                     }
                     Txt {
-                        width: Math.min(implicitWidth, parent.width - 13)
+                        id: stateLine
+                        width: Math.min(implicitWidth, parent.width - 18 - (forkLink.visible ? forkLink.width + 6 : 0))
                         anchors.verticalCenter: parent.verticalCenter
-                        text: [page.stateWord, page.agentName, page.isSession ? page.info.shown_cwd : page.info.folder, page.originText]
+                        text: [page.stateWord, page.agentName, page.isSession ? page.info.shown_cwd : page.info.folder,
+                               page.info.found === true ? qsTr("Brought in") : page.originText]
                             .filter((s) => (s || "").length > 0).join(" · ")
                         role: "bodySmall"
                         muted: true
                         maximumLineCount: 1
+                    }
+                    // A fork links back to the thread it came from.
+                    Txt {
+                        id: forkLink
+                        readonly property var from: page.info.forkOf || ({})
+                        visible: page.isThread && (from.title || "").length > 0
+                        width: Math.min(implicitWidth, parent.width / 2)
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: qsTr("Fork of %1").arg(from.title || "")
+                        role: "bodySmall"
+                        color: Theme.accent
+                        maximumLineCount: 1
+                        Accessible.role: Accessible.Link
+                        Accessible.name: text
+                        Accessible.onPressAction: page.openRow("thread", forkLink.from.id)
+                        MouseArea {
+                            anchors.fill: parent
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: page.openRow("thread", forkLink.from.id)
+                        }
                     }
                 }
                 Txt {
@@ -865,8 +1269,18 @@ Item {
                 anchors.rightMargin: 12
                 anchors.verticalCenter: parent.verticalCenter
                 spacing: 8
+                // The diff's scope: this turn, or the whole thread.
+                Segmented {
+                    visible: page.diffShown && page.diffState.canWhole === true
+                    options: [
+                        { value: "turn", label: qsTr("This turn") },
+                        { value: "thread", label: qsTr("Whole thread") }
+                    ]
+                    value: page.diffState.scope || "turn"
+                    onPicked: (value) => Agents.diffScope(value)
+                }
                 Button {
-                    visible: page.isThread || page.isSession
+                    visible: (page.isThread || page.isSession) && !page.diffShown
                     variant: page.detailsShown ? "tonal" : "text"
                     size: "sm"
                     iconPath: Icons.clipboardList
@@ -886,7 +1300,7 @@ Item {
         // ---- A thread or a session ----
         Item {
             id: openView
-            visible: page.isThread || page.isSession
+            visible: (page.isThread || page.isSession || page.isPreview) && !page.diffShown
             anchors.top: headLine.bottom
             anchors.bottom: parent.bottom
             anchors.left: parent.left
@@ -907,6 +1321,13 @@ Item {
                 now: page.now
                 animate: page.active && page.windowActive
                 running: page.running
+                agentName: page.agentName
+                highlightItem: page.highlightItem
+                onEditFromHere: (turn) => Agents.editFromHere(turn)
+                onRewindTo: (turn) => Agents.rewindOpen(turn)
+                onForkFrom: (turn) => Agents.forkTurn(turn)
+                onOpenChanges: (turn, path) => Agents.diffOpen(turn, path)
+                onUndoRewind: Agents.undoRewind()
                 onLinkActivated: (key, index) => linkSheet.ask(key, index)
                 onWaitingClicked: page.questioning ? questionDock.pulse() : dock.pulse()
                 onImplementPlan: (itemId, mode) => Agents.implement(itemId, mode)
@@ -999,14 +1420,14 @@ Item {
                                 width: 16
                                 height: 16
                                 path: failure.limit ? Icons.history : Icons.warning
-                                color: failure.limit ? Theme.tintAmber : Theme.error
+                                color: failure.limit ? AgentPalette.needsYou : AgentPalette.failed
                             }
                             Txt {
                                 anchors.verticalCenter: parent.verticalCenter
                                 text: failure.limit ? qsTr("Usage limit reached") : qsTr("Failed")
                                 role: "bodySmall"
                                 weight: 600
-                                color: failure.limit ? Theme.tintAmber : Theme.error
+                                color: failure.limit ? AgentPalette.needsYou : AgentPalette.failedText
                             }
                         }
                         Txt {
@@ -1028,7 +1449,7 @@ Item {
                         radius: Theme.radiusMd
                         color: Theme.surfaceContainerLow
                         border.width: 1
-                        border.color: page.info.guess ? Theme.outlineVariant : Theme.tintAmber
+                        border.color: page.info.guess ? Theme.outlineVariant : AgentPalette.needsYou
                         Column {
                             id: waitColumn
                             x: 12
@@ -1122,7 +1543,7 @@ Item {
                                 width: 14
                                 height: 14
                                 path: Icons.check
-                                color: Theme.tintGreen
+                                color: AgentPalette.done
                             }
                             Rectangle {
                                 visible: pinnedStep.modelData.status !== "completed"
@@ -1131,9 +1552,10 @@ Item {
                                 width: 8
                                 height: 8
                                 radius: 4
-                                color: pinnedStep.modelData.status === "in_progress" ? Theme.accent : "transparent"
-                                border.width: pinnedStep.modelData.status === "in_progress" ? 0 : 1.2
-                                border.color: Theme.outline
+                                color: "transparent"
+                                // The current step: a blue ring.
+                                border.width: pinnedStep.modelData.status === "in_progress" ? 1.8 : 1.2
+                                border.color: pinnedStep.modelData.status === "in_progress" ? AgentPalette.working : Theme.outline
                             }
                             Txt {
                                 id: pinnedText
@@ -1201,14 +1623,14 @@ Item {
                         width: 14
                         height: 14
                         path: Icons.history
-                        color: Theme.tintAmber
+                        color: AgentPalette.needsYou
                     }
                     Txt {
                         width: parent.width - 22
                         anchors.verticalCenter: parent.verticalCenter
                         text: page.limitText
                         role: "bodySmall"
-                        color: Theme.tintAmber
+                        color: AgentPalette.needsYou
                         maximumLineCount: 1
                     }
                 }
@@ -1270,9 +1692,78 @@ Item {
                     }
                 }
 
+                // Read only: its folder isn't one of your agent folders.
+                Rectangle {
+                    visible: page.readOnly
+                    width: parent.width
+                    height: visible ? Math.max(readOnlyText.height, readOnlyButton.height) + 24 : 0
+                    radius: Theme.radiusMd
+                    color: "transparent"
+                    border.width: 1
+                    border.color: Theme.outlineVariant
+                    Icon {
+                        id: readOnlyIcon
+                        x: 12
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: 16
+                        height: 16
+                        path: Icons.folder
+                        color: Theme.surfaceContentVariant
+                    }
+                    Txt {
+                        id: readOnlyText
+                        anchors.left: readOnlyIcon.right
+                        anchors.leftMargin: 12
+                        anchors.right: readOnlyButton.left
+                        anchors.rightMargin: 12
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: qsTr("Add %1 to your agent folders to continue it.").arg(page.info.folder || "")
+                        wrapMode: Text.WordWrap
+                        elide: Text.ElideNone
+                    }
+                    Button {
+                        id: readOnlyButton
+                        anchors.right: parent.right
+                        anchors.rightMargin: 12
+                        anchors.verticalCenter: parent.verticalCenter
+                        variant: "tonal"
+                        size: "sm"
+                        iconPath: Icons.plus
+                        text: qsTr("Add folder…")
+                        onClicked: page.addFolder("")
+                    }
+                }
+
+                // A session found on this PC, looked at before it's brought in.
+                Item {
+                    visible: page.isPreview
+                    width: parent.width
+                    height: visible ? 52 : 0
+                    Txt {
+                        anchors.left: parent.left
+                        anchors.right: previewButton.left
+                        anchors.rightMargin: 12
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: page.info.brought_in === true ? qsTr("Brought in") : qsTr("A preview. Nothing is brought in yet.")
+                        role: "bodySmall"
+                        muted: true
+                        maximumLineCount: 1
+                    }
+                    Button {
+                        id: previewButton
+                        anchors.right: parent.right
+                        anchors.verticalCenter: parent.verticalCenter
+                        iconPath: Icons.download
+                        text: qsTr("Bring in %n", "", 1)
+                        enabled: page.info.selectable === true && (page.importState.job || {}).total === undefined
+                        busy: Agents.busy
+                        onClicked: page.bringInPreview()
+                    }
+                }
+
                 AgentComposer {
                     id: composer
-                    visible: page.isThread
+                    visible: page.isThread && !page.readOnly
                     width: parent.width
                     height: visible ? implicitHeight : 0
                     ask: page.ask
@@ -1425,7 +1916,7 @@ Item {
         Rectangle {
             id: inspector
             readonly property bool overlay: page.detailsOpen && !page.inspectorFits
-            visible: (page.isThread || page.isSession) && (page.inspectorWidth > 0 || overlay)
+            visible: (page.isThread || page.isSession) && !page.diffShown && (page.inspectorWidth > 0 || overlay)
             anchors.top: headLine.bottom
             anchors.bottom: parent.bottom
             anchors.right: parent.right
@@ -1494,7 +1985,7 @@ Item {
                                     width: 15
                                     height: 15
                                     path: Icons.check
-                                    color: Theme.tintGreen
+                                    color: AgentPalette.done
                                 }
                                 Rectangle {
                                     visible: planStep.modelData.status !== "completed"
@@ -1503,9 +1994,10 @@ Item {
                                     width: 9
                                     height: 9
                                     radius: 4.5
-                                    color: planStep.modelData.status === "in_progress" ? Theme.accent : "transparent"
-                                    border.width: planStep.modelData.status === "in_progress" ? 0 : 1.2
-                                    border.color: Theme.outline
+                                    color: "transparent"
+                                    // The current step: a blue ring.
+                                    border.width: planStep.modelData.status === "in_progress" ? 1.8 : 1.2
+                                    border.color: planStep.modelData.status === "in_progress" ? AgentPalette.working : Theme.outline
                                 }
                                 Txt {
                                     id: planText
@@ -1579,12 +2071,12 @@ Item {
                                     Txt {
                                         text: "+" + changeRow.modelData.added
                                         role: "bodySmall"
-                                        color: Theme.tintGreen
+                                        color: AgentPalette.inserted
                                     }
                                     Txt {
                                         text: "−" + changeRow.modelData.removed
                                         role: "bodySmall"
-                                        color: Theme.error
+                                        color: AgentPalette.deleted
                                     }
                                 }
                             }
@@ -1622,7 +2114,7 @@ Item {
                                 width: parent.width * Math.min(1, (page.context.pct || 0) / 100)
                                 height: parent.height
                                 radius: 2
-                                color: (page.context.pct || 0) >= 80 ? Theme.tintAmber : Theme.surfaceContentVariant
+                                color: (page.context.pct || 0) >= 80 ? AgentPalette.needsYou : Theme.surfaceContentVariant
                             }
                         }
                     }
@@ -1914,6 +2406,195 @@ Item {
             anchors.right: newView.right
         }
 
+        // ---- What a turn, or the whole thread, changed ----
+        Item {
+            id: diffView
+            readonly property var files: page.diffState.files || []
+            readonly property var file: files[page.diffState.selected || 0] || ({})
+            readonly property var patch: page.diffState.patch || ({})
+            readonly property bool narrowList: width < 720
+            visible: page.diffShown
+            anchors.top: headLine.bottom
+            anchors.bottom: parent.bottom
+            width: parent.width
+
+            AgentDiffFiles {
+                id: diffFiles
+                visible: !diffView.narrowList && diffView.files.length > 0
+                width: visible ? 250 : 0
+                height: parent.height
+                files: diffView.files
+                selected: page.diffState.selected || 0
+                more: page.diffState.more || 0
+                onPicked: (index) => Agents.diffSelect(index)
+            }
+            Rectangle {
+                visible: diffFiles.visible
+                x: diffFiles.width - 1
+                width: 1
+                height: parent.height
+                color: Theme.line
+            }
+            Item {
+                id: diffBody
+                anchors.left: diffFiles.right
+                anchors.right: parent.right
+                height: parent.height
+                // The file's name and its lines added and removed; on a narrow
+                // page the name opens the list of files.
+                Item {
+                    id: fileHead
+                    visible: diffView.files.length > 0
+                    width: parent.width
+                    height: visible ? 36 : 0
+                    Item {
+                        id: filePicker
+                        x: 12
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: Math.min(fileName.implicitWidth + (diffView.narrowList ? 24 : 0), fileHead.width - 120)
+                        height: 28
+                        Txt {
+                            id: fileName
+                            anchors.verticalCenter: parent.verticalCenter
+                            width: Math.min(implicitWidth, parent.width - (diffView.narrowList ? 24 : 0))
+                            text: (diffView.file.from || "").length > 0
+                                ? diffView.file.from + " → " + diffView.file.path : (diffView.file.path || "")
+                            role: "code"
+                            size: Theme.typography.bodySmall.size
+                            elide: Text.ElideLeft
+                        }
+                        Icon {
+                            visible: diffView.narrowList
+                            anchors.left: fileName.right
+                            anchors.leftMargin: 6
+                            anchors.verticalCenter: parent.verticalCenter
+                            width: 13
+                            height: 13
+                            path: Icons.chevronDown
+                            color: Theme.surfaceContentVariant
+                        }
+                        MouseArea {
+                            anchors.fill: parent
+                            enabled: diffView.narrowList
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: {
+                                const p = page.mapFromItem(filePicker, 0, filePicker.height)
+                                diffMenu.openAt(p.x, p.y, false, false)
+                            }
+                        }
+                    }
+                    Row {
+                        visible: !diffView.file.binary && diffView.file.status !== "unrecorded"
+                        anchors.right: parent.right
+                        anchors.rightMargin: 12
+                        anchors.verticalCenter: parent.verticalCenter
+                        spacing: 6
+                        Txt {
+                            text: "+" + (diffView.file.adds || 0)
+                            role: "bodySmall"
+                            color: AgentPalette.inserted
+                        }
+                        Txt {
+                            text: "−" + (diffView.file.dels || 0)
+                            role: "bodySmall"
+                            color: AgentPalette.deleted
+                        }
+                    }
+                    Rectangle {
+                        anchors.bottom: parent.bottom
+                        width: parent.width
+                        height: 1
+                        color: Theme.line
+                    }
+                }
+                AgentDiffView {
+                    id: diffLines
+                    visible: (diffView.patch.doc || "").length > 0 && !diffView.patch.loading && !diffView.patch.binary
+                             && !diffView.patch.unrecorded && !page.diffState.loading
+                    anchors.top: fileHead.bottom
+                    anchors.topMargin: 6
+                    anchors.bottom: cutLine.top
+                    width: parent.width
+                    paged: true
+                    showPaths: false
+                    diff: diffView.patch.doc || ""
+                }
+                // Loading, binary, not recorded, nothing to show.
+                Column {
+                    visible: !diffLines.visible
+                    anchors.centerIn: parent
+                    spacing: 8
+                    Spinner {
+                        visible: page.diffState.loading === true || diffView.patch.loading === true
+                        anchors.horizontalCenter: parent.horizontalCenter
+                        width: 18
+                        height: 18
+                    }
+                    Icon {
+                        visible: diffView.patch.binary === true
+                        anchors.horizontalCenter: parent.horizontalCenter
+                        width: 20
+                        height: 20
+                        path: Icons.photo
+                        color: Theme.surfaceContentVariant
+                    }
+                    Txt {
+                        anchors.horizontalCenter: parent.horizontalCenter
+                        text: page.diffState.loading === true || diffView.patch.loading === true ? qsTr("Loading…")
+                            : diffView.patch.binary === true ? qsTr("Binary file")
+                            : diffView.patch.unrecorded === true ? qsTr("%n files weren't recorded (too large).", "", 1)
+                            : page.diffState.unavailable === true ? qsTr("Changes weren't recorded for this turn.")
+                            : diffView.patch.failed === true ? qsTr("Something went wrong. Try again.") : ""
+                        role: "bodySmall"
+                        muted: true
+                    }
+                }
+                Item {
+                    id: cutLine
+                    anchors.bottom: parent.bottom
+                    width: parent.width
+                    height: diffView.patch.truncated === true && diffLines.visible ? 32 : 0
+                    visible: height > 0
+                    Rectangle {
+                        width: parent.width
+                        height: 1
+                        color: Theme.line
+                    }
+                    Row {
+                        x: 12
+                        anchors.verticalCenter: parent.verticalCenter
+                        spacing: 8
+                        Icon {
+                            anchors.verticalCenter: parent.verticalCenter
+                            width: 14
+                            height: 14
+                            path: Icons.info
+                            color: Theme.surfaceContentVariant
+                        }
+                        Txt {
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: qsTr("Showing the first 1 MB")
+                            role: "bodySmall"
+                            muted: true
+                        }
+                    }
+                }
+            }
+        }
+
+        // ---- Bring in earlier sessions ----
+        AgentImport {
+            id: importView
+            visible: page.shown === "import"
+            anchors.top: headLine.bottom
+            anchors.bottom: parent.bottom
+            width: parent.width
+            importState: page.importState
+            busy: Agents.busy
+            onPreviewed: (id) => Agents.previewOpen(id)
+            onVisibleChanged: if (visible) Qt.callLater(() => importView.focusSearch())
+        }
+
         // ---- Setup ----
         Flickable {
             id: setupView
@@ -1931,6 +2612,7 @@ Item {
                 width: Math.min(960, setupView.width - 2 * Theme.rowPadding)
                 setup: page.setup
                 onAddFolderRequested: page.addFolder("")
+                onImportRequested: page.openImport()
             }
             TouchpadGlide { view: setupView }
         }
@@ -1998,6 +2680,15 @@ Item {
                 text: (page.setup.agents ?? []).some((a) => a.id === "codex" && a.mcpSwitch === true)
                     ? qsTr("The MCP servers you set up for Claude and Codex are used here too; you can turn that off for this folder.")
                     : qsTr("The MCP servers you set up for Claude and Codex are used here too; you can turn that off for Claude in this folder.")
+            }
+            Txt {
+                visible: page.undoOn
+                width: parent.width
+                wrapMode: Text.WordWrap
+                elide: Text.ElideNone
+                role: "body"
+                muted: true
+                text: qsTr("G7 keeps a restore point for each turn in its own folder on this PC; you can turn that off for this folder.")
             }
             Row {
                 anchors.right: parent.right
@@ -2231,6 +2922,70 @@ Item {
         z: 20
     }
 
+    // A thread's menu: its marks, rename and delete.
+    PopupMenu {
+        id: rowMenu
+        readonly property var row: page.menuRow
+        // A snoozed thread can come back now.
+        readonly property bool snoozed: (row.snoozedUntil || 0) > 0
+        actions: [
+            { label: row.pinned === true ? qsTr("Unpin") : qsTr("Pin"), icon: Icons.pin,
+              run: () => page.markThreads([rowMenu.row.id], rowMenu.row.pinned === true ? "unpin" : "pin") },
+            { label: row.unread === true ? qsTr("Mark read") : qsTr("Mark unread"), icon: Icons.check,
+              run: () => page.markThreads([rowMenu.row.id], rowMenu.row.unread === true ? "read" : "unread") },
+            { label: qsTr("Snooze"), icon: Icons.moon, enabled: row.archived !== true,
+              run: () => page.snooze([rowMenu.row.id], rowMenu.anchorX, rowMenu.anchorY, rowMenu.row.agent_name || "",
+                                     rowMenu.row.limitResets || 0) },
+            { label: qsTr("Unsnooze"), icon: Icons.moon, hidden: !snoozed,
+              run: () => page.markThreads([rowMenu.row.id], "unsnooze") },
+            { label: row.archived === true ? qsTr("Unarchive") : qsTr("Archive"), icon: Icons.tray,
+              run: () => page.markThreads([rowMenu.row.id], rowMenu.row.archived === true ? "unarchive" : "archive") },
+            { label: qsTr("Rename"), icon: Icons.edit, keys: "F2", run: () => page.renamingId = rowMenu.row.id },
+            { label: qsTr("Delete"), icon: Icons.trash, tint: Theme.tintRed,
+              enabled: rowMenu.row.state !== "working" && rowMenu.row.state !== "waiting",
+              run: () => deleteSheet.ask([rowMenu.row.id]) }
+        ].filter((a) => a.hidden !== true)
+        panelWidth: 240
+        z: 20
+    }
+    AgentSnoozeMenu {
+        id: snoozeMenu
+        z: 21
+        onSnoozed: (ids, until) => {
+            Agents.mark(JSON.stringify(ids), "snooze", until)
+            page.picked = []
+        }
+    }
+    // The bulk bar's More.
+    PopupMenu {
+        id: bulkMenu
+        actions: [
+            { label: qsTr("Mark unread"), run: () => page.markThreads(page.picked, "unread") },
+            { label: qsTr("Mark read"), run: () => page.markThreads(page.picked, "read") },
+            // Every thread picked is snoozed: they can all come back now.
+            { label: qsTr("Unsnooze"), hidden: !bulkBar.allSnoozed, run: () => {
+                page.markThreads(page.picked, "unsnooze")
+                page.picked = []
+            } }
+        ].filter((a) => a.hidden !== true)
+        panelWidth: 220
+        z: 20
+    }
+    // The diff's files, as a menu on a narrow page.
+    PopupMenu {
+        id: diffMenu
+        actions: (page.diffState.files || []).map((f, i) => ({
+            label: f.path, keys: f.binary ? "" : "+" + f.adds + " −" + f.dels,
+            checked: i === (page.diffState.selected || 0), run: () => Agents.diffSelect(i)
+        }))
+        panelWidth: 360
+        z: 20
+    }
+    AgentRewindDialog {
+        id: rewindDialog
+        rewind: page.rewindState
+    }
+
     // A plan's Implement, with the mode it runs in.
     property string planItem: ""
     PopupMenu {
@@ -2264,12 +3019,19 @@ Item {
     Sheet {
         id: deleteSheet
         cardWidth: 420
+        // The threads it deletes.
+        property var ids: []
+        function ask(ids) {
+            deleteSheet.ids = ids
+            open()
+        }
         Column {
             width: parent.width
             spacing: 12
             Txt {
                 width: parent.width
-                text: qsTr("Delete this thread?")
+                text: deleteSheet.ids.length > 1 ? qsTr("Delete %n threads?", "", deleteSheet.ids.length)
+                                                 : qsTr("Delete this thread?")
                 role: "headline"
                 wrapMode: Text.WordWrap
             }
@@ -2293,7 +3055,9 @@ Item {
                     iconPath: Icons.trash
                     text: qsTr("Delete")
                     onClicked: {
-                        Agents.deleteThread(Agents.openId)
+                        for (const id of deleteSheet.ids)
+                            Agents.deleteThread(id)
+                        page.picked = page.picked.filter((x) => deleteSheet.ids.indexOf(x) < 0)
                         deleteSheet.close()
                     }
                 }

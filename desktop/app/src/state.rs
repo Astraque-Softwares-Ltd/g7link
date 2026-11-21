@@ -667,6 +667,10 @@ impl AppState {
             | NodeEvent::AgentQuestion { .. }
             | NodeEvent::AgentQuestioned { .. }
             | NodeEvent::AgentDraft { .. }
+            | NodeEvent::AgentTurn { .. }
+            | NodeEvent::AgentCut { .. }
+            | NodeEvent::AgentImport { .. }
+            | NodeEvent::AgentOutbox { .. }
             // Copied and toasted (notifications).
             | NodeEvent::OneTimeCode { .. } => Changes::NONE,
             NodeEvent::CameraCaptureReceived { .. } => Changes::TIMELINE,

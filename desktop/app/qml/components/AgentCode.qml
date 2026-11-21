@@ -45,7 +45,7 @@ Item {
         width: parent.width - x - code.planInset
         height: head.height + body.height + 10
         radius: Theme.radiusMd
-        color: Theme.surfaceContainerHigh
+        color: AgentPalette.codeGround
 
         Item {
             id: head

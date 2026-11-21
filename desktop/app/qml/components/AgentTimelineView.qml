@@ -21,6 +21,10 @@ ListView {
     property bool follow: true
     // A turn runs or waits: a plan can't be implemented or changed now.
     property bool running: false
+    // "Claude" or "Codex", for the reason an action can't be done.
+    property string agentName
+    // The message a search hit opened the thread at, lit up for a moment.
+    property string highlightItem: ""
 
     // A link was clicked: the page shows where it goes, then opens it.
     signal linkActivated(string key, int index)
@@ -32,6 +36,14 @@ ListView {
     signal implementMenuRequested(string itemId, real x, real y)
     // "Change the plan": the page puts the keyboard in the composer.
     signal changePlan
+    // A message's actions, for its turn.
+    signal editFromHere(int turn)
+    signal rewindTo(int turn)
+    signal forkFrom(int turn)
+    // A recorded turn's Changes: the page opens its diff, at `path` ("" for its first file).
+    signal openChanges(int turn, string path)
+    // Undo on the newest rewind's notice.
+    signal undoRewind
 
     function jumpToLatest() {
         follow = true
@@ -72,8 +84,17 @@ ListView {
         required property int depth
         required property string via
         required property int images
+        required property string itemId
+        required property int turn
+        required property string actFork
+        required property string actRewind
+        required property string actEdit
+        readonly property bool lit: timeline.highlightItem.length > 0 && timeline.highlightItem === itemId
         width: ListView.view ? ListView.view.width : 0
         height: column.height + 14
+        HoverHandler {
+            id: userHover
+        }
         Column {
             id: column
             anchors.right: parent.right
@@ -95,7 +116,10 @@ ListView {
                 width: Math.min(parent.width, bubbleText.implicitWidth + 24)
                 height: bubbleText.height + 16
                 radius: Theme.radiusMd
-                color: Theme.raised
+                color: user.lit ? Theme.selection : Theme.raised
+                border.width: user.lit ? 1.5 : 0
+                border.color: Theme.accent
+                Behavior on color { enabled: !Theme.reduceMotion; ColorAnimation { duration: Theme.fadeFast } }
                 TextEdit {
                     id: bubbleText
                     x: 12
@@ -137,6 +161,30 @@ ListView {
                 text: qsTr("From %1").arg(user.from)
                 role: "caption"
                 muted: true
+            }
+            // Copy, Edit from here, Rewind to here, Fork from here: on hover.
+            Item {
+                id: userActs
+                visible: acts.any
+                anchors.right: parent.right
+                width: Math.min(column.width, acts.implicitWidth)
+                height: visible ? 26 : 0
+                AgentRowActions {
+                    id: acts
+                    anchors.right: parent.right
+                    anchors.verticalCenter: parent.verticalCenter
+                    mine: true
+                    itemId: user.itemId
+                    fork: user.actFork
+                    rewind: user.actRewind
+                    edit: user.actEdit
+                    agentName: timeline.agentName
+                    opacity: userHover.hovered || activeFocus ? 1 : 0
+                    Behavior on opacity { enabled: !Theme.reduceMotion; NumberAnimation { duration: Theme.fadeFast } }
+                    onEditRequested: timeline.editFromHere(user.turn)
+                    onRewindRequested: timeline.rewindTo(user.turn)
+                    onForkRequested: timeline.forkFrom(user.turn)
+                }
             }
         }
     }
@@ -180,7 +228,7 @@ ListView {
                 width: 16
                 height: 16
                 path: timeline.questionIcon
-                color: asked.status === "asked" ? Theme.tintAmber : Theme.surfaceContentVariant
+                color: asked.status === "asked" ? AgentPalette.needsYou : Theme.surfaceContentVariant
             }
             Txt {
                 anchors.verticalCenter: parent.verticalCenter
@@ -207,36 +255,184 @@ ListView {
 
     // A note from G7 or the host (a stop, a reply that wasn't sent).
     component NoticeRow: Item {
-        id: notice
+        id: noticeRow
         required property string text
         required property int depth
+        // "rewound", "edit_from_here", "files_restored", "forked" or "".
+        required property string notice
+        // The newest rewind's notice while it can be undone.
+        required property bool undo
+        readonly property bool rewound: notice === "rewound" || notice === "edit_from_here"
         width: ListView.view ? ListView.view.width : 0
-        height: noticeText.height + 12
+        height: Math.max(noticeText.height + 12, undoButton.visible ? 32 : 0)
         Icon {
-            x: notice.depth * 18 + 20
+            x: noticeRow.depth * 18 + 20
             y: 7
             width: 16
             height: 16
-            path: Icons.info
-            color: Theme.surfaceContentVariant
+            path: noticeRow.rewound ? Icons.history : (noticeRow.notice === "files_restored" ? Icons.check : Icons.info)
+            color: noticeRow.rewound ? Theme.surfaceContent : Theme.surfaceContentVariant
+        }
+        Button {
+            id: undoButton
+            visible: noticeRow.undo
+            x: Math.min(noticeRow.depth * 18 + 44 + noticeText.implicitWidth + 12, parent.width - width)
+            y: 2
+            variant: "tonal"
+            size: "sm"
+            text: qsTr("Undo")
+            onClicked: timeline.undoRewind()
         }
         Rectangle {
-            visible: notice.depth > 0
-            x: (notice.depth - 1) * 18 + 8
+            visible: noticeRow.depth > 0
+            x: (noticeRow.depth - 1) * 18 + 8
             width: 1
             height: parent.height
             color: Theme.line
         }
         Txt {
             id: noticeText
-            x: notice.depth * 18 + 44
+            x: noticeRow.depth * 18 + 44
+            y: noticeRow.undo ? 8 : 6
+            width: Math.min(implicitWidth, parent.width - x - (undoButton.visible ? undoButton.width + 12 : 0))
+            text: noticeRow.notice === "rewound" || noticeRow.notice === "edit_from_here" ? qsTr("Rewound to here") : noticeRow.text
+            role: "bodySmall"
+            muted: !noticeRow.rewound
+            wrapMode: Text.WordWrap
+            elide: Text.ElideNone
+        }
+    }
+
+    // In place of, or under, a turn's Changes: still recording, not recorded
+    // (and why), no longer kept, or files too large to record.
+    component NoteRow: Item {
+        id: noteRow
+        required property int depth
+        // "recording", "missing", "expired" or "unrecorded".
+        required property string note
+        required property string why
+        required property int count
+        readonly property string line: {
+            switch (note) {
+            case "recording": return qsTr("Recording changes…")
+            case "expired": return qsTr("This restore point is no longer kept.")
+            case "unrecorded": return qsTr("%n files weren't recorded (too large).", "", count)
+            default: {
+                const reason = why === "busy" ? qsTr("Git was busy.")
+                    : why === "slow" ? qsTr("It took too long.")
+                    : why === "large" ? qsTr("Too many large new files.")
+                    : why === "refused" ? qsTr("Git refused.")
+                    : why === "off" ? qsTr("Restore points are off for this folder.") : ""
+                const missing = qsTr("Changes weren't recorded for this turn.")
+                return reason.length > 0 ? missing + " " + reason : missing
+            }
+            }
+        }
+        width: ListView.view ? ListView.view.width : 0
+        height: noteText.height + 12
+        Spinner {
+            visible: noteRow.note === "recording"
+            x: noteRow.depth * 18 + 21
+            y: 7
+            width: 14
+            height: 14
+        }
+        Icon {
+            visible: noteRow.note !== "recording"
+            x: noteRow.depth * 18 + 20
+            y: 7
+            width: 16
+            height: 16
+            path: Icons.edit
+            color: Theme.surfaceContentVariant
+        }
+        Txt {
+            id: noteText
+            x: noteRow.depth * 18 + 44
             y: 6
             width: parent.width - x
-            text: notice.text
+            text: noteRow.line
             role: "bodySmall"
             muted: true
             wrapMode: Text.WordWrap
             elide: Text.ElideNone
+        }
+    }
+
+    // Under a rewind's notice: the files it left as they were, and why.
+    component LeftRow: Item {
+        id: left
+        required property int depth
+        required property string files
+        required property int count
+        property bool expanded: false
+        readonly property var list: {
+            try {
+                return JSON.parse(files)
+            } catch (e) {
+                return []
+            }
+        }
+        width: ListView.view ? ListView.view.width : 0
+        height: leftColumn.height + 6
+        Column {
+            id: leftColumn
+            x: left.depth * 18 + 20
+            width: parent.width - x
+            Item {
+                width: parent.width
+                height: 28
+                Accessible.role: Accessible.Button
+                Accessible.name: leftLine.text
+                Accessible.onPressAction: left.expanded = !left.expanded
+                Row {
+                    anchors.verticalCenter: parent.verticalCenter
+                    spacing: 8
+                    Icon {
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: 15
+                        height: 15
+                        path: left.expanded ? Icons.chevronDown : Icons.chevronRight
+                        color: Theme.surfaceContentVariant
+                    }
+                    Txt {
+                        id: leftLine
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: qsTr("%n files were left as they are", "", left.count)
+                        role: "bodySmall"
+                        muted: true
+                    }
+                }
+                MouseArea {
+                    anchors.fill: parent
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: left.expanded = !left.expanded
+                }
+            }
+            Repeater {
+                model: left.expanded ? left.list : []
+                delegate: Row {
+                    id: leftFile
+                    required property var modelData
+                    x: 23
+                    height: 22
+                    spacing: 10
+                    Txt {
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: Math.min(implicitWidth, leftColumn.width - 200)
+                        text: leftFile.modelData.path
+                        role: "code"
+                        size: Theme.typography.bodySmall.size
+                        elide: Text.ElideLeft
+                    }
+                    Txt {
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: leftFile.modelData.why
+                        role: "bodySmall"
+                        muted: true
+                    }
+                }
+            }
         }
     }
 
@@ -252,6 +448,9 @@ ListView {
         required property int edit
         required property int edits
         required property bool cut
+        // The command as shell, or the output's error, warning and pass
+        // lines, as markup the app built from escaped text ("" when plain).
+        required property string styled
         width: ListView.view ? ListView.view.width : 0
         height: box.height + 8
         Rectangle {
@@ -261,7 +460,7 @@ ListView {
             width: parent.width - x
             height: inner.height + 16
             radius: Theme.radiusSm
-            color: Theme.surfaceContainerHigh
+            color: AgentPalette.codeGround
             Column {
                 id: inner
                 x: 10
@@ -326,11 +525,12 @@ ListView {
                 TextEdit {
                     visible: detail.detailKind !== "diff"
                     width: parent.width
-                    text: detail.text
+                    text: detail.styled.length > 0 ? detail.styled : detail.text
                     readOnly: true
                     selectByMouse: true
                     wrapMode: TextEdit.WrapAnywhere
-                    textFormat: TextEdit.PlainText
+                    // Markup built by the app from escaped text; never the agent's.
+                    textFormat: detail.styled.length > 0 ? TextEdit.RichText : TextEdit.PlainText
                     color: Theme.surfaceContent
                     selectionColor: Theme.selection
                     selectedTextColor: Theme.surfaceContent
@@ -358,7 +558,10 @@ ListView {
         DelegateChoice {
             roleValue: "block"
             delegate: AgentBlock {
+                agentName: timeline.agentName
+                highlightItem: timeline.highlightItem
                 onLinkActivated: (key, index) => timeline.linkActivated(key, index)
+                onForkRequested: (turn) => timeline.forkFrom(turn)
             }
         }
         DelegateChoice {
@@ -393,7 +596,17 @@ ListView {
         }
         DelegateChoice {
             roleValue: "changes"
-            delegate: AgentChanges {}
+            delegate: AgentChanges {
+                onOpenDiff: (turn, path) => timeline.openChanges(turn, path)
+            }
+        }
+        DelegateChoice {
+            roleValue: "changes_note"
+            delegate: NoteRow {}
+        }
+        DelegateChoice {
+            roleValue: "left"
+            delegate: LeftRow {}
         }
         DelegateChoice {
             roleValue: "mark"

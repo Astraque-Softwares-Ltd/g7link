@@ -4,12 +4,18 @@ import app.g7link
 
 // One step the agent took, as one line: "Ran cargo test", "Edited
 // src/hold.rs +4 −2", "Wants to run …". It opens to its command, change
-// and output.
+// and output. Its glyph takes its class's tint, its target is coloured as
+// the render crate tokenized it (a command as shell, a path as folder and
+// name), and it ends with its status as a glyph: a ring while it runs, a
+// check on a command that worked, an x when it failed (a muted one when
+// denied), a question mark while it asks, a square when stopped.
 Item {
     id: tool
     required property string key
     required property int depth
     required property string label
+    // The target as markup the app built from escaped text.
+    required property string styled
     required property string status
     required property bool hasDetail
     required property bool hasOutput
@@ -29,6 +35,8 @@ Item {
     readonly property int more: parsed.more || 0
     readonly property bool openable: hasDetail || hasOutput
     readonly property bool failed: status === "failed"
+    // Tabler's help-circle (MIT, as Icons.qml credits).
+    readonly property string questionMark: "M3 12a9 9 0 1 0 18 0 9 9 0 1 0-18 0M12 17v.01M12 13.5a1.5 1.5 0 0 1 1-1.5 2.6 2.6 0 1 0-3-4"
 
     // The sentence for this step, with %1 where its object goes.
     readonly property string sentence: {
@@ -121,7 +129,7 @@ Item {
         width: 16
         height: 16
         path: tool.icon
-        color: tool.failed ? Theme.error : Theme.surfaceContentVariant
+        color: tool.failed ? AgentPalette.toolFailed : AgentPalette.toolColor(tool.cls)
     }
     Row {
         anchors.left: glyph.right
@@ -138,13 +146,17 @@ Item {
             muted: true
             elide: Text.ElideNone
         }
-        Txt {
+        Text {
             anchors.verticalCenter: parent.verticalCenter
             width: Math.min(implicitWidth, parent.width - before.width - after.width)
-            text: tool.parsed.object || ""
-            role: "code"
-            size: Theme.typography.bodySmall.size
-            muted: true
+            text: tool.styled.length > 0 ? tool.styled : (tool.parsed.object || "")
+            // Markup built by the app from escaped text; never the agent's.
+            textFormat: tool.styled.length > 0 ? Text.StyledText : Text.PlainText
+            color: tool.status === "running" ? Theme.surfaceContent : Theme.surfaceContentVariant
+            font.family: Theme.fontMono
+            font.features: Theme.monoFeatures
+            font.pixelSize: Theme.typography.bodySmall.size
+            elide: Text.ElideRight
             maximumLineCount: 1
         }
         Txt {
@@ -167,6 +179,7 @@ Item {
             anchors.verticalCenter: parent.verticalCenter
             width: 13
             height: 13
+            color: AgentPalette.working
         }
         Txt {
             visible: tool.took.length > 0
@@ -180,14 +193,35 @@ Item {
             anchors.verticalCenter: parent.verticalCenter
             text: "+" + tool.adds
             role: "caption"
-            color: Theme.tintGreen
+            color: AgentPalette.inserted
         }
         Txt {
             visible: tool.cls === "edit" && (tool.adds > 0 || tool.dels > 0)
             anchors.verticalCenter: parent.verticalCenter
             text: "−" + tool.dels
             role: "caption"
-            color: Theme.error
+            color: AgentPalette.deleted
+        }
+        // The status as a glyph; the ok check on commands only, so forty reads aren't forty checks.
+        Icon {
+            readonly property string shape: {
+                switch (tool.status) {
+                case "ok": return tool.cls === "command" ? Icons.check : ""
+                case "failed":
+                case "denied": return Icons.close
+                case "asking": return tool.questionMark
+                case "stopped": return Icons.stopSquare
+                default: return ""
+                }
+            }
+            visible: shape.length > 0
+            anchors.verticalCenter: parent.verticalCenter
+            width: 14
+            height: 14
+            path: shape
+            color: tool.status === "ok" ? AgentPalette.toolOk
+                : tool.status === "failed" ? AgentPalette.toolFailed
+                : tool.status === "asking" ? AgentPalette.toolAsking : Theme.surfaceContentVariant
         }
     }
     HoverHandler {

@@ -2,6 +2,15 @@
 <!DOCTYPE TS>
 <TS version="2.1" language="tr_TR" sourcelanguage="en_US">
 <context>
+    <name>AgentsPage</name>
+    <message>
+        <location filename="../qml/pages/AgentsPage.qml" line="2939"/>
+        <location filename="../qml/pages/AgentsPage.qml" line="2966"/>
+        <source>Unsnooze</source>
+        <translation>Ertelemeyi kaldır</translation>
+    </message>
+</context>
+<context>
     <name>App</name>
     <message>
         <location filename="rust_strings.h" line="7"/>
@@ -5500,6 +5509,11 @@ Neler gerekir
         <source>The text wasn&apos;t sent: this conversation isn&apos;t loaded yet. Try again in a moment.</source>
         <translation>Mesaj gönderilmedi: bu konuşma henüz yüklenmedi. Birazdan tekrar deneyin.</translation>
     </message>
+    <message>
+        <location filename="rust_strings.h" line="426"/>
+        <source>%1 · Not on the phone now</source>
+        <translation>%1 · Artık telefonda değil</translation>
+    </message>
 </context>
 <context>
     <name>MessagesPage</name>
@@ -5812,6 +5826,93 @@ Neler gerekir
         <location filename="../qml/pages/MessagesPage.qml" line="1492"/>
         <source>Done</source>
         <translation>Bitti</translation>
+    </message>
+    <message>
+        <location filename="../qml/pages/MessagesPage.qml" line="68"/>
+        <source>Messages · %1 on your phone now · %2 unread</source>
+        <translation>Mesajlar · %1 şu an telefonunuzda · %2 okunmamış</translation>
+    </message>
+    <message>
+        <location filename="../qml/pages/MessagesPage.qml" line="69"/>
+        <source>Messages · %1 on your phone now</source>
+        <translation>Mesajlar · %1 şu an telefonunuzda</translation>
+    </message>
+    <message>
+        <location filename="../qml/pages/MessagesPage.qml" line="96"/>
+        <source>Keep this chat on the PC</source>
+        <translation>Bu sohbeti bilgisayarda tut</translation>
+    </message>
+    <message>
+        <location filename="../qml/pages/MessagesPage.qml" line="100"/>
+        <source>Remove conversation</source>
+        <translation>Konuşmayı kaldır</translation>
+    </message>
+    <message>
+        <location filename="../qml/pages/MessagesPage.qml" line="478"/>
+        <source>Nothing waiting on your phone.</source>
+        <translation>Telefonunuzda bekleyen bir şey yok.</translation>
+    </message>
+    <message>
+        <location filename="../qml/pages/MessagesPage.qml" line="582"/>
+        <source>App chats show here while their notification is on your phone. Reply from here, or pin one, to keep it.</source>
+        <translation>Uygulama sohbetleri, bildirimleri telefonunuzda olduğu sürece burada görünür. Saklamak için buradan yanıtlayın veya sabitleyin.</translation>
+    </message>
+    <message>
+        <location filename="../qml/pages/MessagesPage.qml" line="640"/>
+        <source>%1 group</source>
+        <translation>%1 grubu</translation>
+    </message>
+    <message>
+        <location filename="../qml/pages/MessagesPage.qml" line="642"/>
+        <source>%1 · cleared on the phone at %2</source>
+        <translation>%1 · telefonda %2 saatinde temizlendi</translation>
+    </message>
+    <message>
+        <location filename="../qml/pages/MessagesPage.qml" line="645"/>
+        <source>%1 · not on the phone now</source>
+        <translation>%1 · artık telefonda değil</translation>
+    </message>
+    <message numerus="yes">
+        <location filename="../qml/pages/MessagesPage.qml" line="646"/>
+        <source>%1 · on your phone now · %n new</source>
+        <translation>
+            <numerusform>%1 · şu an telefonunuzda · %n yeni</numerusform>
+        </translation>
+    </message>
+    <message>
+        <location filename="../qml/pages/MessagesPage.qml" line="647"/>
+        <source>%1 · on your phone now</source>
+        <translation>%1 · şu an telefonunuzda</translation>
+    </message>
+    <message>
+        <location filename="../qml/pages/MessagesPage.qml" line="999"/>
+        <source>Cleared on the phone. It leaves this PC when you close it.</source>
+        <translation>Telefonda temizlendi. Kapattığınızda bu bilgisayardan kaldırılır.</translation>
+    </message>
+    <message>
+        <location filename="../qml/pages/MessagesPage.qml" line="1010"/>
+        <source>Keep on this PC</source>
+        <translation>Bu bilgisayarda tut</translation>
+    </message>
+    <message>
+        <location filename="../qml/pages/MessagesPage.qml" line="1203"/>
+        <source>Replies need the notification on the phone</source>
+        <translation>Yanıt vermek için bildirimin telefonda olması gerekir</translation>
+    </message>
+    <message>
+        <location filename="../qml/pages/MessagesPage.qml" line="1243"/>
+        <source>On your phone now</source>
+        <translation>Şu an telefonunuzda</translation>
+    </message>
+    <message>
+        <location filename="../qml/pages/MessagesPage.qml" line="1244"/>
+        <source>On your phone when last connected</source>
+        <translation>Son bağlantıda telefonunuzda</translation>
+    </message>
+    <message>
+        <location filename="../qml/pages/MessagesPage.qml" line="1255"/>
+        <source>SMS and kept chats</source>
+        <translation>SMS ve saklanan sohbetler</translation>
     </message>
 </context>
 <context>

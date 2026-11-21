@@ -14,7 +14,7 @@ static const char *const g7link_rust_strings[] = {
     QT_TRANSLATE_NOOP("Agents", "Couldn't export it"), // desktop/app/src/agents.rs
     QT_TRANSLATE_NOOP("Agents", "Couldn't open a terminal"), // desktop/app/src/agents.rs
     QT_TRANSLATE_NOOP("Agents", "Couldn't open the link"), // desktop/app/src/agents.rs
-    QT_TRANSLATE_NOOP("Agents", "Couldn't reach the agent host"), // desktop/app/src/agents.rs
+    QT_TRANSLATE_NOOP("Agents", "Couldn't reach the agent host"), // desktop/app/src/agents/history_page.rs
     QT_TRANSLATE_NOOP("Agents", "Couldn't restart agents"), // desktop/app/src/agents.rs
     QT_TRANSLATE_NOOP("Agents", "Couldn't save it"), // desktop/app/src/agents.rs
     QT_TRANSLATE_NOOP("Agents", "Couldn't stop it"), // desktop/app/src/agents.rs
@@ -37,10 +37,17 @@ static const char *const g7link_rust_strings[] = {
     QT_TRANSLATE_NOOP("Agents", "That request was already answered."), // desktop/app/src/agents.rs
     QT_TRANSLATE_NOOP("Agents", "The agent host is out of date. Restart agents to finish the update."), // desktop/app/src/agents.rs
     QT_TRANSLATE_NOOP("Agents", "The command is copied. Paste it in a terminal."), // desktop/app/src/agents.rs
+    QT_TRANSLATE_NOOP("Agents", "The files changed while you were looking."), // desktop/app/src/agents.rs
     QT_TRANSLATE_NOOP("Agents", "Too many sessions are being followed. New lines show when you open it again."), // desktop/app/src/agents.rs
     QT_TRANSLATE_NOOP("Agents", "Too many threads are running. Wait for one to finish."), // desktop/app/src/agents.rs
+    QT_TRANSLATE_NOOP("Agents", "Wait until it finishes."), // desktop/app/src/agents.rs
     QT_TRANSLATE_NOOP("Agents", "You can add up to 64 folders."), // desktop/app/src/agents.rs
-    QT_TRANSLATE_NOOP("Agents", "You can change it when the agent stops."), // desktop/app/src/agents.rs
+    QT_TRANSLATE_NOOP("Agents", "You can change it when the agent stops."), // desktop/app/src/agents/history_page.rs
+    QT_TRANSLATE_NOOP("Agents", "changed after the agent finished"), // desktop/app/src/agents/history.rs
+    QT_TRANSLATE_NOOP("Agents", "changed into a folder"), // desktop/app/src/agents/history.rs
+    QT_TRANSLATE_NOOP("Agents", "changed since you looked"), // desktop/app/src/agents/history.rs
+    QT_TRANSLATE_NOOP("Agents", "couldn't be changed back"), // desktop/app/src/agents/history.rs
+    QT_TRANSLATE_NOOP("Agents", "not a file"), // desktop/app/src/agents/history.rs
     QT_TRANSLATE_NOOP("App", "%1 is offline. Will send when it's back."), // desktop/app/src/bridge/app.rs
     QT_TRANSLATE_NOOP("App", "Already on clipboard."), // desktop/app/src/bridge/app.rs
     QT_TRANSLATE_NOOP("App", "Command palette"), // desktop/app/src/bridge/app.rs
@@ -418,6 +425,7 @@ static const char *const g7link_rust_strings[] = {
     QT_TRANSLATE_NOOP("Media", "Media is turned off for that device."), // desktop/app/src/media.rs
     QT_TRANSLATE_NOOP("Media", "That player can't do that."), // desktop/app/src/media.rs
     QT_TRANSLATE_NOOP("Media", "That player isn't playing anymore."), // desktop/app/src/media.rs
+    QT_TRANSLATE_NOOP("Messages", "%1 · Not on the phone now"), // desktop/app/src/messages.rs
     QT_TRANSLATE_NOOP("Messages", "All"), // desktop/app/src/messages.rs
     QT_TRANSLATE_NOOP("Messages", "Attachment is %1 (MMS supports up to 900 KB)"), // desktop/app/src/messages.rs
     QT_TRANSLATE_NOOP("Messages", "Group texts can't be sent from the PC yet."), // desktop/app/src/messages.rs

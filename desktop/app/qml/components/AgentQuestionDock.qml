@@ -72,7 +72,7 @@ Item {
                     width: 16
                     height: 16
                     path: dock.questionIcon
-                    color: Theme.tintAmber
+                    color: AgentPalette.needsYou
                 }
                 Txt {
                     anchors.verticalCenter: parent.verticalCenter
@@ -253,13 +253,13 @@ Item {
                     width: 13
                     height: 13
                     path: Icons.keyboard
-                    color: Theme.tintAmber
+                    color: AgentPalette.needsYou
                 }
                 Txt {
                     anchors.verticalCenter: parent.verticalCenter
                     text: qsTr("Arrived while you were typing")
                     role: "caption"
-                    color: Theme.tintAmber
+                    color: AgentPalette.needsYou
                 }
             }
         }

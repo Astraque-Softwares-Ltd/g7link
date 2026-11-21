@@ -41,6 +41,10 @@ unsafe extern "C" {
     fn g7link_video_encoder_set_bitrate(encoder: *mut c_void, bitrate: i32) -> bool;
 }
 
+/// Room for why no hardware encoder opened: every FFmpeg adapter, device and
+/// rate mode tried says why, for the log.
+const REASON_BYTES: usize = 2048;
+
 pub(crate) struct Encoder {
     native: NonNull<c_void>,
     last_output: Instant,
@@ -54,7 +58,7 @@ impl Encoder {
             _ => return Err(format!("Unsupported hardware codec: {codec}")),
         };
         let number = |value: u32| i32::try_from(value).map_err(|_| "Encoder setting is too large".to_owned());
-        let mut error = [0 as c_char; 512];
+        let mut error = [0 as c_char; REASON_BYTES];
         // SAFETY: the factory copies these settings and writes only within the error buffer.
         let native = unsafe {
             g7link_video_encoder_create(
@@ -68,10 +72,19 @@ impl Encoder {
             )
         };
         let native = NonNull::new(native).ok_or_else(|| error_message(&error))?;
-        // SAFETY: the live encoder owns a NUL-terminated backend name.
-        let backend = unsafe { CStr::from_ptr(g7link_video_encoder_backend(native.as_ptr())) };
-        tracing::info!(codec, backend = %backend.to_string_lossy(), "Linux hardware encoder initialized");
-        Ok(Self { native, last_output: Instant::now() })
+        let encoder = Self { native, last_output: Instant::now() };
+        tracing::info!(codec, backend = %encoder.backend(), "Linux hardware encoder initialized");
+        Ok(encoder)
+    }
+
+    /// The FFmpeg encoder in use and how it sets its rate (`h264_vaapi vbr`,
+    /// `h264_vaapi cqp 24`), as the native side names it now.
+    pub(crate) fn backend(&self) -> String {
+        // SAFETY: the live encoder owns a NUL-terminated name until it next
+        // changes encoders; it's copied at once, on the thread that owns it.
+        unsafe { CStr::from_ptr(g7link_video_encoder_backend(self.native.as_ptr())) }
+            .to_string_lossy()
+            .into_owned()
     }
 
     pub(crate) fn request_keyframe(&self) -> bool {
@@ -81,15 +94,16 @@ impl Encoder {
     }
 
     pub(crate) fn next_device(&mut self) -> bool {
-        let mut error = [0 as c_char; 512];
+        let mut error = [0 as c_char; REASON_BYTES];
         // SAFETY: this capture thread owns the encoder and its packet storage.
         let switched = unsafe {
             g7link_video_encoder_next_device(self.native.as_ptr(), error.as_mut_ptr(), error.len())
         };
         if switched {
             self.last_output = Instant::now();
+            tracing::info!(backend = %self.backend(), "Linux hardware encoder switched");
         } else {
-            tracing::debug!(error = %error_message(&error), "Hardware encoding devices exhausted");
+            tracing::info!(error = %error_message(&error), "Hardware encoding devices exhausted");
         }
         switched
     }

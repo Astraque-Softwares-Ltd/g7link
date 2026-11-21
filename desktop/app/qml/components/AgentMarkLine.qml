@@ -51,14 +51,14 @@ Item {
             width: 13
             height: 13
             path: mark.icon
-            color: mark.waiting ? Theme.tintAmber : Theme.surfaceContentVariant
+            color: mark.waiting ? AgentPalette.needsYou : Theme.surfaceContentVariant
         }
         Txt {
             anchors.verticalCenter: parent.verticalCenter
             text: mark.line
             role: "caption"
             weight: mark.waiting ? 600 : Theme.typography.caption.weight
-            color: mark.waiting ? Theme.tintAmber : Theme.surfaceContentVariant
+            color: mark.waiting ? AgentPalette.needsYou : Theme.surfaceContentVariant
         }
     }
     MouseArea {

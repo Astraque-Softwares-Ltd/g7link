@@ -36,8 +36,14 @@
 #include <string>
 #include <system_error>
 
+// Whether the built-in adapter's FFmpeg is installed (linux_video_codec.cpp).
+extern "C" bool builtin_video_runtime_available();
+
 namespace {
 struct Backend {
+    // Whether this adapter's FFmpeg is installed: only then does its failure say why there's no
+    // encoder. Adapters from before it are taken to have theirs.
+    bool (*runtime_available)() = nullptr;
     decltype(&builtin_video_decoder_create) decoder_create;
     decltype(&builtin_video_decoder_destroy) decoder_destroy;
     decltype(&builtin_video_decoder_next_device) decoder_next_device;
@@ -64,6 +70,7 @@ struct Backend {
 };
 
 const Backend builtin = {
+    builtin_video_runtime_available,
     builtin_video_decoder_create, builtin_video_decoder_destroy, builtin_video_decoder_next_device,
     builtin_video_decoder_backend, builtin_video_decoder_send, builtin_video_decoder_receive,
     builtin_video_decoder_flush, builtin_video_encoder_create, builtin_video_encoder_destroy,
@@ -101,6 +108,8 @@ std::unique_ptr<Backend> load_backend(const std::filesystem::path& path)
         && LOAD(aac_decoder_send) && LOAD(aac_decoder_receive))) {
         return {};
     }
+    // Optional: adapters from before it don't say.
+    LOAD(runtime_available);
 #undef LOAD
     // Keep the library loaded for the lifetime of its function pointers.
     library.release();
@@ -142,19 +151,34 @@ void* create(Create create, Destroy destroy, char* error, size_t capacity)
         return nullptr;
     };
     try {
-        // Why the newest FFmpeg that loaded couldn't do it (no hardware encoder, say). The
-        // built-in one usually fails only because its FFmpeg isn't this system's, which
-        // says nothing about why there is no codec.
+        // Why each FFmpeg couldn't, newest first. The reason is the newest installed one's (no
+        // hardware encoder, say); an adapter whose FFmpeg isn't installed is skipped, as its
+        // failure says nothing about this machine. The others follow, for the log.
         std::string reason;
-        const auto& candidates = alternates();
-        for (auto it = candidates.rbegin(); it != candidates.rend(); ++it) {
-            if (!it->get()) continue;
+        std::string others;
+        auto add = [](std::string& list, const std::string& entry) {
+            list += (list.empty() ? "" : "; ") + entry;
+        };
+        auto tried = [&](const std::string& name, const Backend* backend) -> void* {
+            if (!backend) return nullptr;
+            if (backend->runtime_available && !backend->runtime_available()) {
+                add(others, name + ": FFmpeg isn't installed");
+                return nullptr;
+            }
             if (capacity) error[0] = '\0';
-            if (auto* handle = attempt(it->get())) return handle;
-            if (reason.empty() && capacity && error[0]) reason = error;
+            if (auto* handle = attempt(backend)) return handle;
+            const std::string why = name + ": " + (capacity && error[0] ? std::string(error) : "unavailable");
+            add(reason.empty() ? reason : others, why);
+            return nullptr;
+        };
+        const auto& candidates = alternates();
+        for (size_t i = candidates.size(); i-- > 0;) {
+            if (auto* handle = tried("ffmpeg" + std::to_string(i + 7), candidates[i].get())) return handle;
         }
-        if (auto* handle = attempt(&builtin)) return handle;
-        if (!reason.empty()) std::snprintf(error, capacity, "%s", reason.c_str());
+        if (auto* handle = tried("built-in", &builtin)) return handle;
+        if (reason.empty()) reason = "no installed FFmpeg";
+        if (!others.empty()) reason += " (" + others + ")";
+        if (capacity) std::snprintf(error, capacity, "%s", reason.c_str());
         return nullptr;
     } catch (const std::exception& failure) {
         if (capacity) std::snprintf(error, capacity, "%s", failure.what());

@@ -16,9 +16,9 @@ use std::{
 };
 
 use g7_agents_render::{
-    Align, Block, BlockKind, CodeLine, DetailOf, DiffDoc, DiffKind, Link, LiveLabel, MarkKind, Marker, Phase,
-    PlanState, QuestionState, Row, RowKind, RowStatus, Span, Summary, TokClass, ToolClass, Via,
-    bounds::is_stripped_char,
+    Act, Acts, Align, Block, BlockKind, CheckpointWhy, CodeLine, DetailOf, DiffDoc, DiffKind, DiffNote, Link,
+    LiveLabel, MarkKind, Marker, NoteKind, NoticeKind, Phase, PlanState, QuestionState, Row, RowKind,
+    RowStatus, Span, Summary, Tok, TokClass, ToolClass, Via, bounds::is_stripped_char,
 };
 use serde_json::{Value, json};
 
@@ -88,10 +88,27 @@ pub(crate) enum Role {
     Via,
     /// The images sent with a user message.
     Images,
+    /// A `changes` row from the turn's restore point: it opens the diff.
+    Recorded,
+    /// A `changes_note` row's note: "recording", "missing", "expired" or "unrecorded".
+    Note,
+    /// Why a restore point is missing ("busy", "slow", "large", "refused", "off").
+    Why,
+    /// A `notice` row the page acts on: "rewound", "edit_from_here",
+    /// "files_restored" or "forked".
+    Notice,
+    /// This notice carries Undo: the newest rewind's, while it can be undone.
+    Undo,
+    /// The message's actions, each "" (hidden), "on", "latest_only",
+    /// "no_restore_point" or "not_git".
+    ActFork,
+    ActRewind,
+    ActEdit,
+    ActRestore,
 }
 
 impl Role {
-    pub(crate) const ALL: [Role; 53] = [
+    pub(crate) const ALL: [Role; 62] = [
         Role::Key,
         Role::Kind,
         Role::View,
@@ -145,6 +162,15 @@ impl Role {
         Role::PlanPart,
         Role::Via,
         Role::Images,
+        Role::Recorded,
+        Role::Note,
+        Role::Why,
+        Role::Notice,
+        Role::Undo,
+        Role::ActFork,
+        Role::ActRewind,
+        Role::ActEdit,
+        Role::ActRestore,
     ];
 
     pub(crate) fn index(self) -> usize {
@@ -206,6 +232,15 @@ impl Role {
             Role::PlanPart => "planPart",
             Role::Via => "via",
             Role::Images => "images",
+            Role::Recorded => "recorded",
+            Role::Note => "note",
+            Role::Why => "why",
+            Role::Notice => "notice",
+            Role::Undo => "undo",
+            Role::ActFork => "actFork",
+            Role::ActRewind => "actRewind",
+            Role::ActEdit => "actEdit",
+            Role::ActRestore => "actRestore",
         }
     }
 
@@ -238,7 +273,9 @@ impl Role {
             | Role::Streaming
             | Role::HasText
             | Role::Truncated
-            | Role::Wrapped => RoleValue::Flag(false),
+            | Role::Wrapped
+            | Role::Recorded
+            | Role::Undo => RoleValue::Flag(false),
             _ => RoleValue::Text(String::new()),
         }
     }
@@ -444,17 +481,22 @@ fn summary_json(summary: &Summary) -> Value {
 
 // ---- Markup ----
 
-/// Colours for code, as the page's theme gives them (`#rrggbb`), by token
-/// class; and the colour of inline code. Empty: plain.
+/// Colours for code, as the page's palette gives them (`#rrggbb`), by token
+/// class, with each class's style; the colour of inline code; and the
+/// grounds of a diff's changed words. Empty: plain.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct CodePalette {
     classes: HashMap<TokClass, String>,
+    italic: HashSet<TokClass>,
+    bold: HashSet<TokClass>,
     inline: String,
     add: String,
     del: String,
+    add_word: String,
+    del_word: String,
 }
 
-const CLASS_NAMES: [(TokClass, &str); 15] = [
+const CLASS_NAMES: [(TokClass, &str); 21] = [
     (TokClass::Plain, "plain"),
     (TokClass::Comment, "comment"),
     (TokClass::Keyword, "keyword"),
@@ -470,6 +512,12 @@ const CLASS_NAMES: [(TokClass, &str); 15] = [
     (TokClass::Attribute, "attribute"),
     (TokClass::Inserted, "inserted"),
     (TokClass::Deleted, "deleted"),
+    (TokClass::Dir, "dir"),
+    (TokClass::File, "file"),
+    (TokClass::Pos, "pos"),
+    (TokClass::Error, "error"),
+    (TokClass::Warn, "warn"),
+    (TokClass::Ok, "ok"),
 ];
 
 /// `#rgb`, `#rrggbb` or `#aarrggbb`, the forms QML's `color` prints.
@@ -480,7 +528,9 @@ fn is_colour(s: &str) -> bool {
 
 impl CodePalette {
     /// From the page's JSON (`{ "keyword": "#…", …, "inline": "#…",
-    /// "add": "#…", "del": "#…" }`); a value that isn't a colour is left out.
+    /// "add": "#…", "del": "#…", "addWord": "#…", "delWord": "#…",
+    /// "styles": { "comment": "italic", "keyword": "semibold" } }`); a value
+    /// that isn't a colour, or a style it doesn't know, is left out.
     pub(crate) fn from_json(json: &str) -> Self {
         let Ok(Value::Object(map)) = serde_json::from_str::<Value>(json) else { return Self::default() };
         let colour = |name: &str| {
@@ -494,7 +544,24 @@ impl CodePalette {
             .iter()
             .filter_map(|(class, name)| Some((*class, colour(name))).filter(|(_, c)| !c.is_empty()))
             .collect();
-        Self { classes, inline: colour("inline"), add: colour("add"), del: colour("del") }
+        let styled = |style: &str| -> HashSet<TokClass> {
+            let Some(Value::Object(styles)) = map.get("styles") else { return HashSet::new() };
+            CLASS_NAMES
+                .iter()
+                .filter(|(_, name)| styles.get(*name).and_then(Value::as_str) == Some(style))
+                .map(|(class, _)| *class)
+                .collect()
+        };
+        Self {
+            classes,
+            italic: styled("italic"),
+            bold: styled("semibold"),
+            inline: colour("inline"),
+            add: colour("add"),
+            del: colour("del"),
+            add_word: colour("addWord"),
+            del_word: colour("delWord"),
+        }
     }
 
     fn of(&self, class: TokClass) -> Option<&str> {
@@ -574,12 +641,19 @@ fn span_tags(span: &Span, link: Option<usize>, palette: &CodePalette) -> (String
         open.push_str("<s>");
         close.push("</s>");
     }
-    if span.style.code && !palette.inline.is_empty() {
+    // A path is coloured part by part (`styled` writes it); other code is inline code.
+    if span.style.code && !is_path(span, link, palette) && !palette.inline.is_empty() {
         open.push_str(&format!("<font color=\"{}\">", palette.inline));
         close.push("</font>");
     }
     close.reverse();
     (open, close.concat())
+}
+
+/// Inline code that names a file the thread touched, drawn as a path: the
+/// folder part muted and the name in ink (not in a link, and only with a palette).
+fn is_path(span: &Span, link: Option<usize>, palette: &CodePalette) -> bool {
+    span.style.code && span.style.path && link.is_none() && palette.of(TokClass::File).is_some()
 }
 
 /// `text` with its spans (UTF-16 ranges, sorted, not overlapping) as
@@ -591,11 +665,16 @@ pub(crate) fn styled(text: &str, spans: &[Span], links: &mut Vec<LinkRef>, palet
     // The open span: its end and closing tags.
     let mut current: Option<(u32, String)> = None;
     let mut link_text: Option<String> = None;
+    // The text of an open path span, written whole when it closes.
+    let mut path: Option<String> = None;
     let mut pos: u32 = 0;
     for c in text.chars() {
         if let Some((end, close)) = &current
             && pos >= *end
         {
+            if let Some(p) = path.take() {
+                path_markup(&p, palette, &mut out);
+            }
             out.push_str(close);
             if let (Some(text), Some(link)) = (link_text.take(), links.last_mut()) {
                 link.text = text;
@@ -629,14 +708,23 @@ pub(crate) fn styled(text: &str, spans: &[Span], links: &mut Vec<LinkRef>, palet
                 }
                 let (open, close) = span_tags(span, link, palette);
                 out.push_str(&open);
+                if is_path(span, link, palette) {
+                    path = Some(String::new());
+                }
                 current = Some((span.start.saturating_add(span.len), close));
             }
         }
         if let Some(t) = link_text.as_mut() {
             t.push(c);
         }
-        push_escaped(&mut out, c, false);
+        match path.as_mut() {
+            Some(p) => p.push(c),
+            None => push_escaped(&mut out, c, false),
+        }
         pos = pos.saturating_add(c.len_utf16() as u32);
+    }
+    if let Some(p) = path.take() {
+        path_markup(&p, palette, &mut out);
     }
     if let Some((_, close)) = current {
         out.push_str(&close);
@@ -647,27 +735,79 @@ pub(crate) fn styled(text: &str, spans: &[Span], links: &mut Vec<LinkRef>, palet
     out
 }
 
+/// The tags a token class opens (its colour, then its style), and the ones that close them.
+fn tok_tags(class: TokClass, palette: &CodePalette) -> (String, &'static str) {
+    let mut open = String::new();
+    let mut close = "";
+    if let Some(c) = palette.of(class) {
+        open.push_str(&format!("<font color=\"{c}\">"));
+        close = "</font>";
+    }
+    if palette.italic.contains(&class) {
+        open.push_str("<i>");
+        close = if close.is_empty() { "</i>" } else { "</i></font>" };
+    } else if palette.bold.contains(&class) {
+        open.push_str("<b>");
+        close = if close.is_empty() { "</b>" } else { "</b></font>" };
+    }
+    (open, close)
+}
+
 /// One line of code as markup: its tokens coloured by class.
 fn code_line(line: &CodeLine, palette: &CodePalette, out: &mut String) {
-    let mut chars = line.text.chars();
-    for tok in &line.toks {
-        let colour = palette.of(tok.class);
-        if let Some(c) = colour {
-            out.push_str(&format!("<font color=\"{c}\">"));
-        }
+    code_text(&line.text, &line.toks, palette, out);
+}
+
+/// `text` with its tokens (UTF-16 lengths, in order) coloured by class;
+/// what they don't cover is plain.
+fn code_text(text: &str, toks: &[Tok], palette: &CodePalette, out: &mut String) {
+    let mut chars = text.chars();
+    for tok in toks {
+        let (open, close) = tok_tags(tok.class, palette);
+        out.push_str(&open);
         let mut units = 0u32;
         while units < tok.len {
             let Some(c) = chars.next() else { break };
             units = units.saturating_add(c.len_utf16() as u32);
             push_escaped(out, c, true);
         }
-        if colour.is_some() {
-            out.push_str("</font>");
-        }
+        out.push_str(close);
     }
-    // Whatever the tokens didn't cover, plain.
     for c in chars {
         push_escaped(out, c, true);
+    }
+}
+
+/// Lines of a command or an output as markup, one `<br>` between them;
+/// "" when none is coloured (the page shows the text as it is).
+pub(crate) fn lines_markup(lines: &[CodeLine], palette: &CodePalette) -> String {
+    if lines.iter().all(|l| l.toks.is_empty()) {
+        return String::new();
+    }
+    let mut out = String::new();
+    for (i, line) in lines.iter().enumerate() {
+        if i > 0 {
+            out.push_str("<br>");
+        }
+        code_line(line, palette, &mut out);
+    }
+    out
+}
+
+/// A path as markup: the folder part in the `dir` colour, the name in `file`'s.
+fn path_markup(text: &str, palette: &CodePalette, out: &mut String) {
+    let cut = text.rfind('/').map_or(0, |at| at + 1);
+    let (dir, file) = text.split_at(cut);
+    for (part, class) in [(dir, TokClass::Dir), (file, TokClass::File)] {
+        if part.is_empty() {
+            continue;
+        }
+        let (open, close) = tok_tags(class, palette);
+        out.push_str(&open);
+        for c in part.chars() {
+            push_escaped(out, c, false);
+        }
+        out.push_str(close);
     }
 }
 
@@ -692,8 +832,10 @@ pub(crate) fn code_markup(block: &Block, palette: &CodePalette) -> String {
 }
 
 /// A diff as the page's diff view reads it: files with rows, each row's
-/// text as markup with its changed words bold, at most `limit` rows.
-pub(crate) fn diff_json(doc: &DiffDoc, limit: usize) -> Value {
+/// text as markup with its changed words marked, at most `limit` rows. With
+/// the palette's word grounds a mark is a ground (struck through when
+/// removed) and the row says so (`r`: it needs rich text); else it's bold.
+pub(crate) fn diff_json(doc: &DiffDoc, limit: usize, palette: &CodePalette) -> Value {
     let mut left = limit;
     let mut more = doc.more;
     let files: Vec<Value> = doc
@@ -712,7 +854,8 @@ pub(crate) fn diff_json(doc: &DiffDoc, limit: usize) -> Value {
                         DiffKind::Add => "add",
                         DiffKind::Del => "del",
                     };
-                    json!({ "k": kind, "o": row.old_no, "n": row.new_no, "s": marked(&row.text, &row.marks) })
+                    let (s, rich) = marked(&row.text, &row.marks, row.kind, palette);
+                    json!({ "k": kind, "o": row.old_no, "n": row.new_no, "s": s, "r": rich })
                 })
                 .collect();
             json!({
@@ -720,22 +863,42 @@ pub(crate) fn diff_json(doc: &DiffDoc, limit: usize) -> Value {
                 "adds": file.adds,
                 "dels": file.dels,
                 "numbered": file.rows.iter().any(|r| r.old_no > 0 || r.new_no > 0),
+                // The longest line, in UTF-16 units: a scrolling view's width.
+                "widest": file.rows[..take].iter().map(|r| r.text.encode_utf16().count()).max().unwrap_or(0),
                 "rows": rows,
+                "note": match file.note {
+                    Some(DiffNote::Binary) => "binary",
+                    Some(DiffNote::Truncated) => "truncated",
+                    None => "",
+                },
             })
         })
         .collect();
     json!({ "files": files, "adds": doc.adds, "dels": doc.dels, "more": more })
 }
 
-/// A diff line as markup, the `(start, len)` UTF-16 ranges bold.
-fn marked(text: &str, marks: &[(u32, u32)]) -> String {
+/// A diff line as markup, the `(start, len)` UTF-16 ranges marked: on the
+/// word ground of an added or removed line (a removed word also struck
+/// through), else bold. True when it wrote a ground (rich text).
+fn marked(text: &str, marks: &[(u32, u32)], kind: DiffKind, palette: &CodePalette) -> (String, bool) {
+    let ground = match kind {
+        DiffKind::Add => palette.add_word.as_str(),
+        DiffKind::Del => palette.del_word.as_str(),
+        DiffKind::Hunk | DiffKind::Context => "",
+    };
+    let (open, close) = match (ground.is_empty(), kind) {
+        (true, _) => ("<b>".to_owned(), "</b>"),
+        (false, DiffKind::Del) => (format!("<span style=\"background-color:{ground}\"><s>"), "</s></span>"),
+        (false, _) => (format!("<span style=\"background-color:{ground}\">"), "</span>"),
+    };
+    let mut rich = false;
     let mut out = String::with_capacity(text.len() + 16);
     let mut marks = marks.iter().peekable();
     let mut end: Option<u32> = None;
     let mut pos = 0u32;
     for c in text.chars() {
         if end.is_some_and(|e| pos >= e) {
-            out.push_str("</b>");
+            out.push_str(close);
             end = None;
         }
         if end.is_none() {
@@ -746,7 +909,8 @@ fn marked(text: &str, marks: &[(u32, u32)]) -> String {
                 && *start <= pos
             {
                 marks.next();
-                out.push_str("<b>");
+                out.push_str(&open);
+                rich |= !ground.is_empty();
                 end = Some(start.saturating_add(*len));
             }
         }
@@ -754,9 +918,9 @@ fn marked(text: &str, marks: &[(u32, u32)]) -> String {
         pos = pos.saturating_add(c.len_utf16() as u32);
     }
     if end.is_some() {
-        out.push_str("</b>");
+        out.push_str(close);
     }
-    out
+    (out, rich)
 }
 
 // ---- Rows ----
@@ -774,6 +938,76 @@ pub(crate) struct Extra {
     pub in_plan: bool,
     /// The images a user message carries.
     pub images: u8,
+    /// A notice that carries Undo (the newest rewind's, while it can be undone).
+    pub undo: bool,
+}
+
+fn act_word(act: Act) -> &'static str {
+    match act {
+        Act::Hidden => "",
+        Act::On => "on",
+        Act::LatestOnly => "latest_only",
+        Act::NoRestorePoint => "no_restore_point",
+        Act::NotGit => "not_git",
+    }
+}
+
+/// A notice's wire word, as `Item.notice` carries it.
+pub(crate) fn notice_word(notice: NoticeKind) -> &'static str {
+    match notice {
+        NoticeKind::Rewound => "rewound",
+        NoticeKind::EditFromHere => "edit_from_here",
+        NoticeKind::FilesRestored => "files_restored",
+        NoticeKind::Forked => "forked",
+    }
+}
+
+/// A notice of a rewind: the one Undo goes on.
+pub(crate) fn is_undoable(notice: NoticeKind) -> bool {
+    matches!(notice, NoticeKind::Rewound | NoticeKind::EditFromHere | NoticeKind::FilesRestored)
+}
+
+fn note_word(note: NoteKind) -> &'static str {
+    match note {
+        NoteKind::Recording => "recording",
+        NoteKind::Missing => "missing",
+        NoteKind::Expired => "expired",
+        NoteKind::Unrecorded => "unrecorded",
+    }
+}
+
+fn why_word(why: CheckpointWhy) -> &'static str {
+    match why {
+        CheckpointWhy::Busy => "busy",
+        CheckpointWhy::Slow => "slow",
+        CheckpointWhy::Large => "large",
+        CheckpointWhy::Refused => "refused",
+        CheckpointWhy::Off => "off",
+        CheckpointWhy::Before => "before",
+    }
+}
+
+fn set_acts(m: &mut ModelRow, acts: &Acts) {
+    m.set_text(Role::ActFork, act_word(acts.fork));
+    m.set_text(Role::ActRewind, act_word(acts.rewind));
+    m.set_text(Role::ActEdit, act_word(acts.edit));
+    m.set_text(Role::ActRestore, act_word(acts.restore));
+}
+
+/// The files a rewind left as they were, under its notice (`left:<item
+/// id>`): each path with the reason in the app's words.
+pub(crate) fn left_row(item_id: &str, turn: u32, depth: u8, left: &[(String, String)]) -> ModelRow {
+    let mut m = ModelRow::new();
+    m.set_text(Role::Key, format!("left:{item_id}"));
+    m.set_text(Role::Kind, "left");
+    m.set_text(Role::View, "left");
+    m.set_int(Role::Turn, turn);
+    m.set_int(Role::Depth, depth);
+    m.set_text(Role::ItemId, item_id);
+    let files: Vec<Value> = left.iter().map(|(path, why)| json!({ "path": path, "why": why })).collect();
+    m.set_text(Role::Files, Value::Array(files).to_string());
+    m.set_int(Role::Count, left.len());
+    m
 }
 
 fn plan_state_word(state: PlanState) -> &'static str {
@@ -929,7 +1163,10 @@ pub(crate) fn model_row(row: &Row, extra: Extra, source: &str, palette: &CodePal
                 json!({ "class": class_word(label.class), "object": label.object, "more": label.more });
             m.set_text(Role::Label, json.to_string());
             m.set_text(Role::Text, label.object.clone());
-            m.set_text(Role::Styled, escaped(&label.object, true));
+            // The target as the crate tokenized it: a command as shell, a path as folder and name.
+            let mut styled = String::new();
+            code_text(&label.object, &label.toks, palette, &mut styled);
+            m.set_text(Role::Styled, styled);
             m.set_text(Role::Status, status_word(*status));
             m.set_flag(Role::HasDetail, *has_detail);
             m.set_flag(Role::HasOutput, *has_output);
@@ -940,22 +1177,25 @@ pub(crate) fn model_row(row: &Row, extra: Extra, source: &str, palette: &CodePal
             m.copy = source.to_owned();
         }
         RowKind::Detail { of } => match of {
-            DetailOf::Command { text } => {
+            DetailOf::Command { text, lines } => {
                 m.set_text(Role::DetailKind, "command");
                 m.set_text(Role::Text, text.clone());
+                m.set_text(Role::Styled, lines_markup(lines, palette));
                 m.copy = text.clone();
             }
             DetailOf::Diff { doc, edit, edits } => {
                 m.set_text(Role::DetailKind, "diff");
-                m.set_text(Role::Diff, diff_json(doc, INLINE_DIFF_ROWS).to_string());
+                m.set_text(Role::Diff, diff_json(doc, INLINE_DIFF_ROWS, palette).to_string());
                 m.set_int(Role::Edit, *edit);
                 m.set_int(Role::Edits, *edits);
                 m.set_int(Role::Adds, doc.adds);
                 m.set_int(Role::Dels, doc.dels);
             }
-            DetailOf::Output { text, cut } => {
+            DetailOf::Output { text, cut, lines } => {
                 m.set_text(Role::DetailKind, "output");
                 m.set_text(Role::Text, text.clone());
+                // Error, warning and pass lines marked; none marked: plain.
+                m.set_text(Role::Styled, lines_markup(lines, palette));
                 m.set_flag(Role::Cut, *cut);
                 m.copy = text.clone();
             }
@@ -977,7 +1217,7 @@ pub(crate) fn model_row(row: &Row, extra: Extra, source: &str, palette: &CodePal
             m.set_int(Role::Hidden, *hidden);
             m.set_flag(Role::IsOpen, *open);
         }
-        RowKind::Changes { files, adds, dels, more } => {
+        RowKind::Changes { files, adds, dels, more, recorded } => {
             let files: Vec<Value> = files
                 .iter()
                 .map(|f| json!({ "path": f.path, "adds": f.adds, "dels": f.dels, "open": f.open }))
@@ -986,13 +1226,21 @@ pub(crate) fn model_row(row: &Row, extra: Extra, source: &str, palette: &CodePal
             m.set_int(Role::Adds, *adds);
             m.set_int(Role::Dels, *dels);
             m.set_int(Role::More, *more);
+            m.set_flag(Role::Recorded, *recorded);
+        }
+        RowKind::ChangesNote { note, why, count } => {
+            m.set_text(Role::Note, note_word(*note));
+            m.set_text(Role::Why, why.map_or("", why_word));
+            m.set_int(Role::Count, *count);
         }
         RowKind::Mark { kind, by } => {
             m.set_text(Role::MarkKind, mark_word(*kind));
             m.set_text(Role::By, by.clone());
         }
-        RowKind::Notice { text } => {
+        RowKind::Notice { text, notice } => {
             m.set_text(Role::Text, text.clone());
+            m.set_text(Role::Notice, notice.map_or("", notice_word));
+            m.set_flag(Role::Undo, extra.undo && notice.is_some_and(is_undoable));
             m.copy = text.clone();
         }
         RowKind::Plan { state, shown, more, open } => {
@@ -1021,6 +1269,7 @@ pub(crate) fn model_row(row: &Row, extra: Extra, source: &str, palette: &CodePal
             m.set_real(Role::SinceMs, *since_ms);
         }
     }
+    set_acts(&mut m, &row.acts);
     m
 }
 
@@ -1140,7 +1389,7 @@ mod tests {
     /// must have no `<` or `>` and only the entities written here.
     fn without_our_tags(markup: &str) -> String {
         let mut s = markup.to_owned();
-        for tag in ["<b>", "</b>", "<i>", "</i>", "<s>", "</s>", "</a>", "</font>", "<br>"] {
+        for tag in ["<b>", "</b>", "<i>", "</i>", "<s>", "</s>", "</a>", "</font>", "</span>", "<br>"] {
             s = s.replace(tag, "");
         }
         let mut out = String::new();
@@ -1154,7 +1403,8 @@ mod tests {
                 ok(&body[..end]).then_some(prefix.len() + end + 2)
             };
             let skip = quoted("<a href=\"", |n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
-                .or_else(|| quoted("<font color=\"", is_colour));
+                .or_else(|| quoted("<font color=\"", is_colour))
+                .or_else(|| quoted("<span style=\"background-color:", is_colour));
             match skip {
                 Some(len) => rest = &tail[len..],
                 None => {
@@ -1210,6 +1460,7 @@ mod tests {
                     depth: 0,
                     item_id: "m".into(),
                     seq: 1,
+                    acts: Default::default(),
                 };
                 model_row(&row, Extra::default(), "", &palette())
             })
@@ -1240,7 +1491,11 @@ mod tests {
         let all: String = (0u32..0x3000).filter_map(char::from_u32).collect();
         assert_only_our_tags(&escaped(&all, false));
         assert_only_our_tags(&escaped(&all, true));
-        assert_only_our_tags(&marked(&all, &[(3, 40), (10, 5), (200, 9_000)]));
+        let marks = [(3, 40), (10, 5), (200, 9_000)];
+        assert_only_our_tags(&marked(&all, &marks, DiffKind::Del, &palette()).0);
+        let grounds = CodePalette::from_json(r##"{ "addWord": "#55693c", "delWord": "#663e40" }"##);
+        assert_only_our_tags(&marked(&all, &marks, DiffKind::Del, &grounds).0);
+        assert_only_our_tags(&marked(&all, &marks, DiffKind::Add, &grounds).0);
     }
 
     /// A fixture's input: a string, or `{ repeat, times, before, after }`
@@ -1321,7 +1576,15 @@ mod tests {
 
     #[test]
     fn plans_questions_and_steered_messages_have_their_roles() {
-        let row = |kind| Row { key: "k".into(), kind, turn: 2, depth: 0, item_id: "p1".into(), seq: 1 };
+        let row = |kind| Row {
+            key: "k".into(),
+            kind,
+            turn: 2,
+            depth: 0,
+            item_id: "p1".into(),
+            seq: 1,
+            acts: Default::default(),
+        };
         let plan = model_row(
             &row(RowKind::Plan { state: PlanState::Replaced, shown: 0, more: 4, open: false }),
             Extra::default(),
@@ -1379,6 +1642,7 @@ mod tests {
             depth: 0,
             item_id: "p1".into(),
             seq: 1,
+            acts: Default::default(),
         };
         block = model_row(&source, Extra { in_plan: true, ..Extra::default() }, "", &palette());
         assert_eq!(block.text(Role::PlanPart), "body");
@@ -1387,6 +1651,88 @@ mod tests {
         assert_only_our_tags(&inline);
         assert_eq!(inline.matches("<font").count(), 1, "a lone backtick is text: {inline}");
         assert!(inline.ends_with('`'), "{inline}");
+    }
+
+    #[test]
+    fn changes_notices_and_actions_have_their_roles() {
+        let row =
+            |kind, acts| Row { key: "k".into(), kind, turn: 3, depth: 0, item_id: "u1".into(), seq: 1, acts };
+        let acts = Acts { fork: Act::LatestOnly, rewind: Act::On, edit: Act::On, restore: Act::NotGit };
+        let user = model_row(
+            &row(
+                RowKind::User { text: "Fix it".into(), from: String::new(), deny_of: false, via: Via::Turn },
+                acts,
+            ),
+            Extra::default(),
+            "",
+            &palette(),
+        );
+        assert_eq!(
+            [Role::ActFork, Role::ActRewind, Role::ActEdit, Role::ActRestore]
+                .map(|r| user.text(r).to_owned()),
+            ["latest_only", "on", "on", "not_git"]
+        );
+        let hidden = model_row(
+            &row(RowKind::Notice { text: "Stopped".into(), notice: None }, Acts::default()),
+            Extra { undo: true, ..Extra::default() },
+            "",
+            &palette(),
+        );
+        assert_eq!(hidden.text(Role::ActFork), "", "a hidden action is empty");
+        assert_eq!(hidden.get(Role::Undo), &RoleValue::Flag(false), "only a rewind's notice carries Undo");
+        let rewound = model_row(
+            &row(
+                RowKind::Notice { text: "Rewound to here".into(), notice: Some(NoticeKind::EditFromHere) },
+                Acts::default(),
+            ),
+            Extra { undo: true, ..Extra::default() },
+            "",
+            &palette(),
+        );
+        assert_eq!(
+            (rewound.text(Role::Notice), rewound.get(Role::Undo)),
+            ("edit_from_here", &RoleValue::Flag(true))
+        );
+        let forked = model_row(
+            &row(
+                RowKind::Notice { text: "Forked".into(), notice: Some(NoticeKind::Forked) },
+                Acts::default(),
+            ),
+            Extra { undo: true, ..Extra::default() },
+            "",
+            &palette(),
+        );
+        assert_eq!(forked.get(Role::Undo), &RoleValue::Flag(false), "a fork has nothing to undo");
+        let note = model_row(
+            &row(
+                RowKind::ChangesNote { note: NoteKind::Missing, why: Some(CheckpointWhy::Busy), count: 0 },
+                Acts::default(),
+            ),
+            Extra::default(),
+            "",
+            &palette(),
+        );
+        assert_eq!(
+            (note.text(Role::View), note.text(Role::Note), note.text(Role::Why)),
+            ("changes_note", "missing", "busy")
+        );
+        let changes = model_row(
+            &row(
+                RowKind::Changes { files: Vec::new(), adds: 3, dels: 1, more: 0, recorded: true },
+                Acts::default(),
+            ),
+            Extra::default(),
+            "",
+            &palette(),
+        );
+        assert_eq!(changes.get(Role::Recorded), &RoleValue::Flag(true));
+        let left = left_row("n1", 3, 0, &[("a.rs".into(), "not a file".into())]);
+        assert_eq!(
+            (left.key(), left.text(Role::View), left.get(Role::Count)),
+            ("left:n1", "left", &RoleValue::Int(1))
+        );
+        let files: Value = serde_json::from_str(left.text(Role::Files)).unwrap();
+        assert_eq!(files, json!([{ "path": "a.rs", "why": "not a file" }]));
     }
 
     #[test]
@@ -1419,9 +1765,57 @@ mod tests {
     }
 
     #[test]
+    fn the_palette_colours_and_styles_code_tools_paths_and_diff_words() {
+        let palette = CodePalette::from_json(
+            r##"{ "keyword": "#ed93b1", "comment": "#a1a1a8", "function": "#7cb7ee", "dir": "#a1a1a8",
+                 "file": "#f2f2f3", "error": "#f0a39c", "inline": "#f0997b", "addWord": "#55693c",
+                 "delWord": "#663e40", "styles": { "comment": "italic", "keyword": "semibold", "tag": "bold?" } }"##,
+        );
+        // Classes keep their styles: a comment italic, a keyword semibold.
+        let mut out = String::new();
+        let toks = [
+            Tok { len: 2, class: TokClass::Keyword },
+            Tok { len: 1, class: TokClass::Plain },
+            Tok { len: 4, class: TokClass::Comment },
+        ];
+        code_text("fn // x", &toks, &palette, &mut out);
+        assert_eq!(
+            out,
+            "<font color=\"#ed93b1\"><b>fn</b></font>&nbsp;<font color=\"#a1a1a8\"><i>//&nbsp;x</i></font>"
+        );
+        assert_only_our_tags(&out);
+        // A tool's target as its tokens say; an output with no line marked stays plain.
+        let line =
+            CodeLine { text: "cargo test".into(), toks: vec![Tok { len: 5, class: TokClass::Function }] };
+        assert!(
+            lines_markup(std::slice::from_ref(&line), &palette).starts_with("<font color=\"#7cb7ee\">cargo")
+        );
+        assert_eq!(lines_markup(&[CodeLine { text: "ok".into(), toks: Vec::new() }], &palette), "");
+        // A path in inline code: the folder muted, the name in ink.
+        let doc = g7_agents_render::markdown("See `src/sync/queue.rs`.");
+        let mut spans = doc.blocks[0].spans.clone();
+        spans.iter_mut().for_each(|s| s.style.path = true);
+        let path = styled(&doc.blocks[0].text, &spans, &mut Vec::new(), &palette);
+        assert!(
+            path.contains("<font color=\"#a1a1a8\">src/sync/</font><font color=\"#f2f2f3\">queue.rs</font>"),
+            "{path}"
+        );
+        assert_only_our_tags(&path);
+        // A changed word is a ground; a removed one is struck through too.
+        let diff = g7_agents_render::diff("-let a = 1;\n+let a = 2;\n");
+        let json = diff_json(&diff, 10, &palette);
+        let removed = json["files"][0]["rows"][0]["s"].as_str().unwrap();
+        assert!(removed.contains("<span style=\"background-color:#663e40\"><s>1;</s></span>"), "{removed}");
+        assert_eq!(json["files"][0]["rows"][0]["r"], true, "it needs rich text");
+        assert_only_our_tags(removed);
+        let plain = diff_json(&diff, 10, &CodePalette::default());
+        assert_eq!(plain["files"][0]["rows"][1]["r"], false);
+    }
+
+    #[test]
     fn diffs_mark_changed_words_and_stop_at_the_limit() {
         let doc = g7_agents_render::diff("-let a = 1;\n+let a = 2;\n context <x>\n");
-        let json = diff_json(&doc, 2);
+        let json = diff_json(&doc, 2, &CodePalette::default());
         assert_eq!(json["more"], true);
         let file = &json["files"][0];
         assert_eq!(file["numbered"], false, "no hunk headers: no line numbers");
@@ -1430,7 +1824,8 @@ mod tests {
         let added = file["rows"][1]["s"].as_str().unwrap();
         assert!(added.contains("<b>2"), "the changed word is bold: {added}");
         assert_only_our_tags(added);
-        let numbered = diff_json(&g7_agents_render::diff("@@ -3,1 +3,1 @@\n-a\n+b\n"), 400);
+        let numbered =
+            diff_json(&g7_agents_render::diff("@@ -3,1 +3,1 @@\n-a\n+b\n"), 400, &CodePalette::default());
         assert_eq!(numbered["files"][0]["numbered"], true);
     }
 

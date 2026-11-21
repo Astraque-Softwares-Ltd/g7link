@@ -1053,7 +1053,9 @@ pub fn run_action(device: &str, key: String, action: String, reply: Option<Strin
     });
 }
 
-fn report(error: &Error) {
+/// Says why something done to a phone's notification (dismissing it, an
+/// action, "Remove conversation" on its chat) didn't happen.
+pub(crate) fn report(error: &Error) {
     let message = match error {
         Error::NotFound => tr!("Notifications", "That notification is gone from the phone."),
         other => crate::bridge::app::describe(other),

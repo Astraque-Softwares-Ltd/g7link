@@ -74,6 +74,7 @@ Item {
                         horizontalAlignment: cell.align === "right" ? Text.AlignRight
                             : (cell.align === "center" ? Text.AlignHCenter : Text.AlignLeft)
                         color: cell.modelData.header ? Theme.surfaceContentVariant : Theme.surfaceContent
+                        font.weight: cell.modelData.header ? 600 : Theme.typography.body.weight
                         linkColor: Theme.accent
                         font.family: Theme.fontUi
                         font.pixelSize: cell.modelData.header ? Theme.typography.bodySmall.size

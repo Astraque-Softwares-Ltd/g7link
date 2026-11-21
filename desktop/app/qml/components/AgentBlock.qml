@@ -25,9 +25,19 @@ Item {
     required property bool truncated
     // "body" inside a plan's card.
     required property string planPart
+    required property int turn
+    // "Fork from here" on the final answer's last block (see AgentRowActions).
+    required property string actFork
+    // For the reason an action can't be done.
+    property string agentName
+    // The message a search hit opened the thread at, lit up for a moment.
+    property string highlightItem: ""
+    readonly property bool lit: highlightItem.length > 0 && highlightItem === itemId
 
     // A link in it was clicked: `index` is its number in the markup.
     signal linkActivated(string key, int index)
+    // "Fork from here" on the answer: a new thread through this turn.
+    signal forkRequested(int turn)
 
     readonly property bool heading: blockKind === "heading"
     readonly property bool listItem: blockKind === "item"
@@ -36,15 +46,7 @@ Item {
     // Inside a plan's card, its text keeps clear of the card's sides.
     readonly property real planInset: inPlan ? 16 : 0
     readonly property real indent: depth * 18 + quote * 14 + (listItem ? level * 18 + 20 : 0) + planInset
-    readonly property color alertColor: {
-        switch (blockKind) {
-        case "tip": return Theme.tintTeal
-        case "important": return Theme.tintLavender
-        case "warning": return Theme.tintAmber
-        case "caution": return Theme.error
-        default: return Theme.tintBlue
-        }
-    }
+    readonly property color alertColor: AgentPalette.alert(blockKind)
     readonly property string alertWord: {
         switch (blockKind) {
         case "tip": return qsTr("Tip")
@@ -70,6 +72,17 @@ Item {
 
     Accessible.role: Accessible.Paragraph
     Accessible.name: text.text
+
+    Rectangle {
+        visible: block.lit
+        x: block.indent - 10
+        width: parent.width - x
+        height: parent.height
+        radius: Theme.radiusMd
+        color: Theme.selection
+        border.width: 1.5
+        border.color: Theme.accent
+    }
 
     AgentPlanFrame {
         visible: block.inPlan
@@ -144,7 +157,7 @@ Item {
                     width: 11
                     height: 11
                     path: Icons.check
-                    color: Theme.tintGreen
+                    color: AgentPalette.doneBox
                 }
             }
             Text {
@@ -176,6 +189,14 @@ Item {
                 height: parent.height
                 color: block.alertColor
             }
+            // Level 1 and 2 headings: a lavender rule, the text in ink.
+            Rectangle {
+                visible: block.heading && block.level <= 2 && !block.inPlan
+                x: -10
+                width: 2
+                height: parent.height
+                color: AgentPalette.headingRule
+            }
         }
     }
 
@@ -197,7 +218,7 @@ Item {
         anchors.top: cut.visible ? cut.bottom : body.bottom
         anchors.topMargin: 2
         x: block.indent
-        height: visible ? 22 : 0
+        height: visible ? 26 : 0
         spacing: 10
         opacity: hover.hovered ? 1 : 0
         Behavior on opacity { enabled: !Theme.reduceMotion; NumberAnimation { duration: Theme.fadeFast } }
@@ -207,24 +228,12 @@ Item {
             role: "caption"
             muted: true
         }
-        TextAction {
-            id: copy
-            property bool done: false
+        AgentRowActions {
             anchors.verticalCenter: parent.verticalCenter
-            text: done ? qsTr("Copied") : qsTr("Copy")
-            iconPath: done ? Icons.check : Icons.copy
-            iconColor: Theme.surfaceContentVariant
-            onClicked: {
-                if (Agents.copyText("i:" + block.itemId)) {
-                    copy.done = true
-                    copiedTimer.restart()
-                }
-            }
-            Timer {
-                id: copiedTimer
-                interval: 1500
-                onTriggered: copy.done = false
-            }
+            itemId: block.itemId
+            fork: block.actFork
+            agentName: block.agentName
+            onForkRequested: block.forkRequested(block.turn)
         }
     }
     HoverHandler {

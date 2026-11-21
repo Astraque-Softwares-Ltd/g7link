@@ -2,6 +2,15 @@
 <!DOCTYPE TS>
 <TS version="2.1" language="pt_BR" sourcelanguage="en_US">
 <context>
+    <name>AgentsPage</name>
+    <message>
+        <location filename="../qml/pages/AgentsPage.qml" line="2939"/>
+        <location filename="../qml/pages/AgentsPage.qml" line="2966"/>
+        <source>Unsnooze</source>
+        <translation>Cancelar adiamento</translation>
+    </message>
+</context>
+<context>
     <name>App</name>
     <message>
         <location filename="rust_strings.h" line="7"/>
@@ -5487,6 +5496,11 @@ O que precisa
         <source>The text wasn&apos;t sent: this conversation isn&apos;t loaded yet. Try again in a moment.</source>
         <translation>A mensagem não foi enviada: a conversa ainda está carregando. Tente de novo em instantes.</translation>
     </message>
+    <message>
+        <location filename="rust_strings.h" line="426"/>
+        <source>%1 · Not on the phone now</source>
+        <translation>%1 · Não está mais no celular</translation>
+    </message>
 </context>
 <context>
     <name>MessagesPage</name>
@@ -5800,6 +5814,94 @@ O que precisa
         <location filename="../qml/pages/MessagesPage.qml" line="1492"/>
         <source>Done</source>
         <translation>Concluído</translation>
+    </message>
+    <message>
+        <location filename="../qml/pages/MessagesPage.qml" line="68"/>
+        <source>Messages · %1 on your phone now · %2 unread</source>
+        <translation>Mensagens · %1 no celular agora · %2 não lidas</translation>
+    </message>
+    <message>
+        <location filename="../qml/pages/MessagesPage.qml" line="69"/>
+        <source>Messages · %1 on your phone now</source>
+        <translation>Mensagens · %1 no celular agora</translation>
+    </message>
+    <message>
+        <location filename="../qml/pages/MessagesPage.qml" line="96"/>
+        <source>Keep this chat on the PC</source>
+        <translation>Manter este chat no PC</translation>
+    </message>
+    <message>
+        <location filename="../qml/pages/MessagesPage.qml" line="100"/>
+        <source>Remove conversation</source>
+        <translation>Remover conversa</translation>
+    </message>
+    <message>
+        <location filename="../qml/pages/MessagesPage.qml" line="478"/>
+        <source>Nothing waiting on your phone.</source>
+        <translation>Nada esperando no celular.</translation>
+    </message>
+    <message>
+        <location filename="../qml/pages/MessagesPage.qml" line="582"/>
+        <source>App chats show here while their notification is on your phone. Reply from here, or pin one, to keep it.</source>
+        <translation>Os chats de apps aparecem aqui enquanto a notificação estiver no celular. Responda daqui ou fixe um chat para mantê-lo.</translation>
+    </message>
+    <message>
+        <location filename="../qml/pages/MessagesPage.qml" line="640"/>
+        <source>%1 group</source>
+        <translation>Grupo do %1</translation>
+    </message>
+    <message>
+        <location filename="../qml/pages/MessagesPage.qml" line="642"/>
+        <source>%1 · cleared on the phone at %2</source>
+        <translation>%1 · limpa no celular às %2</translation>
+    </message>
+    <message>
+        <location filename="../qml/pages/MessagesPage.qml" line="645"/>
+        <source>%1 · not on the phone now</source>
+        <translation>%1 · não está mais no celular</translation>
+    </message>
+    <message numerus="yes">
+        <location filename="../qml/pages/MessagesPage.qml" line="646"/>
+        <source>%1 · on your phone now · %n new</source>
+        <translation>
+            <numerusform>%1 · no celular agora · %n nova</numerusform>
+            <numerusform>%1 · no celular agora · %n novas</numerusform>
+        </translation>
+    </message>
+    <message>
+        <location filename="../qml/pages/MessagesPage.qml" line="647"/>
+        <source>%1 · on your phone now</source>
+        <translation>%1 · no celular agora</translation>
+    </message>
+    <message>
+        <location filename="../qml/pages/MessagesPage.qml" line="999"/>
+        <source>Cleared on the phone. It leaves this PC when you close it.</source>
+        <translation>Limpa no celular. Sai deste PC quando você fechar.</translation>
+    </message>
+    <message>
+        <location filename="../qml/pages/MessagesPage.qml" line="1010"/>
+        <source>Keep on this PC</source>
+        <translation>Manter neste PC</translation>
+    </message>
+    <message>
+        <location filename="../qml/pages/MessagesPage.qml" line="1203"/>
+        <source>Replies need the notification on the phone</source>
+        <translation>Para responder, a notificação precisa estar no celular</translation>
+    </message>
+    <message>
+        <location filename="../qml/pages/MessagesPage.qml" line="1243"/>
+        <source>On your phone now</source>
+        <translation>No celular agora</translation>
+    </message>
+    <message>
+        <location filename="../qml/pages/MessagesPage.qml" line="1244"/>
+        <source>On your phone when last connected</source>
+        <translation>No celular na última conexão</translation>
+    </message>
+    <message>
+        <location filename="../qml/pages/MessagesPage.qml" line="1255"/>
+        <source>SMS and kept chats</source>
+        <translation>SMS e chats mantidos</translation>
     </message>
 </context>
 <context>

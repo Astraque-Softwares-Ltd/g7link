@@ -72,7 +72,7 @@ Item {
                 width: 16
                 height: 16
                 path: dock.ask.kind === "edit" ? Icons.edit : Icons.terminal
-                color: Theme.tintAmber
+                color: AgentPalette.needsYou
             }
             Txt {
                 id: titleText
@@ -258,13 +258,13 @@ Item {
                     width: 13
                     height: 13
                     path: Icons.keyboard
-                    color: Theme.tintAmber
+                    color: AgentPalette.needsYou
                 }
                 Txt {
                     anchors.verticalCenter: parent.verticalCenter
                     text: dock.held ? qsTr("Arrived while you were typing") : dock.asked
                     role: "caption"
-                    color: dock.held ? Theme.tintAmber : Theme.surfaceContentVariant
+                    color: dock.held ? AgentPalette.needsYou : Theme.surfaceContentVariant
                 }
             }
         }

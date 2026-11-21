@@ -14,12 +14,27 @@ Column {
     // Agents.setup, parsed.
     property var setup: ({})
     signal addFolderRequested
+    // "Bring in earlier sessions".
+    signal importRequested
 
     readonly property bool connected: setup.status === "connected"
     readonly property var agents: connected ? (setup.agents || []) : []
     readonly property var folders: connected ? (setup.folders || []) : []
     // The host has phase 2's settings (keeping awake, MCP per folder).
     readonly property bool control: connected && setup.control === true
+    // The host keeps a store of threads, and restore points.
+    readonly property bool history: connected && setup.history === true
+    readonly property bool undo: connected && setup.undo === true
+    readonly property var store: setup.store || ({})
+
+    // "61 MB", "820 KB": what the host keeps on disk.
+    function size(bytes) {
+        if (bytes >= 1073741824)
+            return qsTr("%1 GB").arg((bytes / 1073741824).toLocaleString(Qt.locale(), "f", 1))
+        if (bytes >= 1048576)
+            return qsTr("%1 MB").arg(Math.round(bytes / 1048576))
+        return qsTr("%1 KB").arg(Math.max(1, Math.round(bytes / 1024)))
+    }
     // Codex follows a folder's switch too, or always loads its servers.
     readonly property bool codexSwitch: agents.some((a) => a.id === "codex" && a.mcpSwitch === true)
     readonly property bool codexShown: agents.some((a) => a.id === "codex" && a.installed)
@@ -277,6 +292,28 @@ Column {
     }
 
     // ---- Folders ----
+    // What G7 keeps: threads, and the restore points' size; earlier
+    // sessions can be brought in.
+    Column {
+        visible: area.history
+        width: parent.width
+        SectionLabel { width: parent.width; text: qsTr("History") }
+        Line {
+            iconPath: Icons.history
+            title: area.store.threads === undefined ? qsTr("Threads in G7")
+                : area.undo ? qsTr("%1 threads · %2 · restore points %3").arg(area.store.threads)
+                              .arg(area.size(area.store.bytes || 0)).arg(area.size(area.store.checkpointBytes || 0))
+                : qsTr("%1 threads · %2").arg(area.store.threads).arg(area.size(area.store.bytes || 0))
+            Button {
+                variant: "tonal"
+                size: "sm"
+                iconPath: Icons.download
+                text: qsTr("Bring in earlier sessions")
+                onClicked: area.importRequested()
+            }
+        }
+    }
+
     Column {
         visible: area.connected
         width: parent.width
@@ -347,6 +384,19 @@ Column {
                         label: qsTr("Use my MCP servers here")
                         checked: folderItem.modelData.mcp !== false
                         onToggled: (on) => Agents.setFolderMcp(folderItem.modelData.id, on)
+                    }
+                }
+                // A restore point for each turn, in G7's own folder.
+                Line {
+                    visible: area.undo
+                    indent: 30
+                    iconPath: Icons.history
+                    title: qsTr("Keep a restore point for each turn")
+                    description: qsTr("Kept in G7's own folder on this PC, not in your repository. Nothing is added to .git and nothing can be pushed.")
+                    Toggle {
+                        label: qsTr("Keep a restore point for each turn")
+                        checked: folderItem.modelData.checkpoints !== false
+                        onToggled: (on) => Agents.setFolderCheckpoints(folderItem.modelData.id, on)
                     }
                 }
             }

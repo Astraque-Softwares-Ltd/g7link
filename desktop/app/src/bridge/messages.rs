@@ -24,10 +24,20 @@ pub mod qobject {
         #[qproperty(QString, device)]
         /// "idle", "loading", "ready", "offline", "off", "unsupported" or "failed".
         #[qproperty(QString, status)]
-        /// Conversations, newest first (JSON).
+        /// Conversations (JSON): chats on the phone now (`section` "live"),
+        /// then texts and kept chats ("kept"), each newest first.
         #[qproperty(QString, threads)]
+        /// Rows in the "live" section.
+        #[qproperty(i32, live_count, cxx_name = "liveCount")]
+        /// Unread messages in the list.
+        #[qproperty(i32, unread_count, cxx_name = "unreadCount")]
+        /// The phone is connected.
+        #[qproperty(bool, online)]
         /// The open conversation's ID ("" for none).
         #[qproperty(QString, thread)]
+        /// The open conversation's row (JSON, `null` for none), also for a
+        /// chat cleared on the phone that the list no longer has.
+        #[qproperty(QString, current)]
         /// Its messages, oldest first (JSON).
         #[qproperty(QString, messages)]
         /// Older messages can be loaded.
@@ -101,10 +111,15 @@ pub mod qobject {
         #[qinvokable]
         #[cxx_name = "filterByApp"]
         fn filter_by_app(self: &Messages, app: &QString);
-        /// Deletes a persisted MessagingStyle chat conversation locally.
+        /// "Remove conversation": deletes a chat here and, while its
+        /// notification is on the phone, clears it there.
         #[qinvokable]
         #[cxx_name = "deleteChatThread"]
         fn delete_chat_thread(self: &Messages, thread: &QString);
+        /// Keeps a chat on this PC after its notification leaves the phone, or stops.
+        #[qinvokable]
+        #[cxx_name = "setKept"]
+        fn set_kept(self: &Messages, thread: &QString, kept: bool);
         /// Stages an image file (from drag-and-drop or file picker) as an MMS attachment.
         #[qinvokable]
         #[cxx_name = "attachFile"]
@@ -125,7 +140,11 @@ pub struct MessagesRust {
     device: QString,
     status: QString,
     threads: QString,
+    live_count: i32,
+    unread_count: i32,
+    online: bool,
     thread: QString,
+    current: QString,
     messages: QString,
     more: bool,
     loading_older: bool,
@@ -152,6 +171,7 @@ impl cxx_qt::Initialize for qobject::Messages {
     fn initialize(mut self: Pin<&mut Self>) {
         self.as_mut().set_status(QString::from("idle"));
         self.as_mut().set_threads(QString::from("[]"));
+        self.as_mut().set_current(QString::from("null"));
         self.as_mut().set_messages(QString::from("[]"));
         self.as_mut().set_available_apps(QString::from("[]"));
         super::subscribe(self.qt_thread(), Changes::MESSAGES, Self::update_view);
@@ -173,6 +193,13 @@ impl qobject::Messages {
         self.as_mut().set_status(QString::from(view.status.as_str()));
         if differs(|v| &v.threads) {
             self.as_mut().set_threads(QString::from(&view.threads.to_string()));
+        }
+        self.as_mut().set_live_count(i32::try_from(view.live_count).unwrap_or(i32::MAX));
+        self.as_mut().set_unread_count(i32::try_from(view.unread_count).unwrap_or(i32::MAX));
+        self.as_mut().set_online(view.online);
+        // Before the ID, so the page has the conversation when the ID says it changed.
+        if differs(|v| &v.current) {
+            self.as_mut().set_current(QString::from(&view.current.to_string()));
         }
         self.as_mut().set_thread(QString::from(view.thread.as_deref().unwrap_or_default()));
         if differs(|v| &v.messages) {
@@ -252,6 +279,10 @@ impl qobject::Messages {
 
     pub fn delete_chat_thread(&self, thread: &QString) {
         messages::delete_chat_thread(String::from(thread));
+    }
+
+    pub fn set_kept(&self, thread: &QString, kept: bool) {
+        messages::set_chat_kept(String::from(thread), kept);
     }
 
     pub fn attach_file(&self, path_or_url: &QString) -> bool {

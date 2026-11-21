@@ -223,16 +223,56 @@ Item {
         id: box
         y: offer.height
         width: parent.width
-        height: queue.height + strip.height + inputArea.height + actions.height + 12
+        height: editing.height + queue.height + strip.height + inputArea.height + actions.height + 12
         radius: Theme.rowRadius
         color: Theme.raised
         border.width: input.activeFocus ? 1 : 0
         border.color: Theme.focusRing
 
+        // Edit from here: the message is back in the box; Cancel undoes the rewind.
+        Rectangle {
+            id: editing
+            x: 4
+            y: 4
+            width: parent.width - 8
+            height: composer.controls.editing === true ? 28 : 0
+            visible: height > 0
+            radius: Theme.radiusSm
+            color: Theme.selection
+            Row {
+                x: 8
+                anchors.verticalCenter: parent.verticalCenter
+                spacing: 8
+                Icon {
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: 14
+                    height: 14
+                    path: Icons.edit
+                    color: Theme.accent
+                }
+                Txt {
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: qsTr("Editing your message")
+                    role: "bodySmall"
+                    weight: 500
+                }
+            }
+            Button {
+                anchors.right: parent.right
+                anchors.rightMargin: 2
+                anchors.verticalCenter: parent.verticalCenter
+                variant: "text"
+                size: "sm"
+                text: qsTr("Cancel")
+                enabled: !composer.busy
+                onClicked: Agents.undoRewind()
+            }
+        }
+
         AgentQueue {
             id: queue
             x: 4
-            y: 4
+            y: 4 + editing.height
             width: parent.width - 8
             height: implicitHeight
             waiting: composer.controls.queue || ({})

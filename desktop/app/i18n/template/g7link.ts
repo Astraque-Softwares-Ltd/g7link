@@ -2,6 +2,15 @@
 <!DOCTYPE TS>
 <TS version="2.1">
 <context>
+    <name>AgentsPage</name>
+    <message>
+        <location filename="../../qml/pages/AgentsPage.qml" line="2939"/>
+        <location filename="../../qml/pages/AgentsPage.qml" line="2966"/>
+        <source>Unsnooze</source>
+        <translation type="unfinished"></translation>
+    </message>
+</context>
+<context>
     <name>App</name>
     <message>
         <location filename="../rust_strings.h" line="7"/>
@@ -5212,6 +5221,11 @@ What it needs
         <source>The text wasn&apos;t sent: this conversation isn&apos;t loaded yet. Try again in a moment.</source>
         <translation type="unfinished"></translation>
     </message>
+    <message>
+        <location filename="../rust_strings.h" line="426"/>
+        <source>%1 · Not on the phone now</source>
+        <translation type="unfinished"></translation>
+    </message>
 </context>
 <context>
     <name>MessagesPage</name>
@@ -5523,6 +5537,93 @@ What it needs
     <message>
         <location filename="../../qml/pages/MessagesPage.qml" line="1492"/>
         <source>Done</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../../qml/pages/MessagesPage.qml" line="68"/>
+        <source>Messages · %1 on your phone now · %2 unread</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../../qml/pages/MessagesPage.qml" line="69"/>
+        <source>Messages · %1 on your phone now</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../../qml/pages/MessagesPage.qml" line="96"/>
+        <source>Keep this chat on the PC</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../../qml/pages/MessagesPage.qml" line="100"/>
+        <source>Remove conversation</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../../qml/pages/MessagesPage.qml" line="478"/>
+        <source>Nothing waiting on your phone.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../../qml/pages/MessagesPage.qml" line="582"/>
+        <source>App chats show here while their notification is on your phone. Reply from here, or pin one, to keep it.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../../qml/pages/MessagesPage.qml" line="640"/>
+        <source>%1 group</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../../qml/pages/MessagesPage.qml" line="642"/>
+        <source>%1 · cleared on the phone at %2</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../../qml/pages/MessagesPage.qml" line="645"/>
+        <source>%1 · not on the phone now</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message numerus="yes">
+        <location filename="../../qml/pages/MessagesPage.qml" line="646"/>
+        <source>%1 · on your phone now · %n new</source>
+        <translation type="unfinished">
+            <numerusform></numerusform>
+        </translation>
+    </message>
+    <message>
+        <location filename="../../qml/pages/MessagesPage.qml" line="647"/>
+        <source>%1 · on your phone now</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../../qml/pages/MessagesPage.qml" line="999"/>
+        <source>Cleared on the phone. It leaves this PC when you close it.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../../qml/pages/MessagesPage.qml" line="1010"/>
+        <source>Keep on this PC</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../../qml/pages/MessagesPage.qml" line="1203"/>
+        <source>Replies need the notification on the phone</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../../qml/pages/MessagesPage.qml" line="1243"/>
+        <source>On your phone now</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../../qml/pages/MessagesPage.qml" line="1244"/>
+        <source>On your phone when last connected</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../../qml/pages/MessagesPage.qml" line="1255"/>
+        <source>SMS and kept chats</source>
         <translation type="unfinished"></translation>
     </message>
 </context>

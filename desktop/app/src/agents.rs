@@ -14,7 +14,7 @@
 //! PC: phones get a folder's id and name.
 
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     sync::{Arc, Mutex, OnceLock},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -38,8 +38,9 @@ use g7link_core::{
     AgentDraft, AgentDraftSaved, AgentEvent, AgentExport, AgentFailure, AgentFileHit, AgentFiles, AgentImage,
     AgentItem, AgentItemQuestion, AgentItems, AgentLimit, AgentMcp, AgentModel, AgentPlanStep, AgentQuestion,
     AgentQuestionAsk, AgentQuestionOption, AgentQuestioned, AgentQueued, AgentReply, AgentRequest,
-    AgentSession, AgentSessionItems, AgentThread, AgentTool, DeviceId, Node, QueueAction, agent,
+    AgentSession, AgentSessionItems, AgentThread, AgentTool, AgentTurn, DeviceId, Node, QueueAction, agent,
 };
+use g7link_core::{AgentCut, AgentImportJob, AgentImportProgress, AgentPatchPage, history as wire_history};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::sync::{Notify, watch};
@@ -47,7 +48,18 @@ use tokio::sync::{Notify, watch};
 use crate::{core_host, i18n::tr, state::Changes};
 
 mod control;
+mod history;
+mod history_page;
+#[cfg(test)]
+mod history_tests;
 mod rows;
+pub(crate) use history_page::{
+    diff_close, diff_open, diff_scope, diff_select, diff_step, edit_from_here, fork_turn, import_agent,
+    import_cancel, import_clear, import_close, import_more, import_open, import_pick, import_pick_group,
+    import_query, import_start, mark, open_hit, preview_close, preview_open, rename, rewind_apply,
+    rewind_choose, rewind_close, rewind_focus, rewind_later, rewind_open, search, set_folder_checkpoints,
+    show_shelf, store_info, undo_rewind,
+};
 pub(crate) use rows::{CodePalette, LinkRef, ModelRow, Role, RoleValue, RowOp};
 #[cfg(test)]
 pub(crate) use rows::{Extra, model_row};
@@ -285,6 +297,7 @@ impl Entry {
                     .and_then(|o| o.device_name.as_deref())
                     .unwrap_or_default(),
             }),
+            notice: item.notice.map(history::render_notice),
         })
     }
 }
@@ -373,6 +386,9 @@ impl DeltaGate {
 enum OpenKind {
     Thread,
     Session,
+    /// A session found on this PC, looked at before it's brought in: its
+    /// newest messages, read once (`session.preview`).
+    Preview,
 }
 
 /// What a delta did to the open view.
@@ -420,6 +436,18 @@ struct OpenView {
     /// The answers being given to the question the dock shows.
     answering: control::Answering,
     composer: Composer,
+    /// The thread's turns (`thread.turns`, kept by `thread.turn`), by number.
+    turns: Arc<Vec<api::TurnInfo>>,
+    /// The first files of each recorded turn (`turn.files`), for its Changes row.
+    turn_paths: Arc<HashMap<u32, Vec<api::TurnFile>>>,
+    /// Turns whose files were asked for.
+    paths_asked: HashSet<u32>,
+    /// What the last rewind left as it was: each path and why, in the app's words.
+    left: Vec<(String, String)>,
+    /// The message a search hit opened the thread at, until the page shows it.
+    focus: Option<u64>,
+    /// Counts focus requests, so the page scrolls once per hit.
+    focus_n: u64,
 }
 
 /// The `@` or `/` list over the composer.
@@ -477,6 +505,9 @@ struct Composer {
     history: Option<Vec<String>>,
     /// The prompt Up last showed.
     history_at: Option<usize>,
+    /// Edit from here put the message back as the draft: it takes the
+    /// composer even while the user is in it.
+    refill: bool,
 }
 
 /// Never prints the text, the draft or the history.
@@ -522,6 +553,12 @@ impl OpenView {
             questions: Vec::new(),
             answering: control::Answering::default(),
             composer: Composer::default(),
+            turns: Arc::default(),
+            turn_paths: Arc::default(),
+            paths_asked: HashSet::new(),
+            left: Vec::new(),
+            focus: None,
+            focus_n: 0,
         }
     }
 
@@ -704,6 +741,11 @@ struct Snapshot {
     marks: Vec<render::Mark>,
     open: Vec<String>,
     wraps: Vec<String>,
+    turns: Arc<Vec<api::TurnInfo>>,
+    turn_paths: Arc<HashMap<u32, Vec<api::TurnFile>>>,
+    /// The thread's last rewind can be undone.
+    undo: bool,
+    left: Vec<(String, String)>,
 }
 
 fn thread_state(state: State) -> render::ThreadState {
@@ -738,7 +780,11 @@ fn snapshot(s: &BridgeState) -> Option<Snapshot> {
             .iter()
             .find(|x| x.id == open.id)
             .map_or((render::ThreadState::Done, 0), |x| (session_state(x.state), x.state_since_ms)),
+        OpenKind::Preview => (render::ThreadState::Done, 0),
     };
+    let now = now_ms();
+    let undo = open.kind == OpenKind::Thread
+        && s.threads.get(&open.id).and_then(|t| t.undo).is_some_and(|u| u.until_ms > now);
     Some(Snapshot {
         generation: open.generation,
         entries: open.entries.clone(),
@@ -747,6 +793,10 @@ fn snapshot(s: &BridgeState) -> Option<Snapshot> {
         marks: open.marks(),
         open: open.open_keys.clone(),
         wraps: open.wraps.clone(),
+        turns: open.turns.clone(),
+        turn_paths: open.turn_paths.clone(),
+        undo,
+        left: open.left.clone(),
     })
 }
 
@@ -759,6 +809,8 @@ struct Render {
     /// Each row on screen with what it was built from, to reuse it unchanged.
     built: HashMap<String, (render::Row, rows::Extra, Arc<ModelRow>)>,
     palette: CodePalette,
+    /// When a turn still recording its changes is drawn again (one timer at a time).
+    recording_at: Option<u64>,
 }
 
 impl std::fmt::Debug for Render {
@@ -777,6 +829,7 @@ impl Render {
         self.timeline = render::Timeline::new();
         self.shown.clear();
         self.built.clear();
+        self.recording_at = None;
     }
 
     /// The rows for `snap`, and what changed from the ones shown; `None`
@@ -787,14 +840,34 @@ impl Render {
         }
         let items: Vec<render::ItemIn<'_>> = snap.entries.iter().filter_map(|e| e.item_in()).collect();
         let by_id: HashMap<&str, &Entry> = snap.entries.iter().map(|e| (e.item.id.as_str(), &**e)).collect();
+        let paths: Vec<Vec<render::TurnFileIn<'_>>> = snap
+            .turns
+            .iter()
+            .map(|t| {
+                snap.turn_paths
+                    .get(&t.turn)
+                    .map_or_else(Vec::new, |f| f.iter().map(history::file_in).collect())
+            })
+            .collect();
+        let turns: Vec<render::TurnIn<'_>> =
+            snap.turns.iter().zip(&paths).map(|(t, p)| history::turn_in(t, p)).collect();
         let ctx = render::Ctx {
             state: snap.state,
             state_since_ms: snap.since_ms,
             now_ms: now_ms(),
             marks: &snap.marks,
             open: &snap.open,
+            turns: &turns,
         };
         let rows = self.timeline.rows(&items, &ctx);
+        // Undo goes on the newest rewind's notice, while the thread can undo it.
+        let undo_key = rows
+            .iter()
+            .rev()
+            .find(
+                |r| matches!(r.kind, render::RowKind::Notice { notice: Some(n), .. } if rows::is_undoable(n)),
+            )
+            .map(|r| r.key.clone());
         let mut built = HashMap::with_capacity(rows.len());
         let mut shown = Vec::with_capacity(rows.len() + 1);
         // The plan whose blocks follow: its card ends with a foot after them.
@@ -822,7 +895,10 @@ impl Render {
                 wrapped: snap.wraps.contains(&row.key),
                 in_plan,
                 images: entry.map_or(0, |e| u8::try_from(e.item.images.len()).unwrap_or(u8::MAX)),
+                undo: snap.undo && undo_key.as_deref() == Some(row.key.as_str()),
             };
+            let left = (!snap.left.is_empty() && undo_key.as_deref() == Some(row.key.as_str()))
+                .then(|| rows::left_row(&row.item_id, row.turn, row.depth, &snap.left));
             let model = match self.built.remove(&row.key) {
                 Some((old, old_extra, model)) if old == row && old_extra == extra => model,
                 _ => {
@@ -835,6 +911,9 @@ impl Render {
             };
             shown.push(model.clone());
             built.insert(row.key.clone(), (row, extra, model));
+            if let Some(left) = left {
+                shown.push(Arc::new(left));
+            }
         }
         if let Some(card) = plan.take() {
             shown.push(Arc::new(card.foot()));
@@ -923,6 +1002,21 @@ fn render_once(bridge: &Bridge, snap: &Snapshot) {
     let Some(ops) = render.update(snap) else { return };
     if !ops.is_empty() {
         bridge.send_ui(UiUpdate::Ops(ops), &render.shown);
+    }
+    // A turn still recording its changes says so a second after it ended.
+    let due = history::recording_due(&snap.turns, now_ms());
+    if due.is_some() && due != render.recording_at && core_host::try_host().is_some() {
+        render.recording_at = due;
+        let (generation, at) = (snap.generation, due.unwrap_or_default());
+        core_host::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(at.saturating_sub(now_ms()))).await;
+            let mut render = self::bridge().render();
+            if render.generation == generation && render.recording_at == Some(at) {
+                render.recording_at = None;
+                drop(render);
+                rerender();
+            }
+        });
     }
 }
 
@@ -1126,6 +1220,22 @@ struct BridgeState {
     new_form: NewForm,
     /// Image thumbnails as data URLs, by image id.
     thumbs: HashMap<String, String>,
+    /// The host keeps threads in its store (`cap::HISTORY`): search, marks,
+    /// shelves, bringing in sessions.
+    history: bool,
+    /// The host keeps restore points (`cap::UNDO`): turns, diffs, rewind, fork.
+    undo: bool,
+    /// The Archived or Snoozed shelf the list shows instead of the main one.
+    shelf: Option<(api::ThreadShow, Vec<ThreadInfo>)>,
+    search: history::Search,
+    /// "Bring in earlier sessions", while it's open.
+    import: Option<history::Import>,
+    /// The diff of a turn or of the whole thread, while it's open.
+    diff: Option<history::Diff>,
+    /// The rewind dialog, while it's open.
+    rewind: Option<history::Rewind>,
+    /// What the host keeps (`store.info`), for Setup.
+    store: Option<api::StoreInfo>,
 }
 
 /// What the new-thread form is set to.
@@ -1430,7 +1540,11 @@ pub(crate) fn catalog(agents: &[AgentInfo], folders: &[Folder]) -> AgentCatalog 
         folders: folders
             .iter()
             .filter(|f| f.exists)
-            .map(|f| AgentCatalogFolder { id: f.id.clone(), label: f.label.clone() })
+            .map(|f| AgentCatalogFolder {
+                id: f.id.clone(),
+                label: f.label.clone(),
+                checkpoints: f.checkpoints,
+            })
             .collect(),
         modes: vec![agent::mode::SUPERVISED.to_owned()],
     }
@@ -1509,7 +1623,7 @@ fn error_code(code: &str) -> String {
 
 /// A thread as `phone` sees it (`from_phone` says whether it started it).
 pub(crate) fn thread(info: &ThreadInfo, phone: Option<&DeviceId>) -> AgentThread {
-    AgentThread {
+    let mut wire = AgentThread {
         id: info.id.clone(),
         agent: info.agent.as_str().to_owned(),
         folder: info.folder_label.clone(),
@@ -1556,7 +1670,10 @@ pub(crate) fn thread(info: &ThreadInfo, phone: Option<&DeviceId>) -> AgentThread
             need_login: m.need_login,
         }),
         asking: info.asking,
-    }
+        ..Default::default()
+    };
+    history::wire_thread_extras(info, &mut wire);
+    wire
 }
 
 /// An item as phones get it, with every field. The core sends a phone
@@ -1595,6 +1712,7 @@ pub(crate) fn item(item: &Item) -> AgentItem {
             // Who answered, for a phone: the item's origin.
             by_name: q.outcome.and(item.origin.as_ref()).and_then(|by| answered_by(by, this_pc_name)),
         }),
+        notice: item.notice.as_ref().map(word),
     }
 }
 
@@ -1688,9 +1806,11 @@ fn this_pc_name() -> String {
         .unwrap_or_else(|| "PC".into())
 }
 
-/// Threads in the page's order: waiting first, then the newest.
-fn listed_threads(threads: &HashMap<String, ThreadInfo>) -> Vec<&ThreadInfo> {
-    let mut list: Vec<&ThreadInfo> = threads.values().collect();
+/// Threads in the page's order: waiting first, then the newest. Archived
+/// and snoozed ones are on their own shelves.
+fn listed_threads(threads: &HashMap<String, ThreadInfo>, now_ms: u64) -> Vec<&ThreadInfo> {
+    let mut list: Vec<&ThreadInfo> =
+        threads.values().filter(|t| !t.archived && !history::is_snoozed(t, now_ms)).collect();
     list.sort_by(|a, b| {
         (b.state == State::Waiting).cmp(&(a.state == State::Waiting)).then(b.updated_ms.cmp(&a.updated_ms))
     });
@@ -1747,6 +1867,16 @@ fn thread_row(t: &ThreadInfo) -> Value {
             "names": m.names,
         })),
     })
+}
+
+/// A thread's row with what phase 3 adds (marks, a fork's parent, undo).
+fn full_thread_row(t: &ThreadInfo, agents: &[AgentInfo], now_ms: u64) -> Value {
+    let mut row = thread_row(t);
+    let extras = history::thread_extras(t, agents.iter().find(|a| a.id == t.agent), now_ms);
+    if let (Some(row), Value::Object(extras)) = (row.as_object_mut(), extras) {
+        row.extend(extras);
+    }
+    row
 }
 
 fn session_row(s: &Session, home: Option<&std::path::Path>) -> Value {
@@ -1826,13 +1956,16 @@ fn ask_json(asks: &[Approval], held: impl Fn(&str) -> bool) -> (Value, i32) {
     let a = order[position];
     let total = order.len();
     let more = i32::try_from(total - 1).unwrap_or(i32::MAX);
-    (approval_json(a, position + 1, total, held(&a.token)), more)
+    (approval_json(a, position + 1, total, held(&a.token), &CodePalette::default()), more)
 }
 
 /// A request as the dock shows it, "`position` of `total`".
-fn approval_json(a: &Approval, position: usize, total: usize, held: bool) -> Value {
-    let diff =
-        a.diff.as_deref().filter(|d| !d.is_empty()).map(|d| rows::diff_json(&render::diff(d), ASK_DIFF_ROWS));
+fn approval_json(a: &Approval, position: usize, total: usize, held: bool, palette: &CodePalette) -> Value {
+    let diff = a
+        .diff
+        .as_deref()
+        .filter(|d| !d.is_empty())
+        .map(|d| rows::diff_json(&render::diff(d), ASK_DIFF_ROWS, palette));
     json!({
         "token": a.token,
         "kind": word(&a.kind),
@@ -1878,6 +2011,12 @@ trait Relay {
     async fn questioned(&self, questioned: AgentQuestioned);
     /// A draft changed: phones but `except` are told to read it again.
     async fn draft(&self, key: String, rev: u64, except: Option<DeviceId>);
+    /// A turn started or ended, or its restore point settled.
+    async fn turn(&self, thread: String, turn: AgentTurn);
+    /// Items left a thread (a rewind), or came back (its undo).
+    async fn cut(&self, cut: AgentCut);
+    /// How bringing in sessions goes.
+    async fn import(&self, progress: AgentImportProgress);
 }
 
 /// The node: phones get the host's news through the core.
@@ -1939,6 +2078,24 @@ impl Relay for NodeRelay {
 
     async fn draft(&self, key: String, rev: u64, except: Option<DeviceId>) {
         let _ = self.0.agent_draft(key, rev, except).await;
+    }
+
+    async fn turn(&self, thread: String, turn: AgentTurn) {
+        if let Err(e) = self.0.agent_turn(thread, turn).await {
+            tracing::debug!(error = %e, "a turn wasn't passed on");
+        }
+    }
+
+    async fn cut(&self, cut: AgentCut) {
+        if let Err(e) = self.0.agent_cut(cut).await {
+            tracing::debug!(error = %e, "a cut wasn't passed on");
+        }
+    }
+
+    async fn import(&self, progress: AgentImportProgress) {
+        if let Err(e) = self.0.agent_import_progress(progress).await {
+            tracing::debug!(error = %e, "an import's progress wasn't passed on");
+        }
     }
 }
 
@@ -2064,6 +2221,8 @@ async fn serve<R: Relay>(
     let outdated = client.outdated(&launch.version).is_some();
     let says_why = client.host().has(cap::DENY_MESSAGE);
     let control = client.host().has(cap::CONTROL);
+    let history = client.host().has(cap::HISTORY);
+    let undo = client.host().has(cap::UNDO);
     if outdated {
         tracing::info!(
             host = %client.host().host_version,
@@ -2087,6 +2246,8 @@ async fn serve<R: Relay>(
         s.following = settings.map(|x| x.follow_sessions);
         s.keep_awake = settings.filter(|_| control).map(|x| x.keep_awake);
         s.control = control;
+        s.history = history;
+        s.undo = undo;
         s.open.as_ref().map(|o| (o.generation, o.kind, o.id.clone()))
     };
     bridge.connected.send_replace(true);
@@ -2141,6 +2302,16 @@ async fn serve<R: Relay>(
         s.sessions.clear();
         s.following = None;
         s.keep_awake = None;
+        s.history = false;
+        s.undo = false;
+        s.shelf = None;
+        s.search = history::Search::default();
+        s.diff = None;
+        s.rewind = None;
+        s.store = None;
+        if let Some(import) = s.import.as_mut() {
+            *import = history::Import::default();
+        }
         s.open.as_mut().map(|open| {
             open.entries.clear();
             open.asks.clear();
@@ -2149,6 +2320,10 @@ async fn serve<R: Relay>(
             open.answering.reset();
             open.loading = true;
             open.gate = DeltaGate::default();
+            open.turns = Arc::default();
+            open.turn_paths = Arc::default();
+            open.paths_asked.clear();
+            open.left.clear();
             open.generation
         })
     };
@@ -2194,6 +2369,7 @@ async fn relay_event<R: Relay>(bridge: &Bridge, relay: &R, client: &Client, even
     match event {
         Event::ThreadState(e) => {
             bridge.remember(&e.thread);
+            history_page::shelf_update(bridge, &e.thread);
             relay.event(AgentEvent::state(thread(&e.thread, None)), started_by(&e.thread)).await;
             if bridge.lock().open_is(OpenKind::Thread, &e.thread.id) {
                 changed();
@@ -2223,6 +2399,9 @@ async fn relay_event<R: Relay>(bridge: &Bridge, relay: &R, client: &Client, even
                 let mut s = bridge.lock();
                 s.threads.remove(&e.thread_id);
                 s.questions.remove(&e.thread_id);
+                if let Some((_, list)) = s.shelf.as_mut() {
+                    list.retain(|t| t.id != e.thread_id);
+                }
                 if s.open_is(OpenKind::Thread, &e.thread_id) {
                     s.open.take().map(|o| o.generation)
                 } else {
@@ -2339,6 +2518,33 @@ async fn relay_event<R: Relay>(bridge: &Bridge, relay: &R, client: &Client, even
                     .and_then(|o| o.device_id.as_deref()?.parse().ok());
             relay.draft(e.key, e.rev, except).await;
         }
+        Event::ThreadTurn(e) => {
+            history_page::turn_event(bridge, client, &e.thread_id, &e.turn);
+            relay.turn(e.thread_id, history::wire_turn(&e.turn)).await;
+        }
+        Event::ThreadCut(e) => {
+            history_page::cut_event(bridge, client, &e);
+            let cut = AgentCut {
+                thread: e.thread_id,
+                from_seq: e.from_seq,
+                to_seq: e.to_seq,
+                restored: e.restored,
+            };
+            relay.cut(cut).await;
+        }
+        Event::ImportProgress(e) => {
+            history_page::import_progress(bridge, client, &e);
+            let progress = AgentImportProgress {
+                job: e.job,
+                done: e.done,
+                failed: e.failed,
+                total: e.total,
+                thread: e.thread_id,
+            };
+            relay.import(progress).await;
+        }
+        // Only the import screen asks again; phones ask again on their own.
+        Event::SessionsScanned(e) => history_page::sessions_scanned(bridge, client, &e),
         // The host asks the PC to show a thread (a notification's Open).
         Event::UiOpen(e) => {
             if core_host::try_host().is_some() {
@@ -2558,6 +2764,7 @@ async fn run_request(from: DeviceId, request: AgentRequest) -> Result<AgentReply
             effort,
             images,
             custom_model,
+            key,
         } => {
             let agent_id = AgentId::parse(&agent_id).ok_or(AgentFailure::NotFound)?;
             // A phone starts supervised, or in plan mode; never anything else.
@@ -2567,25 +2774,37 @@ async fn run_request(from: DeviceId, request: AgentRequest) -> Result<AgentReply
             params.effort = effort;
             params.images = images;
             params.custom_model = custom_model;
-            let info = client.thread_start(params).await.map_err(fail)?;
+            // A held message sent again starts nothing: the thread it started answers.
+            let info = match key {
+                Some(key) => {
+                    params.key = Some(key);
+                    client.thread_start_with(params).await.map_err(fail)?.thread
+                }
+                None => client.thread_start(params).await.map_err(fail)?,
+            };
             bridge().remember(&info);
             lists_changed();
             AgentReply::Thread(thread(&info, Some(&from)))
         }
-        AgentRequest::Send { thread: thread_id, text, dispatch, images } => {
-            if dispatch.is_none() && images.is_empty() {
+        AgentRequest::Send { thread: thread_id, text, dispatch, images, key } => {
+            if dispatch.is_none() && images.is_empty() && key.is_none() {
                 client.thread_send(thread_id, text, origin()).await.map_err(fail)?;
-            } else {
-                let mut params = ThreadSendParams::new(thread_id, text, origin());
-                params.dispatch = dispatch.as_deref().map(|d| match d {
-                    agent::dispatch::STEER => Dispatch::Steer,
-                    agent::dispatch::QUEUE => Dispatch::Queue,
-                    _ => Dispatch::Auto,
-                });
-                params.images = images;
-                client.thread_send_with(params).await.map_err(fail)?;
+                return Ok(AgentReply::Ok);
             }
-            AgentReply::Ok
+            let mut params = ThreadSendParams::new(thread_id, text, origin());
+            params.dispatch = dispatch.as_deref().map(|d| match d {
+                agent::dispatch::STEER => Dispatch::Steer,
+                agent::dispatch::QUEUE => Dispatch::Queue,
+                _ => Dispatch::Auto,
+            });
+            params.images = images;
+            params.key = key;
+            // A held message the thread took already is sent once only.
+            if client.thread_send_with(params).await.map_err(fail)?.duplicate {
+                AgentReply::Duplicate
+            } else {
+                AgentReply::Ok
+            }
         }
         AgentRequest::Configure { thread: thread_id, model, effort, mode, custom_model } => {
             let mode = match mode.as_deref() {
@@ -2745,6 +2964,22 @@ async fn run_request(from: DeviceId, request: AgentRequest) -> Result<AgentReply
             let params = ThreadExportParams { thread_id, session_id, format: ExportFormat::Markdown };
             AgentReply::Export(export_reply(client.thread_export(params).await.map_err(fail)?))
         }
+        // History and undo (§6): never a file, a path outside a folder or a `cwd`.
+        request @ (AgentRequest::ThreadsPage { .. }
+        | AgentRequest::Turns { .. }
+        | AgentRequest::DiffFiles { .. }
+        | AgentRequest::DiffPatch { .. }
+        | AgentRequest::Search { .. }
+        | AgentRequest::Mark { .. }
+        | AgentRequest::Rename { .. }
+        | AgentRequest::Fork { .. }
+        | AgentRequest::RewindPreview { .. }
+        | AgentRequest::RewindApply { .. }
+        | AgentRequest::RewindUndo { .. }
+        | AgentRequest::Found { .. }
+        | AgentRequest::FoundPreview { .. }
+        | AgentRequest::Import { .. }
+        | AgentRequest::ImportCancel { .. }) => return history_page::phone(from, &client, request).await,
     })
 }
 
@@ -2899,6 +3134,18 @@ pub(crate) struct View {
     pub composer_set: String,
     /// The new-thread form's model control (JSON).
     pub new_picker: String,
+    /// The Archived or Snoozed shelf's threads (JSON; `null` for the main list).
+    pub shelf: String,
+    /// The list's search and its hits, grouped by thread (JSON).
+    pub search: String,
+    /// "Bring in earlier sessions" (JSON, `{}` while it's closed).
+    pub import: String,
+    /// The diff (JSON, `{}` while it's closed).
+    pub diff: String,
+    /// The rewind dialog (JSON, `{}` while it's closed).
+    pub rewind: String,
+    /// The message the page scrolls to and lights up: `{ gen, n, item }`.
+    pub focus: String,
 }
 
 pub(crate) fn view() -> View {
@@ -2906,10 +3153,17 @@ pub(crate) fn view() -> View {
     // Taken first: the rows' lock is never taken while the state's is held.
     let palette = bridge().render().palette.clone();
     let s = lock();
-    let threads = listed_threads(&s.threads);
+    let now = now_ms();
+    let threads = listed_threads(&s.threads, now);
+    let row_of = |t: &ThreadInfo| full_thread_row(t, &s.agents, now);
     let open = s.open.as_ref();
     let open_info = match open {
-        Some(o) if o.kind == OpenKind::Thread => s.threads.get(&o.id).map(thread_row),
+        Some(o) if o.kind == OpenKind::Thread => s.threads.get(&o.id).map(row_of),
+        Some(o) if o.kind == OpenKind::Preview => s
+            .import
+            .as_ref()
+            .and_then(|i| i.found.iter().find(|f| f.id == o.id))
+            .map(|f| history_page::preview_row(f, &s.folders, home.as_deref())),
         Some(o) => s.sessions.iter().find(|x| x.id == o.id).map(|x| {
             let mut row = session_row(x, home.as_deref());
             // The page may add the folder the session runs in; this stays on the PC.
@@ -2929,13 +3183,14 @@ pub(crate) fn view() -> View {
     View {
         status: word(&s.status),
         setup: setup_json(&s, home.as_deref()),
-        threads: Value::Array(threads.iter().map(|t| thread_row(t)).collect()).to_string(),
+        threads: Value::Array(threads.iter().map(|t| row_of(t)).collect()).to_string(),
         sessions: Value::Array(s.sessions.iter().map(|x| session_row(x, home.as_deref())).collect())
             .to_string(),
         needs_you: needs_you(s.threads.values(), &s.sessions),
         open_kind: match open.map(|o| o.kind) {
             Some(OpenKind::Thread) => "thread".into(),
             Some(OpenKind::Session) => "session".into(),
+            Some(OpenKind::Preview) => "preview".into(),
             None => String::new(),
         },
         open_id: open.map(|o| o.id.clone()).unwrap_or_default(),
@@ -2966,7 +3221,38 @@ pub(crate) fn view() -> View {
             )
             .to_string(),
         new_picker: new_picker_json(&s).to_string(),
+        shelf: s
+            .shelf
+            .as_ref()
+            .map_or(Value::Null, |(_, list)| Value::Array(list.iter().map(row_of).collect()))
+            .to_string(),
+        search: s.search.json(&s.threads).to_string(),
+        import: s
+            .import
+            .as_ref()
+            .map_or_else(|| json!({}), |i| i.json(&s.folders, home.as_deref()))
+            .to_string(),
+        diff: s.diff.as_ref().map_or_else(|| json!({}), history::Diff::json).to_string(),
+        rewind: rewind_json(&s).to_string(),
+        focus: open
+            .and_then(|o| {
+                let seq = o.focus?;
+                let item = o.entries.iter().find(|e| e.item.seq == seq)?;
+                Some(json!({ "gen": o.generation, "n": o.focus_n, "item": item.item.id }))
+            })
+            .unwrap_or_else(|| json!({}))
+            .to_string(),
     }
+}
+
+/// The rewind dialog, with its thread's agent and folder.
+fn rewind_json(s: &BridgeState) -> Value {
+    let Some(rewind) = s.rewind.as_ref() else { return json!({}) };
+    let info = s.threads.get(&rewind.thread_id);
+    rewind.json(
+        info.map(|t| t.agent.display_name()).unwrap_or_default(),
+        info.map(|t| t.folder_label.as_str()).unwrap_or_default(),
+    )
 }
 
 /// The dock: the request it shows (`{}` when it shows a question or
@@ -2979,7 +3265,9 @@ fn dock_json(open: &OpenView, s: &BridgeState, palette: &CodePalette) -> (Value,
     let total = all.len();
     let more = i32::try_from(total - 1).unwrap_or(i32::MAX);
     match all[at] {
-        control::Waiting::Approval(a) => (approval_json(a, at + 1, total, held(&a.token)), json!({}), more),
+        control::Waiting::Approval(a) => {
+            (approval_json(a, at + 1, total, held(&a.token), palette), json!({}), more)
+        }
         control::Waiting::Question(q) => {
             let mut shown =
                 if open.answering.token() == q.token { open.answering.json(q) } else { json!({}) };
@@ -3037,7 +3325,21 @@ fn composer_json(s: &BridgeState, open: &OpenView) -> Value {
         "offer": c.offer.as_ref().map(|(_, by)| by.clone()).unwrap_or_default(),
         "hint": hint,
         "questionWaits": !open.questions.is_empty(),
+        // Edit from here: the message is back in the composer until it's sent
+        // or the rewind is undone ("Editing your message · Cancel").
+        "editing": editing(open, info),
     })
+}
+
+/// The thread was rewound with Edit from here and can still be undone.
+fn editing(open: &OpenView, info: &ThreadInfo) -> bool {
+    info.undo.is_some_and(|u| u.until_ms > now_ms())
+        && open
+            .entries
+            .iter()
+            .rev()
+            .find_map(|e| e.item.notice.filter(|n| rows::is_undoable(history::render_notice(*n))))
+            .is_some_and(|n| n == api::NoticeKind::EditFromHere)
 }
 
 /// The new-thread form's model control, for its agent.
@@ -3110,6 +3412,7 @@ fn setup_json(s: &BridgeState, home: Option<&std::path::Path>) -> String {
                 "exists": f.exists,
                 "mcp": f.mcp,
                 "mcpSeen": f.mcp_seen.iter().map(|m| json!({ "agent": m.agent.as_str(), "names": m.names })).collect::<Vec<_>>(),
+                "checkpoints": f.checkpoints,
             })
         })
         .collect();
@@ -3121,6 +3424,15 @@ fn setup_json(s: &BridgeState, home: Option<&std::path::Path>) -> String {
         "control": s.control,
         "keepAwake": s.keep_awake,
         "followUp": word(&s.prefs.follow_up),
+        "history": s.history,
+        "undo": s.undo,
+        "store": s.store.map_or_else(|| json!({}), |i| json!({
+            "threads": i.threads,
+            "archived": i.archived,
+            "bytes": i.bytes,
+            "checkpointBytes": i.checkpoint_bytes,
+            "found": i.found,
+        })),
     })
     .to_string()
 }
@@ -3176,6 +3488,7 @@ fn wanted_viewing(s: &BridgeState) -> UiViewingParams {
         Some(open) if s.page_open && s.window_active => match open.kind {
             OpenKind::Thread => UiViewingParams { thread_id: Some(open.id.clone()), session_id: None },
             OpenKind::Session => UiViewingParams { thread_id: None, session_id: Some(open.id.clone()) },
+            OpenKind::Preview => UiViewingParams::default(),
         },
         _ => UiViewingParams::default(),
     }
@@ -3375,9 +3688,28 @@ pub fn open_session(id: String) {
 }
 
 fn open(kind: OpenKind, id: String) {
+    open_at(kind, id, None);
+}
+
+/// Opens a thread or session; a search hit opens a thread at message
+/// `focus`, read first when it isn't among the items shown.
+fn open_at(kind: OpenKind, id: String, focus: Option<u64>) {
     let (generation, was_session, client) = {
         let mut s = lock();
         if s.open_is(kind, &id) {
+            let client = s.client.clone();
+            let Some(open) = s.open.as_mut() else { return };
+            if let Some(seq) = focus {
+                open.focus = Some(seq);
+                open.focus_n += 1;
+                let missing = history_page::focus_missing(open);
+                let generation = open.generation;
+                drop(s);
+                if let (Some(seq), Some(client)) = (missing, client) {
+                    core_host::spawn(history_page::read_to(client, generation, id, seq));
+                }
+                changed();
+            }
             return;
         }
         let generation = s.next_gen();
@@ -3385,6 +3717,13 @@ fn open(kind: OpenKind, id: String) {
         if kind == OpenKind::Thread {
             view.questions = s.questions.get(&id).cloned().unwrap_or_default();
         }
+        if let Some(seq) = focus {
+            view.focus = Some(seq);
+            view.focus_n = 1;
+        }
+        // The diff and the rewind dialog belong to the thread that was open.
+        s.diff = None;
+        s.rewind = None;
         let was = s.open.replace(view);
         (generation, was.is_some_and(|o| o.kind == OpenKind::Session), s.client.clone())
     };
@@ -3410,10 +3749,22 @@ async fn load(client: Client, generation: u64, kind: OpenKind, id: String, unwat
             let params =
                 ThreadReadParams { thread_id: id.clone(), limit: Some(READ_PAGE), ..Default::default() };
             let read = client.thread_read(params).await;
+            if read.is_ok() && lock().undo {
+                core_host::spawn(history_page::read_turns(client.clone(), generation, id.clone()));
+            }
             read.map(|page| {
                 bridge().remember(&page.thread);
                 (page.items, page.more_before, page.pending, Some(page.questions))
             })
+        }
+        OpenKind::Preview => {
+            if unwatch {
+                let _ = client.session_watch(None).await;
+            }
+            client
+                .session_preview(id.clone(), Some(api::MAX_PREVIEW_LIMIT))
+                .await
+                .map(|items| (items, false, Vec::new(), None))
         }
         OpenKind::Session => {
             if let Err(e) = client.session_watch(Some(id.clone())).await
@@ -3460,6 +3811,11 @@ async fn load(client: Client, generation: u64, kind: OpenKind, id: String, unwat
                     open.questions = questions;
                 }
                 open.guard_requests(now_ms());
+                let focus = history_page::focus_missing(open);
+                if let Some(seq) = focus {
+                    drop(s);
+                    core_host::spawn(history_page::read_to(client.clone(), generation, id.clone(), seq));
+                }
             }
             Err(e) => {
                 tracing::debug!(error = %e, "the open thread wasn't read");
@@ -3476,6 +3832,8 @@ async fn load(client: Client, generation: u64, kind: OpenKind, id: String, unwat
 pub fn close() {
     let (was, client) = {
         let mut s = lock();
+        s.diff = None;
+        s.rewind = None;
         (s.open.take(), s.client.clone())
     };
     let Some(was) = was else { return };
@@ -3523,6 +3881,8 @@ pub fn load_earlier() {
                     SessionReadParams { session_id: id, before_seq: Some(before), limit: Some(READ_PAGE) };
                 client.session_read(params).await.map(|page| (page.items, page.more_before))
             }
+            // A preview is read whole at once.
+            OpenKind::Preview => Ok((Vec::new(), false)),
         };
         {
             let mut s = lock();
@@ -3560,6 +3920,13 @@ enum Request {
     Implement,
     /// A folder's MCP switch, keeping the PC awake.
     Setting,
+    /// Pin, archive, mark read or unread, snooze, rename.
+    Mark,
+    /// Rewind, edit from here, undo.
+    Rewind,
+    Fork,
+    /// Bring in sessions found on this PC.
+    Import,
 }
 
 /// What an older host that hasn't been replaced yet can't do.
@@ -3618,6 +3985,14 @@ fn request_error(e: &ClientError, request: Request) -> String {
         (Some(ErrorCode::BadRequest), Request::Question) => tr!("Agents", "Answer every question first."),
         (Some(ErrorCode::NotFound), Request::Queue) => tr!("Agents", "It was already sent."),
         (Some(ErrorCode::NotFound), Request::Implement) => tr!("Agents", "A newer plan took its place."),
+        (Some(ErrorCode::Busy), Request::Mark) => tr!("Agents", "You can change it when the agent stops."),
+        (Some(ErrorCode::Busy), Request::Rewind | Request::Fork) => tr!("Agents", "Wait until it finishes."),
+        (Some(ErrorCode::Conflict), Request::Rewind) => {
+            tr!("Agents", "The files changed while you were looking.")
+        }
+        (Some(ErrorCode::Unavailable), Request::Rewind | Request::Fork) => {
+            tr!("Agents", "That isn't available with this agent.")
+        }
         (Some(ErrorCode::Unavailable), _) => outdated_host(),
         (Some(ErrorCode::NotFound | ErrorCode::AlreadyAnswered), Request::Answer) => {
             tr!("Agents", "That request was already answered.")
@@ -4284,13 +4659,15 @@ fn take_remote_draft(generation: u64, draft: Draft) {
         if draft.rev <= c.draft_rev && c.draft_rev != 0 {
             return;
         }
-        let busy = c.focused || !open.questions.is_empty();
+        // Edit from here's message takes the composer even while it's in use.
+        let busy = (c.focused && !c.refill) || !open.questions.is_empty();
         match control::remote_draft(busy, &c.text, &draft, &this_pc) {
             control::DraftAction::Keep => {}
             control::DraftAction::Replace(text) => {
                 c.put(text.clone());
                 c.draft_saved = text;
                 c.offer = None;
+                c.refill = false;
             }
             control::DraftAction::Offer { by } => {
                 let rev = draft.rev;
@@ -5000,6 +5377,7 @@ fn export_params() -> Option<ThreadExportParams> {
     let (thread_id, session_id) = match open.kind {
         OpenKind::Thread => (Some(open.id.clone()), None),
         OpenKind::Session => (None, Some(open.id.clone())),
+        OpenKind::Preview => return None,
     };
     Some(ThreadExportParams { thread_id, session_id, format: ExportFormat::Markdown })
 }
@@ -5145,6 +5523,7 @@ mod tests {
             added_ms: 1,
             mcp: true,
             mcp_seen: vec![api::FolderMcp { agent: AgentId::Claude, names: vec!["github".into()] }],
+            checkpoints: true,
         }
     }
 
@@ -5181,6 +5560,15 @@ mod tests {
             context: None,
             mcp: None,
             asking: 0,
+            pinned: false,
+            archived: false,
+            unread: false,
+            snoozed_until_ms: None,
+            turns: 0,
+            forked_from: None,
+            found: false,
+            readonly: None,
+            undo: None,
         }
     }
 
@@ -5326,7 +5714,7 @@ mod tests {
         ];
         assert_eq!(needs_you(threads.values(), &sessions), 2);
         assert_eq!(needs_you(threads.values(), &[]), 1);
-        assert_eq!(listed_threads(&threads)[0].state, State::Waiting, "waiting threads come first");
+        assert_eq!(listed_threads(&threads, 0)[0].state, State::Waiting, "waiting threads come first");
     }
 
     #[test]
@@ -5919,6 +6307,10 @@ mod tests {
             marks: view.marks(),
             open: view.open_keys.clone(),
             wraps: view.wraps.clone(),
+            turns: view.turns.clone(),
+            turn_paths: view.turn_paths.clone(),
+            undo: false,
+            left: Vec::new(),
         }
     }
 
@@ -6170,6 +6562,15 @@ mod tests {
         }
         async fn draft(&self, _key: String, rev: u64, _except: Option<DeviceId>) {
             self.log.lock().unwrap().push(format!("draft {rev}"));
+        }
+        async fn turn(&self, _thread: String, turn: AgentTurn) {
+            self.log.lock().unwrap().push(format!("turn {}", turn.turn));
+        }
+        async fn cut(&self, cut: AgentCut) {
+            self.log.lock().unwrap().push(format!("cut {}", cut.from_seq));
+        }
+        async fn import(&self, progress: AgentImportProgress) {
+            self.log.lock().unwrap().push(format!("import {}", progress.done));
         }
     }
 

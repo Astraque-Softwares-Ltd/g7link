@@ -12,6 +12,9 @@ Item {
     property string diff: ""
     // Show each file's name above its lines.
     property bool showPaths: true
+    // One file filling the view, its lines made as they scroll into view
+    // (the diff screen); otherwise every line is laid out (under a step).
+    property bool paged: false
 
     readonly property var doc: {
         try {
@@ -22,14 +25,120 @@ Item {
     }
     readonly property var files: doc.files || []
 
-    implicitHeight: column.height
+    implicitHeight: paged ? 0 : column.height
+
+    FontMetrics {
+        id: mono
+        font.family: Theme.fontMono
+        font.pixelSize: Theme.typography.code.size
+    }
+
+    // ---- One file, a line at a time, on the code ground ----
+    Rectangle {
+        visible: diffView.paged
+        anchors.fill: parent
+        color: AgentPalette.codeGround
+    }
+    Flickable {
+        id: sideways
+        visible: diffView.paged
+        anchors.fill: parent
+        readonly property var file: diffView.files.length > 0 ? diffView.files[0] : ({ rows: [] })
+        readonly property int digits: {
+            let most = 0
+            for (const row of file.rows || [])
+                most = Math.max(most, row.o || 0, row.n || 0)
+            return String(most).length
+        }
+        readonly property real gutter: file.numbered === true ? (digits * 8 + 10) * 2 : 0
+        contentWidth: Math.max(width, gutter + 32 + (file.widest || 0) * mono.averageCharacterWidth)
+        contentHeight: height
+        flickableDirection: Flickable.HorizontalFlick
+        boundsBehavior: Flickable.StopAtBounds
+        interactive: contentWidth > width
+        clip: true
+        ListView {
+            id: pagedRows
+            width: sideways.contentWidth
+            height: sideways.height
+            model: diffView.paged ? (sideways.file.rows || []) : []
+            boundsBehavior: Flickable.StopAtBounds
+            delegate: Rectangle {
+                id: pagedLine
+                required property var modelData
+                readonly property string kind: modelData.k
+                width: pagedRows.width
+                height: pagedText.height + 2
+                color: kind === "add" ? AgentPalette.addRow
+                    : kind === "del" ? AgentPalette.delRow
+                    : kind === "hunk" ? AgentPalette.hunkGround : "transparent"
+                Row {
+                    visible: sideways.file.numbered === true && pagedLine.kind !== "hunk"
+                    x: 4
+                    anchors.verticalCenter: parent.verticalCenter
+                    Txt {
+                        width: sideways.digits * 8 + 10
+                        text: (pagedLine.modelData.o || 0) > 0 ? String(pagedLine.modelData.o) : ""
+                        role: "code"
+                        size: Theme.typography.caption.size
+                        color: AgentPalette.lineNo
+                        horizontalAlignment: Text.AlignRight
+                    }
+                    Txt {
+                        width: sideways.digits * 8 + 10
+                        text: (pagedLine.modelData.n || 0) > 0 ? String(pagedLine.modelData.n) : ""
+                        role: "code"
+                        size: Theme.typography.caption.size
+                        color: AgentPalette.lineNo
+                        horizontalAlignment: Text.AlignRight
+                    }
+                }
+                Txt {
+                    x: sideways.gutter + 6
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: pagedLine.kind === "add" ? "+" : (pagedLine.kind === "del" ? "−" : "")
+                    role: "code"
+                    color: pagedLine.kind === "add" ? AgentPalette.addSign : AgentPalette.delSign
+                }
+                Text {
+                    id: pagedText
+                    x: sideways.gutter + 20
+                    text: pagedLine.modelData.s
+                    // Markup built by the app from escaped text; never the agent's.
+                    textFormat: pagedLine.modelData.r === true ? Text.RichText : Text.StyledText
+                    wrapMode: Text.NoWrap
+                    color: pagedLine.kind === "hunk" ? AgentPalette.hunk : AgentPalette.diffText
+                    font.family: Theme.fontMono
+                    font.features: Theme.monoFeatures
+                    font.pixelSize: Theme.typography.code.size
+                }
+            }
+            TouchpadGlide { view: pagedRows }
+        }
+        G7ScrollBar {
+            flickable: sideways
+            parent: sideways
+            orientation: Qt.Horizontal
+            anchors.left: sideways.left
+            anchors.right: sideways.right
+            anchors.bottom: sideways.bottom
+        }
+    }
+    G7ScrollBar {
+        visible: diffView.paged
+        flickable: pagedRows
+        anchors.top: parent.top
+        anchors.bottom: parent.bottom
+        anchors.right: parent.right
+    }
 
     Column {
         id: column
+        visible: !diffView.paged
         width: diffView.width
         spacing: 6
         Repeater {
-            model: diffView.files
+            model: diffView.paged ? [] : diffView.files
             delegate: Column {
                 id: file
                 required property var modelData
@@ -67,12 +176,12 @@ Item {
                         Txt {
                             text: "+" + (file.modelData.adds || 0)
                             role: "caption"
-                            color: Theme.tintGreen
+                            color: AgentPalette.inserted
                         }
                         Txt {
                             text: "−" + (file.modelData.dels || 0)
                             role: "caption"
-                            color: Theme.error
+                            color: AgentPalette.deleted
                         }
                     }
                 }
@@ -108,8 +217,9 @@ Item {
                                 readonly property real gutter: file.numbered ? (file.digits * 8 + 10) * 2 : 0
                                 width: rowsColumn.width
                                 height: lineText.height + 2
-                                color: kind === "add" ? Theme.wash(Theme.tintGreen)
-                                    : kind === "del" ? Theme.wash(Theme.error) : "transparent"
+                                color: kind === "add" ? AgentPalette.addRow
+                                    : kind === "del" ? AgentPalette.delRow
+                                    : kind === "hunk" ? AgentPalette.hunkGround : "transparent"
                                 Row {
                                     visible: file.numbered && line.kind !== "hunk"
                                     x: 4
@@ -119,7 +229,7 @@ Item {
                                         text: (line.modelData.o || 0) > 0 ? String(line.modelData.o) : ""
                                         role: "code"
                                         size: Theme.typography.caption.size
-                                        muted: true
+                                        color: AgentPalette.lineNo
                                         horizontalAlignment: Text.AlignRight
                                     }
                                     Txt {
@@ -127,7 +237,7 @@ Item {
                                         text: (line.modelData.n || 0) > 0 ? String(line.modelData.n) : ""
                                         role: "code"
                                         size: Theme.typography.caption.size
-                                        muted: true
+                                        color: AgentPalette.lineNo
                                         horizontalAlignment: Text.AlignRight
                                     }
                                 }
@@ -136,16 +246,16 @@ Item {
                                     anchors.verticalCenter: parent.verticalCenter
                                     text: line.kind === "add" ? "+" : (line.kind === "del" ? "−" : "")
                                     role: "code"
-                                    color: line.kind === "add" ? Theme.tintGreen : Theme.error
+                                    color: line.kind === "add" ? AgentPalette.addSign : AgentPalette.delSign
                                 }
                                 Text {
                                     id: lineText
                                     x: line.gutter + 20
                                     text: line.modelData.s
                                     // Markup built by the app from escaped text; never the agent's.
-                                    textFormat: Text.StyledText
+                                    textFormat: line.modelData.r === true ? Text.RichText : Text.StyledText
                                     wrapMode: Text.NoWrap
-                                    color: line.kind === "hunk" ? Theme.surfaceContentVariant : Theme.surfaceContent
+                                    color: line.kind === "hunk" ? AgentPalette.hunk : AgentPalette.diffText
                                     font.family: Theme.fontMono
                                     font.features: Theme.monoFeatures
                                     font.pixelSize: Theme.typography.code.size

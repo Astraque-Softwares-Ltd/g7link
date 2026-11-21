@@ -24,11 +24,15 @@ const QML: &[&str] = &[
     "qml/components/AgentCode.qml",
     "qml/components/AgentCommandList.qml",
     "qml/components/AgentComposer.qml",
+    "qml/components/AgentDiffFiles.qml",
     "qml/components/AgentDiffView.qml",
     "qml/components/AgentDock.qml",
     "qml/components/AgentFoldLine.qml",
+    "qml/components/AgentFoundRow.qml",
     "qml/components/AgentGroupLine.qml",
+    "qml/components/AgentHitRow.qml",
     "qml/components/AgentImageStrip.qml",
+    "qml/components/AgentImport.qml",
     "qml/components/AgentLiveLine.qml",
     "qml/components/AgentMarkLine.qml",
     "qml/components/AgentMentionList.qml",
@@ -40,8 +44,13 @@ const QML: &[&str] = &[
     "qml/components/AgentPopupLegend.qml",
     "qml/components/AgentQueue.qml",
     "qml/components/AgentQuestionDock.qml",
+    "qml/components/AgentRewindDialog.qml",
     "qml/components/AgentRow.qml",
+    "qml/components/AgentRowActions.qml",
+    "qml/components/AgentSearch.qml",
     "qml/components/AgentSetup.qml",
+    "qml/components/AgentSnoozeMenu.qml",
+    "qml/components/AgentStateMark.qml",
     "qml/components/AgentTable.qml",
     "qml/components/AgentThoughtLine.qml",
     "qml/components/AgentTimelineView.qml",
@@ -102,8 +111,14 @@ const QML: &[&str] = &[
 ];
 
 /// QML singletons.
-const QML_SINGLETONS: &[&str] =
-    &["qml/Tokens.qml", "qml/Palettes.qml", "qml/Theme.qml", "qml/Icons.qml", "qml/G7Glyphs.qml"];
+const QML_SINGLETONS: &[&str] = &[
+    "qml/Tokens.qml",
+    "qml/Palettes.qml",
+    "qml/Theme.qml",
+    "qml/Icons.qml",
+    "qml/G7Glyphs.qml",
+    "qml/components/AgentPalette.qml",
+];
 
 /// Bundled fonts (in `assets/fonts`), compiled in under `:/fonts/`.
 const FONTS: &[&str] = &["Figtree.ttf", "GeistMono-Variable.ttf"];

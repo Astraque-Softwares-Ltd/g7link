@@ -119,13 +119,13 @@ Column {
             width: 14
             height: 14
             path: Icons.warning
-            color: Theme.error
+            color: AgentPalette.failedText
         }
         Txt {
             anchors.verticalCenter: parent.verticalCenter
             text: strip.errorText
             role: "bodySmall"
-            color: Theme.error
+            color: AgentPalette.failedText
         }
     }
 }
