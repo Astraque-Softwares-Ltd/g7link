@@ -4,6 +4,39 @@ All notable changes to G7 Link. Versions follow
 [semantic versioning](https://semver.org); before 1.0, a minor version may
 change things that need a step from you, and its notes say so.
 
+## 0.1.22 (unreleased)
+
+Talk to your agents and hear back, hand a thread between the PC and the
+phone, and take a photo for an agent with the phone's camera.
+
+**Update both together.** The phone and the PC exchange new messages for
+hand-off; each needs the other on 0.1.22.
+
+### Added
+
+- **Voice replies.** Hold the mic in the reply box to speak a reply or a
+  new task. Your words land in the box, selected and unsent. The phone's
+  own on-device recogniser is used, never an online one; the mic shows only
+  when one is installed.
+- **Read it to me.** When a thread finishes, one sentence of the answer is
+  spoken: through headphones only unless you allow the speaker, never
+  while Do Not Disturb is on, and off until you turn it on per PC.
+- **Agents in Quick Settings and on the home screen.** The tile shows how
+  many threads need you and opens the oldest one. The widget lists your
+  running threads by title and state, on the home screen only: never a
+  request's command, never on the lock screen.
+- **Hand a thread over.** "Continue on Pixel" on the PC or the launcher,
+  "Continue on <PC>" on the phone: the thread opens on the other device at
+  the same place, with the draft you were typing. Lock the PC with a
+  thread open and the phone offers it.
+- **A photo for an agent.** "Take a photo with Pixel" in the PC's reply
+  box, or "Take a Photo with Phone" in the launcher, uses the phone's
+  camera and attaches the picture. It's never put on the clipboard, and
+  no copy is kept in Downloads or the timeline.
+- **Do Not Disturb.** A finished turn doesn't sound while the PC or the
+  phone is in Do Not Disturb. "Needs you" can break through only if you
+  turn that on.
+
 ## 0.1.21 (2026-11-21)
 
 Reply from the phone to a Claude or Codex session running in a terminal on
