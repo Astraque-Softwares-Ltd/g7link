@@ -1512,6 +1512,11 @@ impl Host {
                 let thread = self.thread_fork(p).await?;
                 to_value(&ThreadResult { thread: thread.for_client(caps.items3) })
             }
+            // Reply on the PC (0.1.21).
+            method::SESSION_PLACE => {
+                let p: SessionPlaceParams = parse(params)?;
+                to_value(&self.session_place(&p.session_id).await?)
+            }
             m if source::METHODS.contains(&m) => self.git_call(kind, m, params).await,
             method::HELLO => Err(RpcError::new(ErrorCode::BadRequest, "already said hello")),
             _ => Err(RpcError::new(ErrorCode::BadRequest, UNKNOWN_METHOD)),

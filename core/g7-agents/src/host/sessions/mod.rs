@@ -18,6 +18,7 @@ pub mod claude_files;
 pub mod codex_files;
 pub mod import;
 pub mod paths;
+pub mod place;
 pub mod procs;
 pub mod scan;
 pub mod tail;

@@ -778,7 +778,16 @@ async fn hello_says_what_the_host_offers() {
     let (client, _events) = host.client(ClientKind::Test).await;
     assert_eq!(
         client.host().caps,
-        [cap::ITEMS2, cap::DENY_MESSAGE, cap::CONTROL, cap::HISTORY, cap::UNDO, cap::PRESENCE, cap::GIT]
+        [
+            cap::ITEMS2,
+            cap::DENY_MESSAGE,
+            cap::CONTROL,
+            cap::HISTORY,
+            cap::UNDO,
+            cap::PRESENCE,
+            cap::GIT,
+            cap::PLACE
+        ]
     );
     let too_many = HelloParams::new(ClientKind::Test, &["x"; MAX_CAPS + 1]);
     let err = Client::connect(&host.socket, too_many).await.unwrap_err();

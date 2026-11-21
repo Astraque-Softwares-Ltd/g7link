@@ -135,6 +135,17 @@ pub const MAX_STATUS_FILE: u64 = 16_384;
 /// Process entries looked at per scan.
 pub const MAX_PROC_SCAN: usize = 4096;
 
+// ---- Reply on the PC (0.1.21) ----
+
+/// `session.place`: ancestors listed at most, parent first.
+pub const MAX_PLACE_CHAIN: usize = 32;
+/// `session.place`: runs of the session's newest text given at most.
+pub const MAX_PLACE_MARKS: usize = 3;
+/// `session.place`: characters (not bytes) in each run.
+pub const PLACE_MARK_CHARS: usize = 32;
+/// `session.place`: an ancestor's `comm` and `exe_name` are cut to this.
+pub const MAX_PLACE_NAME: usize = 64;
+
 // ---- Control (phase 2) ----
 
 /// Models an agent lists, and each one's fields.
@@ -464,6 +475,8 @@ pub mod method {
     pub const PR_READY: &str = "pr.ready";
     pub const PR_METHODS: &str = "pr.methods";
     pub const PR_LIST: &str = "pr.list";
+    // Reply on the PC (0.1.21): only to a host that offers `cap::PLACE`.
+    pub const SESSION_PLACE: &str = "session.place";
 }
 
 /// What a client says it understands (`HelloParams.caps`) and what a host
@@ -495,8 +508,11 @@ pub mod cap {
     /// `gh.status` and `pr.*` methods, the `git.changed` and `git.progress`
     /// events, and the fields that go with them.
     pub const GIT: &str = "git";
+    /// The host has `session.place` (reply on the PC, 0.1.21): where a
+    /// followed session runs, for G7 Link to find its window.
+    pub const PLACE: &str = "place";
     /// What this host offers.
-    pub const HOST: [&str; 7] = [ITEMS2, DENY_MESSAGE, CONTROL, HISTORY, UNDO, PRESENCE, GIT];
+    pub const HOST: [&str; 8] = [ITEMS2, DENY_MESSAGE, CONTROL, HISTORY, UNDO, PRESENCE, GIT, PLACE];
 }
 
 pub mod event {
@@ -3870,6 +3886,122 @@ pub struct SessionPreviewResult {
     pub items: Vec<Item>,
 }
 
+// ---- Reply on the PC (0.1.21): only to a host that offers `cap::PLACE` ----
+//
+// `session.place` is host-local: G7 Link on this PC asks it right before it
+// enters a reply and again right before Enter, and never sends it on.
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionPlaceParams {
+    /// A `sessions.list` id.
+    pub session_id: String,
+}
+
+/// `session.place`'s answer: `{"place": SessionPlace}` or `{"refused": PlaceRefused}`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionPlaceResult {
+    /// Exactly one process has the session.
+    Place(SessionPlace),
+    /// There is no one process a reply could go to.
+    Refused(PlaceRefused),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlaceRefused {
+    pub reason: PlaceRefusal,
+    pub agent: AgentId,
+    /// Where it was started (as `Session.source`).
+    pub source: SessionSource,
+}
+
+/// Why `session.place` found no process to reply to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlaceRefusal {
+    /// No process has the session.
+    Ended,
+    /// Two or more processes have it (it was resumed twice).
+    Ambiguous,
+    /// It runs where a reply can't be entered: the Claude app, the Codex
+    /// app, or a Codex whose command line doesn't name it (`codex resume <uuid>`).
+    Place,
+    /// A word this version doesn't know.
+    #[serde(other)]
+    Unknown,
+}
+
+/// The one process a followed session runs in, the processes above it, and
+/// a few runs of its newest text. Every field is read when asked.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionPlace {
+    pub agent: AgentId,
+    /// `terminal` for a Codex TUI found by its command line.
+    pub source: SessionSource,
+    pub state: SessionState,
+    /// `state` is what Claude's status file says now. Otherwise it was
+    /// inferred from the session's file (always, for Codex).
+    pub state_exact: bool,
+    pub pid: u32,
+    /// `/proc/<pid>/stat` field 22: with `pid`, names this process and no later one.
+    pub start_ticks: u64,
+    /// stat field 5.
+    pub pgrp: u32,
+    /// stat field 7 (`tty_nr`), the terminal's device number; absent: none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tty: Option<u32>,
+    /// stat field 8 (`tpgid`) is `pgrp`: the agent is its terminal's
+    /// foreground job, so what is typed there reaches it and not a shell.
+    pub foreground: bool,
+    /// Parent first, at most [`MAX_PLACE_CHAIN`]. Ends before pid 1, a
+    /// process of another user, one that is gone, or one that started after
+    /// the process below it (a reused pid).
+    #[serde(default)]
+    pub chain: Vec<Ancestor>,
+    /// Up to [`MAX_PLACE_MARKS`] runs of [`PLACE_MARK_CHARS`] characters of
+    /// the session's newest user or assistant text, whitespace removed,
+    /// newest first; never across markdown marks or list markers. Empty when
+    /// it has no such text. Compared in memory, never logged or stored.
+    #[serde(default)]
+    pub marks: Vec<String>,
+}
+
+impl std::fmt::Debug for SessionPlace {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SessionPlace")
+            .field("agent", &self.agent)
+            .field("source", &self.source)
+            .field("state", &self.state)
+            .field("state_exact", &self.state_exact)
+            .field("pid", &self.pid)
+            .field("start_ticks", &self.start_ticks)
+            .field("pgrp", &self.pgrp)
+            .field("tty", &self.tty)
+            .field("foreground", &self.foreground)
+            .field("chain", &self.chain)
+            .field("marks", &self.marks.len())
+            .finish()
+    }
+}
+
+/// A process above the agent (`SessionPlace.chain`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Ancestor {
+    pub pid: u32,
+    pub start_ticks: u64,
+    /// stat's `comm`: `ptyxis-agent`, `gnome-terminal-`, `tmux: server`.
+    pub comm: String,
+    /// The file name of `/proc/<pid>/exe`, never a path, without
+    /// ` (deleted)`; absent when it can't be read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exe_name: Option<String>,
+    /// How many distinct terminals (`tty_nr`) its descendants hold, of any
+    /// user; absent when the process scan stopped at [`MAX_PROC_SCAN`] (the
+    /// count would be a lower bound, which proves nothing).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ptys_under: Option<u32>,
+}
+
 // ---- Source control (phase 4, §SC7.2): only to a host that offers `cap::GIT` ----
 //
 // A refusal is an error whose `data` is `{"reason": <word>}` (and `"names"`
@@ -5744,6 +5876,61 @@ mod tests {
         assert!(plain.get("limit").is_none(), "absent unless set: the line older clients read");
         let older: Session = serde_json::from_value(plain).unwrap();
         assert_eq!(older.limit, None);
+    }
+
+    #[test]
+    fn session_place_is_named_on_the_wire_and_hides_its_marks() {
+        assert!(cap::HOST.contains(&cap::PLACE));
+        assert_eq!((method::SESSION_PLACE, cap::PLACE), ("session.place", "place"));
+        round_trip(&SessionPlaceParams { session_id: format!("sc{}", "a".repeat(32)) });
+        let place = SessionPlace {
+            agent: AgentId::Claude,
+            source: SessionSource::Terminal,
+            state: SessionState::Idle,
+            state_exact: true,
+            pid: 4242,
+            start_ticks: 98765,
+            pgrp: 4242,
+            tty: Some(34816),
+            foreground: true,
+            chain: vec![Ancestor {
+                pid: 4200,
+                start_ticks: 9000,
+                comm: "ptyxis-agent".into(),
+                exe_name: Some("ptyxis-agent".into()),
+                ptys_under: Some(1),
+            }],
+            marks: vec!["Thebuildfailedbecausethelinkerco".into()],
+        };
+        let found = SessionPlaceResult::Place(place.clone());
+        round_trip(&found);
+        let value = serde_json::to_value(&found).unwrap();
+        assert_eq!(value["place"]["chain"][0]["ptys_under"], json!(1));
+        assert_eq!(value["place"]["tty"], json!(34816));
+        let refused = SessionPlaceResult::Refused(PlaceRefused {
+            reason: PlaceRefusal::Ambiguous,
+            agent: AgentId::Codex,
+            source: SessionSource::Terminal,
+        });
+        assert_eq!(
+            serde_json::to_value(&refused).unwrap(),
+            json!({"refused": {"reason": "ambiguous", "agent": "codex", "source": "terminal"}})
+        );
+        round_trip(&refused);
+        let later: SessionPlaceResult = serde_json::from_value(
+            json!({"refused": {"reason": "later", "agent": "claude", "source": "desktop_app"}}),
+        )
+        .unwrap();
+        assert!(matches!(
+            later,
+            SessionPlaceResult::Refused(PlaceRefused { reason: PlaceRefusal::Unknown, .. })
+        ));
+        // No terminal: the field is left out.
+        let bare = SessionPlace { tty: None, chain: vec![], marks: vec![], ..place.clone() };
+        let plain = serde_json::to_value(&bare).unwrap();
+        assert!(plain.get("tty").is_none());
+        let debug = format!("{:?}", SessionPlaceResult::Place(place));
+        assert!(!debug.contains("Thebuild") && debug.contains("marks: 1"), "{debug}");
     }
 
     #[test]

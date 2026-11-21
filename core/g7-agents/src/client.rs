@@ -876,6 +876,14 @@ pub mod calls {
     pub fn pr_list(params: PrListParams) -> Call<PrListResult> {
         Call::new(method::PR_LIST, &params, parse_as).slow()
     }
+
+    // ---- Reply on the PC (0.1.21): only to a host that offers `cap::PLACE` ----
+
+    /// Where a followed session runs now, for entering a reply on this PC.
+    /// Host-local: never send the answer on.
+    pub fn session_place(session_id: String) -> Call<SessionPlaceResult> {
+        Call::new(method::SESSION_PLACE, &SessionPlaceParams { session_id }, parse_as)
+    }
 }
 
 /// Generates one typed method per call builder, async or blocking.
@@ -968,6 +976,7 @@ macro_rules! with_calls {
             pr_ready(params: PrReadyParams) -> Option<PrInfo>;
             pr_methods(thread_id: String) -> PrMethodsResult;
             pr_list(params: PrListParams) -> PrListResult;
+            session_place(session_id: String) -> SessionPlaceResult;
         }
     };
 }

@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: MPL-2.0
 //! Which `claude` and `codex` processes run as this user, and Claude's own
 //! status files (`~/.claude/sessions/<pid>.json`), which say which process
-//! has which session and whether it waits for the user.
+//! has which session and whether it waits for the user. For `session.place`
+//! also every process's parent and terminal ([`tree`]).
+//!
+//! Only `comm`, `stat`, `cmdline` and the `cwd` and `exe` links are read,
+//! never `environ` or any other file of a process.
 //!
 //! Blocking; read through the bounded helpers in `tail.rs`.
 
@@ -39,6 +43,10 @@ pub struct Proc {
     pub comm: Comm,
     /// Field 22 of `stat`: clock ticks after boot.
     pub start_ticks: u64,
+    /// Field 7 of `stat`: its terminal's device number, 0 for none.
+    pub tty_nr: u32,
+    /// Field 8 of `stat`: its terminal's foreground process group, -1 for none.
+    pub tpgid: i32,
     pub argv: Vec<String>,
     pub cwd: Option<PathBuf>,
     pub exe: Option<PathBuf>,
@@ -69,6 +77,36 @@ impl Proc {
     pub fn is_codex_app_server(&self) -> bool {
         self.comm == Comm::Codex && self.argv.iter().skip(1).any(|a| a == "app-server")
     }
+
+    /// Started with `--fork-session`: it runs a new session, not the one
+    /// its `--resume` names.
+    pub fn forks_session(&self) -> bool {
+        self.argv.iter().skip(1).any(|a| a == "--fork-session")
+    }
+
+    /// A Codex TUI started on this session: `resume`, then `uuid` as an
+    /// argument of its own, and no `exec` (headless) before them. `fork`
+    /// and `resume --last` don't name it.
+    pub fn resumes_codex_session(&self, uuid: &str) -> bool {
+        if self.comm != Comm::Codex || self.is_codex_app_server() {
+            return false;
+        }
+        let args = self.argv.get(1..).unwrap_or_default();
+        let Some(at) = args.iter().position(|a| a == "resume") else { return false };
+        !args[..at].iter().any(|a| matches!(a.as_str(), "exec" | "e"))
+            && args[at + 1..].iter().any(|a| a == uuid)
+    }
+
+    /// Its terminal, when it has one.
+    pub fn tty(&self) -> Option<u32> {
+        (self.tty_nr != 0).then_some(self.tty_nr)
+    }
+
+    /// It is its terminal's foreground job: what is typed there reaches it,
+    /// not a shell.
+    pub fn foreground(&self) -> bool {
+        self.tty_nr != 0 && u32::try_from(self.tpgid).is_ok_and(|tpgid| tpgid == self.pgrp)
+    }
 }
 
 /// Everything one process scan found.
@@ -84,13 +122,73 @@ fn read_small(path: &Path, limit: u64) -> Option<String> {
     Some(String::from_utf8_lossy(&bytes).into_owned())
 }
 
-/// `(ppid, pgrp, start ticks)` from a `stat` line: fields after the last `)`,
-/// so a `)` inside `comm` can't shift them.
-pub fn parse_stat(stat: &str) -> Option<(u32, u32, u64)> {
-    let after = &stat[stat.rfind(')')? + 1..];
-    let fields: Vec<&str> = after.split_whitespace().collect();
+/// What is kept of a `/proc/<pid>/stat` line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Stat {
+    /// Field 2 without its parentheses (at most 15 bytes from the kernel).
+    pub comm: String,
+    pub ppid: u32,
+    pub pgrp: u32,
+    /// Field 7: the controlling terminal's device number, 0 for none.
+    pub tty_nr: u32,
+    /// Field 8: the terminal's foreground process group, -1 for none.
+    pub tpgid: i32,
+    /// Field 22: clock ticks after boot.
+    pub start_ticks: u64,
+}
+
+/// A `stat` line's fields: `comm` between the first `(` and the last `)`,
+/// the rest after that `)`, so a `)` inside `comm` can't shift them.
+pub fn parse_stat(stat: &str) -> Option<Stat> {
+    let open = stat.find('(')?;
+    let close = stat.rfind(')')?;
+    if close < open {
+        return None;
+    }
+    let fields: Vec<&str> = stat[close + 1..].split_whitespace().collect();
     // fields[0] is field 3 (state); field 22 (start time) is fields[19].
-    Some((fields.get(1)?.parse().ok()?, fields.get(2)?.parse().ok()?, fields.get(19)?.parse().ok()?))
+    let tty_nr: i32 = fields.get(4)?.parse().ok()?;
+    Some(Stat {
+        comm: stat[open + 1..close].to_owned(),
+        ppid: fields.get(1)?.parse().ok()?,
+        pgrp: fields.get(2)?.parse().ok()?,
+        // The kernel prints the device number as a signed int: keep its bits.
+        tty_nr: tty_nr as u32,
+        tpgid: fields.get(5)?.parse().ok()?,
+        start_ticks: fields.get(19)?.parse().ok()?,
+    })
+}
+
+/// `/proc/<pid>/stat` under `dir`.
+pub fn read_stat(dir: &Path) -> Option<Stat> {
+    read_small(&dir.join("stat"), MAX_STAT).as_deref().and_then(parse_stat)
+}
+
+/// The owner of a `/proc/<pid>` folder: the process's user.
+pub fn owner(dir: &Path) -> Option<u32> {
+    std::fs::symlink_metadata(dir).ok().map(|m| m.uid())
+}
+
+/// The `/proc` entries that are processes, at most [`MAX_PROC_SCAN`], and
+/// whether that was all of them.
+fn pid_dirs(proc_root: &Path) -> (Vec<(u32, PathBuf)>, bool) {
+    // `/proc` lists a few dozen other names before the pids.
+    let listed = tail::list_dir(proc_root, MAX_PROC_SCAN + 256);
+    let mut complete = listed.len() < MAX_PROC_SCAN + 256;
+    let mut out = Vec::new();
+    for (name, dir) in listed {
+        if name.is_empty() || !name.bytes().all(|b| b.is_ascii_digit()) {
+            continue;
+        }
+        if out.len() == MAX_PROC_SCAN {
+            complete = false;
+            break;
+        }
+        if let Ok(pid) = name.parse::<u32>() {
+            out.push((pid, dir));
+        }
+    }
+    (out, complete)
 }
 
 fn boot_ms(proc_root: &Path) -> Option<u64> {
@@ -103,15 +201,8 @@ fn boot_ms(proc_root: &Path) -> Option<u64> {
 /// own children and their process groups (it knows them).
 pub fn scan(proc_root: &Path, euid: u32, host_pid: u32) -> Scan {
     let mut found = Vec::new();
-    // `/proc` lists a few dozen other names before the pids.
-    let entries = tail::list_dir(proc_root, MAX_PROC_SCAN + 256)
-        .into_iter()
-        .filter(|(name, _)| !name.is_empty() && name.bytes().all(|b| b.is_ascii_digit()))
-        .take(MAX_PROC_SCAN);
-    for (name, dir) in entries {
-        let Ok(pid) = name.parse::<u32>() else { continue };
-        let Ok(meta) = std::fs::symlink_metadata(&dir) else { continue };
-        if meta.uid() != euid {
+    for (pid, dir) in pid_dirs(proc_root).0 {
+        if owner(&dir) != Some(euid) {
             continue;
         }
         let Some(comm) = read_small(&dir.join("comm"), MAX_COMM) else { continue };
@@ -120,9 +211,7 @@ pub fn scan(proc_root: &Path, euid: u32, host_pid: u32) -> Scan {
             "codex" => Comm::Codex,
             _ => continue,
         };
-        let Some((ppid, pgrp, start_ticks)) =
-            read_small(&dir.join("stat"), MAX_STAT).as_deref().and_then(parse_stat)
-        else {
+        let Some(Stat { ppid, pgrp, tty_nr, tpgid, start_ticks, .. }) = read_stat(&dir) else {
             continue;
         };
         let argv = tail::read_head(&dir.join("cmdline"), MAX_CMDLINE)
@@ -139,6 +228,8 @@ pub fn scan(proc_root: &Path, euid: u32, host_pid: u32) -> Scan {
             pgrp,
             comm,
             start_ticks,
+            tty_nr,
+            tpgid,
             argv,
             cwd: tail::read_link(&dir.join("cwd")),
             exe: tail::read_link(&dir.join("exe")),
@@ -151,6 +242,57 @@ pub fn scan(proc_root: &Path, euid: u32, host_pid: u32) -> Scan {
         .map(|p| (p.pid, p))
         .collect();
     Scan { procs, boot_ms: boot_ms(proc_root) }
+}
+
+/// Every process's parent and terminal, of any user (`stat` is readable by
+/// all): what `session.place` counts terminals under an ancestor from.
+#[derive(Debug, Clone, Default)]
+pub struct Tree {
+    /// Children by parent pid.
+    children: HashMap<u32, Vec<u32>>,
+    /// Terminals (`tty_nr`, not 0) by pid.
+    ttys: HashMap<u32, u32>,
+    /// Every process was looked at: the scan didn't stop at [`MAX_PROC_SCAN`].
+    pub complete: bool,
+}
+
+impl Tree {
+    /// From `(pid, ppid, tty_nr)` of each process.
+    pub fn new(procs: impl IntoIterator<Item = (u32, u32, u32)>, complete: bool) -> Tree {
+        let mut tree = Tree { complete, ..Tree::default() };
+        for (pid, ppid, tty_nr) in procs {
+            tree.children.entry(ppid).or_default().push(pid);
+            if tty_nr != 0 {
+                tree.ttys.insert(pid, tty_nr);
+            }
+        }
+        tree
+    }
+
+    /// How many distinct terminals the descendants of `pid` have (not
+    /// `pid` itself).
+    pub fn ttys_under(&self, pid: u32) -> u32 {
+        let mut ttys = HashSet::new();
+        let mut seen = HashSet::from([pid]);
+        let mut next: Vec<u32> = self.children.get(&pid).cloned().unwrap_or_default();
+        while let Some(child) = next.pop() {
+            if !seen.insert(child) {
+                continue;
+            }
+            if let Some(&tty) = self.ttys.get(&child) {
+                ttys.insert(tty);
+            }
+            next.extend(self.children.get(&child).into_iter().flatten());
+        }
+        u32::try_from(ttys.len()).unwrap_or(u32::MAX)
+    }
+}
+
+/// Reads [`Tree`]: one `stat` per process, at most [`MAX_PROC_SCAN`].
+pub fn tree(proc_root: &Path) -> Tree {
+    let (dirs, complete) = pid_dirs(proc_root);
+    let procs = dirs.into_iter().filter_map(|(pid, dir)| read_stat(&dir).map(|s| (pid, s.ppid, s.tty_nr)));
+    Tree::new(procs.collect::<Vec<_>>(), complete)
 }
 
 /// What a Claude status file says, reduced to what is kept. Its socket path,
@@ -205,9 +347,9 @@ pub fn parse_status(file_pid: u32, bytes: &[u8], file_mtime_ms: u64, scan: &Scan
     })
 }
 
-/// Every usable status file, by session UUID: a live one wins, then the newest.
-pub fn statuses(roots: &Roots, scan: &Scan) -> HashMap<String, Status> {
-    let mut out: HashMap<String, Status> = HashMap::new();
+/// Every usable status file, one per process, in no order.
+pub fn status_list(roots: &Roots, scan: &Scan) -> Vec<Status> {
+    let mut out = Vec::new();
     for (name, path) in tail::list_dir(&roots.claude_status_dir(), MAX_STATUS_FILES) {
         let Some(pid) = paths::status_file_pid(&name) else { continue };
         let Ok((file, meta)) = tail::open_regular(&path) else { continue };
@@ -216,7 +358,17 @@ pub fn statuses(roots: &Roots, scan: &Scan) -> HashMap<String, Status> {
             continue;
         }
         let mtime_ms = tail::Stamp::of(&meta).mtime_ms();
-        let Some(status) = parse_status(pid, &bytes, mtime_ms, scan) else { continue };
+        if let Some(status) = parse_status(pid, &bytes, mtime_ms, scan) {
+            out.push(status);
+        }
+    }
+    out
+}
+
+/// Every usable status file, by session UUID: a live one wins, then the newest.
+pub fn statuses(roots: &Roots, scan: &Scan) -> HashMap<String, Status> {
+    let mut out: HashMap<String, Status> = HashMap::new();
+    for status in status_list(roots, scan) {
         let better = match out.get(&status.uuid) {
             None => true,
             Some(old) => (status.live, status.updated_ms) > (old.live, old.updated_ms),
@@ -259,6 +411,16 @@ pub(crate) mod tests {
         let _ = std::os::unix::fs::symlink(format!("/usr/bin/{comm}"), dir.join("exe"));
     }
 
+    /// Rewrites a fake process's `stat` with its process group and terminal.
+    pub(crate) fn fake_terminal(root: &Path, pid: u32, pgrp: u32, tty_nr: u32, tpgid: i32) {
+        let path = root.join(pid.to_string()).join("stat");
+        let Stat { comm, ppid, start_ticks, .. } = read_stat(path.parent().unwrap()).unwrap();
+        let stat = format!(
+            "{pid} ({comm}) S {ppid} {pgrp} {pgrp} {tty_nr} {tpgid} 4194560 1 0 0 0 0 0 0 0 20 0 1 0 {start_ticks} 1000 100 0"
+        );
+        std::fs::write(path, stat).unwrap();
+    }
+
     fn euid() -> u32 {
         crate::client::euid()
     }
@@ -269,9 +431,79 @@ pub(crate) mod tests {
     #[test]
     fn the_start_time_survives_a_paren_in_comm() {
         let stat = "77 (a) b (c)) S 1 77 77 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 98765 0 0";
-        assert_eq!(parse_stat(stat), Some((1, 77, 98765)));
+        let s = parse_stat(stat).unwrap();
+        assert_eq!((s.comm.as_str(), s.ppid, s.pgrp, s.start_ticks), ("a) b (c)", 1, 77, 98765));
+        assert_eq!((s.tty_nr, s.tpgid), (0, -1), "no terminal");
         assert_eq!(parse_stat("77 (x) S"), None);
         assert_eq!(parse_stat("no paren"), None);
+        assert_eq!(parse_stat(") 77 (x"), None, "the parentheses the wrong way round");
+    }
+
+    #[test]
+    fn the_terminal_fields() {
+        // pts/3 (major 136) in the foreground group 4400.
+        let s = parse_stat("4400 (tmux: server) S 1 4400 4400 34819 4400 0 0 0 0 0 0 0 0 0 20 0 1 0 9 0 0")
+            .unwrap();
+        assert_eq!((s.comm.as_str(), s.tty_nr, s.tpgid), ("tmux: server", 34819, 4400));
+        // A device number the kernel prints negative keeps its bits.
+        let s = parse_stat("5 (x) S 1 5 5 -2147450877 5 0 0 0 0 0 0 0 0 0 20 0 1 0 9 0 0").unwrap();
+        assert_eq!(s.tty_nr, 0x8000_8003);
+        assert_eq!(parse_stat("5 (x) S 1 5 5 pts -1 0 0 0 0 0 0 0 0 0 20 0 1 0 9 0 0"), None);
+    }
+
+    #[test]
+    fn in_the_foreground_only_when_its_group_has_the_terminal() {
+        let p = Proc {
+            pid: 50,
+            ppid: 40,
+            pgrp: 50,
+            comm: Comm::Claude,
+            start_ticks: 9,
+            tty_nr: 34816,
+            tpgid: 50,
+            argv: vec!["claude".into()],
+            cwd: None,
+            exe: None,
+        };
+        assert_eq!(p.tty(), Some(34816));
+        assert!(p.foreground());
+        let suspended = Proc { tpgid: 40, ..p.clone() };
+        assert!(!suspended.foreground(), "a shell has the terminal: what is typed goes to it");
+        let no_terminal = Proc { tty_nr: 0, tpgid: -1, ..p.clone() };
+        assert_eq!(no_terminal.tty(), None);
+        assert!(!no_terminal.foreground());
+        assert!(!Proc { tty_nr: 0, ..p }.foreground(), "no terminal, whatever tpgid says");
+    }
+
+    #[test]
+    fn a_codex_tui_names_its_session_only_with_resume() {
+        let u = "11111111-2222-4333-8444-555555555555";
+        let codex = |argv: &[&str]| Proc {
+            pid: 1,
+            ppid: 0,
+            pgrp: 1,
+            comm: Comm::Codex,
+            start_ticks: 0,
+            tty_nr: 0,
+            tpgid: -1,
+            argv: argv.iter().map(|a| (*a).to_owned()).collect(),
+            cwd: None,
+            exe: None,
+        };
+        assert!(codex(&["codex", "resume", u]).resumes_codex_session(u));
+        assert!(codex(&["codex", "-m", "gpt", "resume", u, "go on"]).resumes_codex_session(u));
+        assert!(codex(&["/opt/codex", "resume", "--yolo", u]).resumes_codex_session(u));
+        assert!(!codex(&["codex", "exec", "resume", u]).resumes_codex_session(u), "headless");
+        assert!(!codex(&["codex", "e", "resume", u]).resumes_codex_session(u));
+        assert!(!codex(&["codex", "fork", u]).resumes_codex_session(u), "a fork is a new session");
+        assert!(!codex(&["codex", "resume", "--last"]).resumes_codex_session(u));
+        assert!(!codex(&["codex", u, "resume"]).resumes_codex_session(u));
+        assert!(!codex(&["codex", "resume", &format!("{u}x")]).resumes_codex_session(u));
+        assert!(!codex(&["codex", "app-server", "resume", u]).resumes_codex_session(u));
+        assert!(!codex(&["resume", u]).resumes_codex_session(u), "argv[0] is the program");
+        let claude = Proc { comm: Comm::Claude, ..codex(&["claude", "resume", u]) };
+        assert!(!claude.resumes_codex_session(u));
+        assert!(Proc { comm: Comm::Claude, ..codex(&["claude", "-r", u, "--fork-session"]) }.forks_session());
     }
 
     #[test]
@@ -314,6 +546,34 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn terminals_are_counted_under_a_process() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let w = Path::new("/w");
+        // kitty (10) with two shells on two terminals, one running claude;
+        // a third terminal elsewhere.
+        fake_proc(root, 10, "kitty", 1, 100, &["kitty"], w);
+        fake_proc(root, 11, "zsh", 10, 110, &["zsh"], w);
+        fake_proc(root, 12, "claude", 11, 120, &["claude"], w);
+        fake_proc(root, 13, "zsh", 10, 130, &["zsh"], w);
+        fake_proc(root, 20, "bash", 1, 200, &["bash"], w);
+        fake_terminal(root, 11, 11, 34816, 12);
+        fake_terminal(root, 12, 12, 34816, 12);
+        fake_terminal(root, 13, 13, 34817, 13);
+        fake_terminal(root, 20, 20, 34818, 20);
+        let t = tree(root);
+        assert!(t.complete);
+        assert_eq!(t.ttys_under(10), 2, "two shells, two terminals");
+        assert_eq!(t.ttys_under(11), 1, "claude's, under its shell");
+        assert_eq!(t.ttys_under(12), 0, "not counting itself");
+        assert_eq!(t.ttys_under(1), 3);
+        assert_eq!(t.ttys_under(4242), 0, "no such process");
+        // A loop in the parents (a pid reused while reading) ends.
+        let looped = Tree::new([(5, 6, 1), (6, 5, 2)], true);
+        assert_eq!(looped.ttys_under(5), 1);
+    }
+
+    #[test]
     fn at_most_4096_entries_are_looked_at() {
         let dir = tempfile::tempdir().unwrap();
         for pid in 1..=4100u32 {
@@ -327,6 +587,8 @@ pub(crate) mod tests {
             .unwrap();
         }
         assert_eq!(scan(dir.path(), euid(), NOT_PARENT).procs.len(), MAX_PROC_SCAN);
+        let t = tree(dir.path());
+        assert!(!t.complete, "a count from part of the processes can't prove anything");
     }
 
     #[test]
@@ -337,6 +599,8 @@ pub(crate) mod tests {
             pgrp: 1,
             comm: Comm::Claude,
             start_ticks: 0,
+            tty_nr: 0,
+            tpgid: -1,
             argv: vec!["claude".into(), "--session-id=u1".into(), "--resume".into()],
             cwd: None,
             exe: None,
