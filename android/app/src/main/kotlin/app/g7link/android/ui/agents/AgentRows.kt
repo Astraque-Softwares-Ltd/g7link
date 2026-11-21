@@ -81,6 +81,7 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.Dp
@@ -91,21 +92,24 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.currentStateAsState
 import app.g7link.android.R
+import app.g7link.android.ui.theme.AgentPalette
 import app.g7link.android.ui.theme.G7Icons
 import app.g7link.android.ui.theme.G7RowAction
 import app.g7link.android.ui.theme.LocalAppFonts
 import app.g7link.android.ui.theme.LocalReducedMotion
 import app.g7link.android.ui.theme.MONO_FEATURES
-import app.g7link.android.ui.theme.g7Tints
 import app.g7link.android.ui.theme.mono
 import app.g7link.core.AgentAlertKind
 import app.g7link.core.AgentAlign
+import app.g7link.core.AgentChangesNote
+import app.g7link.core.AgentCheckpointWhy
 import app.g7link.core.AgentBlock
 import app.g7link.core.AgentBlockKind
 import app.g7link.core.AgentClause
 import app.g7link.core.AgentDetailOf
 import app.g7link.core.AgentDiffDoc
 import app.g7link.core.AgentDiffKind
+import app.g7link.core.AgentDiffNote
 import app.g7link.core.AgentItem
 import app.g7link.core.AgentLink
 import app.g7link.core.AgentLiveLabel
@@ -118,6 +122,8 @@ import app.g7link.core.AgentRowStatus
 import app.g7link.core.AgentSpan
 import app.g7link.core.AgentSummary
 import app.g7link.core.AgentTable
+import app.g7link.core.AgentTokClass
+import app.g7link.core.AgentThread
 import app.g7link.core.AgentToolClass
 import app.g7link.core.AgentToolLabel
 import app.g7link.core.AgentVia
@@ -148,6 +154,16 @@ internal class RowsContext(
     val running: Boolean = false,
     val implementing: Boolean = false,
     val thumbs: ImageThumbs? = null,
+    /** The thread, for Undo on a rewind's notice (its `undo`). */
+    val thread: AgentThread? = null,
+    /** The PC's name ("Undo it on %1."). */
+    val pcName: String = "",
+    /** The time now, a little stale: whether Undo still lasts. */
+    val nowMs: Long = 0L,
+    /** The message lit for a moment (opened from a search hit). */
+    val highlightSeq: ULong? = null,
+    /** An undo is on its way. */
+    val undoing: Boolean = false,
 )
 
 /** What a tap on a row does. */
@@ -169,6 +185,12 @@ internal class RowActions(
     val implement: (String) -> Unit = {},
     /** "Change the plan": the reply box, to say what to change. */
     val changePlan: () -> Unit = {},
+    /** Long-press on your message or a turn's final answer: its sheet (Copy, Edit, Rewind, Fork). */
+    val messageActions: (AgentRow) -> Unit = {},
+    /** A recorded Changes row: the turn's diff, at a file when one was tapped. */
+    val openChanges: (UInt, String?) -> Unit = { _, _ -> },
+    /** Undo on a rewind's notice. */
+    val undo: () -> Unit = {},
 )
 
 /**
@@ -187,14 +209,28 @@ internal fun AgentRowsList(
     listState: LazyListState,
     modifier: Modifier = Modifier,
     footer: (LazyListScope.() -> Unit)? = null,
+    /** Scroll once to the first row at or after this message (a search hit), instead of following the end. */
+    scrollTo: ULong? = null,
 ) {
     // Follows new rows while the end is in view; scrolling up stops that, scrolling back down resumes it.
-    var follow by remember { mutableStateOf(true) }
+    var follow by remember { mutableStateOf(scrollTo == null) }
+    var scrolledTo by remember { mutableStateOf<ULong?>(null) }
     LaunchedEffect(listState) {
         snapshotFlow { listState.isScrollInProgress to listState.canScrollForward }
             .collect { scroll -> if (scroll.first) follow = !scroll.second }
     }
-    LaunchedEffect(rows) {
+    LaunchedEffect(rows, scrollTo) {
+        val target = scrollTo
+        if (target != null && scrolledTo != target && rows.isNotEmpty()) {
+            val units = AgentPlanCards.units(rows)
+            val at = units.indexOfFirst { unit -> (lastRow(unit)?.seq ?: 0uL) >= target }
+            if (at >= 0) {
+                scrolledTo = target
+                follow = false
+                listState.scrollToItem(at + if (earlier) 1 else 0)
+                return@LaunchedEffect
+            }
+        }
         if (follow && rows.isNotEmpty()) {
             val total = listState.layoutInfo.totalItemsCount
             if (total > 0) {
@@ -225,7 +261,9 @@ internal fun AgentRowsList(
                 is RowUnit.One -> {
                     val row = unit.row
                     val gap = topGap(lastRow(units.getOrNull(index - 1)), row)
-                    NestedRow(row.depth.toInt(), gap) { AgentRowView(row, context, actions) }
+                    NestedRow(row.depth.toInt(), gap) {
+                        Lit(lit = context.highlightSeq != null && row.seq == context.highlightSeq) { AgentRowView(row, context, actions) }
+                    }
                 }
                 is RowUnit.Plan -> NestedRow(unit.head.depth.toInt(), if (index > 0) 12.dp else 0.dp) { PlanCard(unit, context, actions) }
             }
@@ -256,6 +294,7 @@ private fun kindName(kind: AgentRowKind): String = when (kind) {
     is AgentRowKind.Thought -> "thought"
     is AgentRowKind.Fold -> "fold"
     is AgentRowKind.Changes -> "changes"
+    is AgentRowKind.ChangesNote -> "changes_note"
     is AgentRowKind.Mark -> "mark"
     is AgentRowKind.Notice -> "notice"
     is AgentRowKind.Live -> "live"
@@ -308,10 +347,21 @@ private fun NestedRow(depth: Int, gap: Dp, content: @Composable () -> Unit) {
     }
 }
 
+/** A row lit for a moment: the message a search hit opened the thread at. */
+@Composable
+private fun Lit(lit: Boolean, content: @Composable () -> Unit) {
+    if (!lit) {
+        content()
+        return
+    }
+    val tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)
+    Box(Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(tint)) { content() }
+}
+
 @Composable
 private fun AgentRowView(row: AgentRow, context: RowsContext, actions: RowActions) {
     when (val kind = row.kind) {
-        is AgentRowKind.User -> UserRow(kind, context.items[row.itemId], context.thumbs)
+        is AgentRowKind.User -> UserRow(row, kind, context.items[row.itemId], context.thumbs, actions)
         is AgentRowKind.Block -> BlockRow(row, kind, context.items[row.itemId], actions)
         is AgentRowKind.Tool -> ToolRow(row, kind, context.items[row.itemId], actions)
         is AgentRowKind.Detail -> DetailRow(row, kind, context, actions)
@@ -319,8 +369,9 @@ private fun AgentRowView(row: AgentRow, context: RowsContext, actions: RowAction
         is AgentRowKind.Thought -> ThoughtRow(row, kind, actions)
         is AgentRowKind.Fold -> FoldRow(row, kind, actions)
         is AgentRowKind.Changes -> ChangesRow(row, kind, actions)
+        is AgentRowKind.ChangesNote -> ChangesNoteRow(kind)
         is AgentRowKind.Mark -> MarkRow(kind, actions)
-        is AgentRowKind.Notice -> NoticeRow(kind.text)
+        is AgentRowKind.Notice -> NoticeRow(kind, context, actions)
         is AgentRowKind.Live -> LiveRow(kind)
         // A plan's rows are drawn as one card (AgentRowsList); one on its own is its header.
         is AgentRowKind.Plan -> PlanCard(RowUnit.Plan(row, kind, emptyList()), context, actions)
@@ -331,7 +382,7 @@ private fun AgentRowView(row: AgentRow, context: RowsContext, actions: RowAction
 // ---- Your messages ----
 
 @Composable
-private fun UserRow(kind: AgentRowKind.User, item: AgentItem?, thumbs: ImageThumbs?) {
+private fun UserRow(row: AgentRow, kind: AgentRowKind.User, item: AgentItem?, thumbs: ImageThumbs?, actions: RowActions) {
     val scheme = MaterialTheme.colorScheme
     Column(Modifier.fillMaxWidth().padding(start = 48.dp), horizontalAlignment = Alignment.End) {
         val steered = when (kind.via) {
@@ -364,16 +415,16 @@ private fun UserRow(kind: AgentRowKind.User, item: AgentItem?, thumbs: ImageThum
             )
         }
         if (kind.text.isNotEmpty() || images.isEmpty()) {
-            SelectionContainer {
-                Text(
-                    kind.text,
-                    style = MaterialTheme.typography.bodyLarge,
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(scheme.surfaceContainerHigh)
-                        .padding(horizontal = 14.dp, vertical = 10.dp),
-                )
-            }
+            // Long-press: Copy, and what may be done from here (board 20).
+            Text(
+                kind.text,
+                style = MaterialTheme.typography.bodyLarge,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(scheme.surfaceContainerHigh)
+                    .combinedClickable(role = Role.Button, onClick = {}, onLongClick = { actions.messageActions(row) })
+                    .padding(horizontal = 14.dp, vertical = 10.dp),
+            )
         }
         if (item?.truncated == true) {
             Text(
@@ -394,10 +445,18 @@ private fun bodyStyle(): TextStyle = MaterialTheme.typography.bodyLarge.copy(lin
 
 @Composable
 private fun textLook(): AgentText.Look {
-    val scheme = MaterialTheme.colorScheme
+    val p = agentPalette()
     val fonts = LocalAppFonts.current
-    return remember(scheme.primary, scheme.surfaceContainerHigh, fonts) {
-        AgentText.Look(mono = fonts.mono, link = scheme.primary, codeBackground = scheme.surfaceContainerHigh)
+    return remember(p, fonts) {
+        // Inline code is coral on its chip; a path the turn changed is its folder muted and its name in ink (§2.8).
+        AgentText.Look(
+            mono = fonts.mono,
+            link = p.proseLink,
+            codeBackground = p.groundChip,
+            inlineCode = p.proseInlineCode,
+            pathDir = p.syntaxDir,
+            pathFile = p.syntaxFile,
+        )
     }
 }
 
@@ -448,25 +507,45 @@ private fun StyledText(
 @Composable
 internal fun BlockRow(row: AgentRow, kind: AgentRowKind.Block, item: AgentItem?, actions: RowActions) {
     val block = kind.block
-    Column(Modifier.fillMaxWidth()) {
+    // A turn's final answer: long-press offers Copy and Fork from here (board 20).
+    val acted = row.acts != null
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .then(if (acted) Modifier.combinedClickable(onClick = {}, onLongClick = { actions.messageActions(row) }) else Modifier),
+    ) {
         Quoted(block.quote.toInt()) {
             when (val blockKind = block.kind) {
-                is AgentBlockKind.Paragraph -> SelectionContainer {
+                is AgentBlockKind.Paragraph -> if (acted) {
                     StyledText(block.text, block.spans, bodyStyle(), actions, Modifier.fillMaxWidth())
+                } else {
+                    SelectionContainer {
+                        StyledText(block.text, block.spans, bodyStyle(), actions, Modifier.fillMaxWidth())
+                    }
                 }
-                is AgentBlockKind.Heading -> SelectionContainer {
+                is AgentBlockKind.Heading -> {
                     val big = blockKind.level.toInt() <= 2
-                    StyledText(
-                        block.text,
-                        block.spans,
-                        MaterialTheme.typography.titleMedium.copy(
-                            fontSize = if (big) 16.5.sp else 14.5.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            lineHeight = if (big) 22.sp else 20.sp,
-                        ),
-                        actions,
-                        Modifier.fillMaxWidth().padding(top = 4.dp),
-                    )
+                    // Levels 1 and 2 have a lavender rule at the start; a heading is never coloured text (§2.8).
+                    val rule = agentPalette().proseHeadingRule
+                    Row(Modifier.fillMaxWidth().padding(top = 4.dp).height(IntrinsicSize.Min)) {
+                        if (big) {
+                            Box(Modifier.width(2.dp).fillMaxHeight().background(rule))
+                            Spacer(Modifier.width(10.dp))
+                        }
+                        SelectionContainer(Modifier.weight(1f)) {
+                            StyledText(
+                                block.text,
+                                block.spans,
+                                MaterialTheme.typography.titleMedium.copy(
+                                    fontSize = if (big) 16.5.sp else 14.5.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    lineHeight = if (big) 22.sp else 20.sp,
+                                ),
+                                actions,
+                                Modifier.fillMaxWidth(),
+                            )
+                        }
+                    }
                 }
                 is AgentBlockKind.ListItem -> ListItemBlock(block, actions)
                 is AgentBlockKind.Code -> CodeBlock(row.key, block, actions)
@@ -510,15 +589,15 @@ private fun Quoted(levels: Int, content: @Composable () -> Unit) {
 @Composable
 private fun ListItemBlock(block: AgentBlock, actions: RowActions) {
     val scheme = MaterialTheme.colorScheme
-    val tints = g7Tints()
+    val p = agentPalette()
     val style = bodyStyle()
     Row(Modifier.fillMaxWidth().padding(start = 16.dp * block.depth.toInt().coerceAtMost(8)), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
         Box(Modifier.width(18.dp).height(22.dp), contentAlignment = Alignment.Center) {
             when (val marker = block.marker) {
-                is AgentMarker.Bullet -> Box(Modifier.size(4.dp).clip(CircleShape).background(scheme.onSurfaceVariant))
-                is AgentMarker.Number -> Text("${marker.number}.", style = style, color = scheme.onSurfaceVariant, maxLines = 1)
+                is AgentMarker.Bullet -> Box(Modifier.size(4.dp).clip(CircleShape).background(p.proseListMarker))
+                is AgentMarker.Number -> Text("${marker.number}.", style = style, color = p.proseListMarker, maxLines = 1)
                 is AgentMarker.Todo -> Box(Modifier.size(10.dp).border(1.5.dp, scheme.outline, CircleShape))
-                is AgentMarker.Done -> Icon(G7Icons.check, contentDescription = null, tint = tints.teal, modifier = Modifier.size(14.dp))
+                is AgentMarker.Done -> Icon(G7Icons.check, contentDescription = null, tint = p.proseDoneBox, modifier = Modifier.size(14.dp))
                 is AgentMarker.None -> Unit
             }
         }
@@ -530,13 +609,13 @@ private fun ListItemBlock(block: AgentBlock, actions: RowActions) {
 
 @Composable
 private fun AlertBlock(alert: AgentAlertKind, block: AgentBlock, actions: RowActions) {
-    val tints = g7Tints()
+    val p = agentPalette()
     val (tint, icon, title) = when (alert) {
-        AgentAlertKind.NOTE -> Triple(tints.blue, G7Icons.info, R.string.agents_alert_note)
-        AgentAlertKind.TIP -> Triple(tints.teal, G7Icons.lightbulb, R.string.agents_alert_tip)
-        AgentAlertKind.IMPORTANT -> Triple(tints.pink, G7Icons.info, R.string.agents_alert_important)
-        AgentAlertKind.WARNING -> Triple(tints.amber, AgentGlyphs.warning, R.string.agents_alert_warning)
-        AgentAlertKind.CAUTION -> Triple(tints.red, AgentGlyphs.warning, R.string.agents_alert_caution)
+        AgentAlertKind.NOTE -> Triple(p.proseAlertNote, G7Icons.info, R.string.agents_alert_note)
+        AgentAlertKind.TIP -> Triple(p.proseAlertTip, G7Icons.lightbulb, R.string.agents_alert_tip)
+        AgentAlertKind.IMPORTANT -> Triple(p.proseAlertImportant, G7Icons.info, R.string.agents_alert_important)
+        AgentAlertKind.WARNING -> Triple(p.proseAlertWarning, AgentGlyphs.warning, R.string.agents_alert_warning)
+        AgentAlertKind.CAUTION -> Triple(p.proseAlertCaution, AgentGlyphs.warning, R.string.agents_alert_caution)
     }
     Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min)) {
         Box(Modifier.width(2.dp).fillMaxHeight().background(tint))
@@ -554,34 +633,29 @@ private fun AlertBlock(alert: AgentAlertKind, block: AgentBlock, actions: RowAct
 
 /**
  * A code block: its language word, Wrap and Copy (the source as written), and
- * its lines coloured by the render crate's token classes; scrolled sideways
- * unless wrapped. A language we have no colours for is shown plain.
+ * its lines coloured by the render crate's token classes (§2.4); scrolled
+ * sideways unless wrapped. A language we have no colours for is shown plain.
+ * A language the render crate guessed (no word on the fence) is named like a
+ * written one (§2.5).
  */
 @Composable
 private fun CodeBlock(key: String, block: AgentBlock, actions: RowActions) {
     val scheme = MaterialTheme.colorScheme
-    val tints = g7Tints()
+    val p = agentPalette()
     val fonts = LocalAppFonts.current
     var wrap by rememberSaveable(key) { mutableStateOf(false) }
-    val plain = scheme.onSurface
-    val muted = scheme.onSurfaceVariant
-    val shown = remember(block.lines, block.text, tints, plain, muted) {
+    val shown = remember(block.lines, block.text, p) {
         if (block.lines.isEmpty()) {
             AnnotatedString(block.text.trimEnd('\n'))
         } else {
-            buildAnnotatedString {
-                block.lines.forEachIndexed { index, line ->
-                    if (index > 0) append('\n')
-                    append(AgentText.codeLine(line) { AgentText.tokColor(it, tints, plain, muted) })
-                }
-            }
+            AgentText.codeLines(block.lines) { AgentColours.tokStyle(it, p) }
         }
     }
     Column(
         Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(8.dp))
-            .background(scheme.surfaceContainer),
+            .background(p.groundCode),
     ) {
         Row(
             modifier = Modifier.fillMaxWidth().height(40.dp).padding(start = 12.dp, end = 4.dp),
@@ -600,7 +674,7 @@ private fun CodeBlock(key: String, block: AgentBlock, actions: RowActions) {
             Text(
                 shown,
                 style = codeStyle,
-                color = plain,
+                color = p.syntaxPlain,
                 softWrap = wrap,
                 modifier = Modifier
                     .fillMaxWidth()
@@ -689,7 +763,7 @@ private fun TableBlock(table: AgentTable, actions: RowActions) {
                                     if (header) MaterialTheme.typography.labelMedium else MaterialTheme.typography.bodyMedium,
                                     actions,
                                     Modifier.fillMaxWidth(),
-                                    color = if (header) scheme.onSurfaceVariant else Color.Unspecified,
+                                    color = if (header) agentPalette().proseTableHeader else Color.Unspecified,
                                     softWrap = false,
                                     textAlign = align,
                                 )
@@ -788,13 +862,29 @@ private fun toolTemplate(cls: AgentToolClass, status: AgentRowStatus): Int? = wh
         if (status == AgentRowStatus.ASKING) R.string.agents_tool_wants_use else null
 }
 
-/** A step's line in words: "Ran cargo build", the command or file in the code face. */
-internal fun toolLabelText(resources: Resources, label: AgentToolLabel, status: AgentRowStatus, monoStyle: SpanStyle): AnnotatedString {
+/**
+ * A step's line in words: "Ran cargo build", the command or file in the code
+ * face, coloured by the render crate's runs over it when [tokStyle] is given
+ * (a command as shell, a path's folder muted and its name in ink, §2.6).
+ */
+internal fun toolLabelText(
+    resources: Resources,
+    label: AgentToolLabel,
+    status: AgentRowStatus,
+    monoStyle: SpanStyle,
+    tokStyle: ((AgentTokClass) -> SpanStyle)? = null,
+): AnnotatedString {
     val code = when (label.toolClass) {
         AgentToolClass.COMMAND, AgentToolClass.EDIT, AgentToolClass.READ, AgentToolClass.SEARCH, AgentToolClass.WEB -> true
         AgentToolClass.MCP, AgentToolClass.AGENT, AgentToolClass.TASKS, AgentToolClass.OTHER, AgentToolClass.PLAN -> false
     }
-    val target = if (code) AnnotatedString(label.target, monoStyle) else AnnotatedString(label.target)
+    val target = when {
+        !code -> AnnotatedString(label.target)
+        tokStyle != null && label.toks.isNotEmpty() -> buildAnnotatedString {
+            withStyle(monoStyle) { append(AgentText.runs(label.target, label.toks, tokStyle)) }
+        }
+        else -> AnnotatedString(label.target, monoStyle)
+    }
     val more = label.more.toInt()
     val subject = if (more > 0) {
         AgentText.format(resources.getQuantityString(R.plurals.agents_tool_and_more, more), target, AnnotatedString(more.toString()))
@@ -846,13 +936,13 @@ internal fun durationText(resources: Resources, ms: Long): String {
 /** "+11 −2" in the diff's colours. */
 @Composable
 internal fun Counts(adds: Long, dels: Long, style: TextStyle = MaterialTheme.typography.labelMedium) {
-    val tints = g7Tints()
+    val p = agentPalette()
     val fonts = LocalAppFonts.current
     Text(
         buildAnnotatedString {
-            withStyle(SpanStyle(color = tints.green)) { append("+$adds") }
+            withStyle(SpanStyle(color = p.syntaxInserted)) { append("+$adds") }
             append(' ')
-            withStyle(SpanStyle(color = tints.red)) { append("−$dels") }
+            withStyle(SpanStyle(color = p.syntaxDeleted)) { append("−$dels") }
         },
         style = style.mono(fonts),
         maxLines = 1,
@@ -863,17 +953,21 @@ internal fun Counts(adds: Long, dels: Long, style: TextStyle = MaterialTheme.typ
 @Composable
 private fun ToolRow(row: AgentRow, kind: AgentRowKind.Tool, item: AgentItem?, actions: RowActions) {
     val scheme = MaterialTheme.colorScheme
-    val tints = g7Tints()
+    val p = agentPalette()
     val resources = LocalResources.current
     val fonts = LocalAppFonts.current
     val openable = kind.hasDetail || kind.hasOutput
     var menu by remember { mutableStateOf(false) }
-    val label = remember(kind.label, kind.status, resources, fonts) {
-        toolLabelText(resources, kind.label, kind.status, SpanStyle(fontFamily = fonts.mono, fontFeatureSettings = MONO_FEATURES))
+    val label = remember(kind.label, kind.status, resources, fonts, p) {
+        toolLabelText(resources, kind.label, kind.status, SpanStyle(fontFamily = fonts.mono, fontFeatureSettings = MONO_FEATURES)) {
+            AgentColours.tokStyle(it, p)
+        }
     }
+    // The glyph in its kind's tint, the way G7 draws every feature glyph; red when it failed (§2.6).
     val tint = when (kind.status) {
-        AgentRowStatus.FAILED -> tints.red
-        AgentRowStatus.RUNNING, AgentRowStatus.OK, AgentRowStatus.DENIED, AgentRowStatus.STOPPED, AgentRowStatus.ASKING -> scheme.onSurfaceVariant
+        AgentRowStatus.FAILED -> AgentColours.toolStatus(kind.status, p)
+        AgentRowStatus.RUNNING, AgentRowStatus.OK, AgentRowStatus.DENIED, AgentRowStatus.STOPPED, AgentRowStatus.ASKING ->
+            AgentColours.toolGlyph(kind.label.toolClass, p)
     }
     val source = item?.tool?.let { tool -> tool.detail?.takeIf { it.isNotBlank() } ?: tool.path ?: tool.title } ?: kind.label.target
     Box {
@@ -891,7 +985,11 @@ private fun ToolRow(row: AgentRow, kind: AgentRowKind.Tool, item: AgentItem?, ac
         ) {
             Gutter(open = if (openable) kind.open else null, icon = classIcon(kind.label.toolClass), tint = tint)
             val style = MaterialTheme.typography.bodyMedium
-            val color = if (kind.status == AgentRowStatus.FAILED) scheme.onSurface else scheme.onSurfaceVariant
+            // In ink while it runs, asks or failed; muted once it's settled.
+            val color = when (kind.status) {
+                AgentRowStatus.FAILED, AgentRowStatus.RUNNING, AgentRowStatus.ASKING -> scheme.onSurface
+                AgentRowStatus.OK, AgentRowStatus.DENIED, AgentRowStatus.STOPPED -> scheme.onSurfaceVariant
+            }
             if (kind.status == AgentRowStatus.RUNNING) {
                 BandText(label, style, color, Modifier.weight(1f))
             } else {
@@ -906,8 +1004,33 @@ private fun ToolRow(row: AgentRow, kind: AgentRowKind.Tool, item: AgentItem?, ac
                 Spacer(Modifier.width(10.dp))
                 Text(durationText(resources, kind.ms), style = MaterialTheme.typography.labelMedium, color = scheme.onSurfaceVariant, maxLines = 1)
             }
+            ToolStatusGlyph(kind.status, kind.label.toolClass, p)
         }
         CopyMenu(expanded = menu, onDismiss = { menu = false }) { actions.copy(source) }
+    }
+}
+
+/**
+ * A step's status at the end of its line (§2.6): ok a check (commands only),
+ * failed an x, running a ring, asking a question mark, stopped a square,
+ * denied a muted x; always a glyph and a colour, never colour alone.
+ */
+@Composable
+private fun ToolStatusGlyph(status: AgentRowStatus, cls: AgentToolClass, p: AgentPalette) {
+    val color = AgentColours.toolStatus(status, p)
+    val icon = when (status) {
+        AgentRowStatus.OK -> if (AgentColours.showsOk(cls)) G7Icons.check else null
+        AgentRowStatus.FAILED, AgentRowStatus.DENIED -> G7Icons.close
+        AgentRowStatus.ASKING -> G7Icons.help
+        AgentRowStatus.STOPPED -> G7Icons.stop
+        AgentRowStatus.RUNNING -> null
+    }
+    if (status == AgentRowStatus.RUNNING) {
+        Spacer(Modifier.width(8.dp))
+        CircularProgressIndicator(Modifier.size(11.dp), color = color, strokeWidth = 1.5.dp)
+    } else if (icon != null) {
+        Spacer(Modifier.width(8.dp))
+        Icon(icon, contentDescription = null, tint = color, modifier = Modifier.size(13.dp))
     }
 }
 
@@ -930,12 +1053,13 @@ private fun CopyMenu(expanded: Boolean, onDismiss: () -> Unit, onCopy: () -> Uni
 @Composable
 private fun DetailRow(row: AgentRow, kind: AgentRowKind.Detail, context: RowsContext, actions: RowActions) {
     val scheme = MaterialTheme.colorScheme
+    val p = agentPalette()
     val fonts = LocalAppFonts.current
     val card = Modifier
         .fillMaxWidth()
         .padding(start = LABEL_X)
         .clip(RoundedCornerShape(8.dp))
-        .background(scheme.surfaceContainer)
+        .background(p.groundCode)
     when (val of = kind.of) {
         is AgentDetailOf.Command -> Column(card) {
             Row(
@@ -945,10 +1069,15 @@ private fun DetailRow(row: AgentRow, kind: AgentRowKind.Detail, context: RowsCon
                 FolderLabel(context.folder, Modifier.weight(1f))
                 CopyButton { actions.copy(of.text) }
             }
+            // The command as shell (§2.5); plain when it was too long to colour.
+            val command = remember(of.text, of.lines, p) {
+                if (of.lines.isEmpty()) AnnotatedString(of.text) else AgentText.codeLines(of.lines) { AgentColours.tokStyle(it, p) }
+            }
             SelectionContainer {
                 Text(
-                    of.text,
+                    command,
                     style = MaterialTheme.typography.bodySmall.mono(fonts).copy(fontSize = 12.5.sp, lineHeight = 19.sp),
+                    color = p.syntaxPlain,
                     modifier = Modifier.fillMaxWidth().padding(start = 10.dp, end = 10.dp, bottom = 10.dp),
                 )
             }
@@ -972,7 +1101,10 @@ private fun DetailRow(row: AgentRow, kind: AgentRowKind.Detail, context: RowsCon
             }
         }
         is AgentDetailOf.Output -> {
-            val (tail, cutHere) = remember(of.text) { AgentText.lastLines(of.text.trimEnd('\n'), INLINE_OUTPUT_LINES) }
+            // Lines that report an error, a warning or a pass, and places, marked (§3.1.4); the rest muted.
+            val (tail, cutHere) = remember(of.text, of.lines, p) {
+                AgentText.markedTail(of.text, of.lines, INLINE_OUTPUT_LINES) { AgentColours.tokStyle(it, p) }
+            }
             Column(card.clickable(role = Role.Button) { actions.output(row.itemId) }) {
                 if (of.cut || cutHere) {
                     Text(
@@ -1024,13 +1156,14 @@ internal fun diffRows(doc: AgentDiffDoc): Int = doc.files.sumOf { it.rows.size }
 @Composable
 internal fun DiffView(doc: AgentDiffDoc, wrap: Boolean, modifier: Modifier = Modifier, maxRows: Int = Int.MAX_VALUE) {
     val scheme = MaterialTheme.colorScheme
-    val tints = g7Tints()
+    val p = agentPalette()
     val fonts = LocalAppFonts.current
     val style = MaterialTheme.typography.bodySmall.mono(fonts).copy(fontSize = 12.5.sp, lineHeight = 20.sp)
-    val addBg = tints.green.copy(alpha = 0.12f)
-    val delBg = tints.red.copy(alpha = 0.14f)
-    val addMark = tints.green.copy(alpha = 0.34f)
-    val delMark = tints.red.copy(alpha = 0.36f)
+    // Plain text on the washes, the added row the lighter one; word marks are backgrounds, a removed one struck (§2.7).
+    val addBg = p.diffAddRow.color.copy(alpha = p.diffAddRow.alpha)
+    val delBg = p.diffDelRow.color.copy(alpha = p.diffDelRow.alpha)
+    val addMark = p.diffAddWord.color.copy(alpha = p.diffAddWord.alpha)
+    val delMark = p.diffDelWord.color.copy(alpha = p.diffDelWord.alpha)
     var left = maxRows
     Column(modifier.fillMaxWidth().then(if (wrap) Modifier else Modifier.horizontalScroll(rememberScrollState()))) {
         for (file in doc.files) {
@@ -1045,6 +1178,17 @@ internal fun DiffView(doc: AgentDiffDoc, wrap: Boolean, modifier: Modifier = Mod
                     modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
                 )
             }
+            if (file.note == AgentDiffNote.BINARY && file.rows.isEmpty()) {
+                // Git called it binary: no rows to show.
+                Text(
+                    stringResource(R.string.agents_diff_binary),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = scheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                )
+                left--
+                continue
+            }
             val numbers = file.rows.any { it.oldNo > 0u || it.newNo > 0u }
             for (row in file.rows) {
                 if (left-- <= 0) break
@@ -1052,35 +1196,38 @@ internal fun DiffView(doc: AgentDiffDoc, wrap: Boolean, modifier: Modifier = Mod
                     Text(
                         row.text,
                         style = style.copy(fontSize = 11.5.sp),
-                        color = scheme.onSurfaceVariant,
+                        color = p.diffHunk,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.fillMaxWidth().background(scheme.surfaceContainerHigh).padding(horizontal = 10.dp, vertical = 4.dp),
+                        modifier = Modifier.fillMaxWidth().background(p.diffHunkGround).padding(horizontal = 10.dp, vertical = 4.dp),
                     )
                     continue
                 }
                 val (bg, mark, sign, signColor) = when (row.kind) {
-                    AgentDiffKind.ADD -> DiffLook(addBg, addMark, "+", tints.green)
-                    AgentDiffKind.DEL -> DiffLook(delBg, delMark, "−", tints.red)
-                    AgentDiffKind.CONTEXT, AgentDiffKind.HUNK -> DiffLook(Color.Transparent, Color.Transparent, "", scheme.outline)
+                    AgentDiffKind.ADD -> DiffLook(addBg, addMark, "+", p.diffAddSign)
+                    AgentDiffKind.DEL -> DiffLook(delBg, delMark, "−", p.diffDelSign)
+                    AgentDiffKind.CONTEXT, AgentDiffKind.HUNK -> DiffLook(Color.Transparent, Color.Transparent, "", p.diffLineNo)
                 }
-                val text = remember(row.text, row.marks, mark) {
+                val struck = row.kind == AgentDiffKind.DEL
+                val text = remember(row.text, row.marks, mark, struck) {
                     buildAnnotatedString {
                         append(row.text)
                         for (m in row.marks) {
                             val start = m.start.toInt().coerceIn(0, row.text.length)
                             val end = (m.start.toLong() + m.len.toLong()).toInt().coerceIn(start, row.text.length)
-                            if (end > start) addStyle(SpanStyle(background = mark), start, end)
+                            if (end > start) {
+                                addStyle(SpanStyle(background = mark, textDecoration = if (struck) TextDecoration.LineThrough else null), start, end)
+                            }
                         }
                     }
                 }
                 Row(Modifier.fillMaxWidth().background(bg)) {
                     if (numbers) {
-                        LineNumber(row.oldNo.toInt(), style)
-                        LineNumber(row.newNo.toInt(), style)
+                        LineNumber(row.oldNo.toInt(), style, p.diffLineNo)
+                        LineNumber(row.newNo.toInt(), style, p.diffLineNo)
                     }
                     Text(sign, style = style, color = signColor, textAlign = TextAlign.Center, modifier = Modifier.width(18.dp))
-                    Text(text, style = style, color = scheme.onSurface, softWrap = wrap, modifier = Modifier.padding(end = 10.dp))
+                    Text(text, style = style, color = p.diffText, softWrap = wrap, modifier = Modifier.padding(end = 10.dp))
                 }
             }
         }
@@ -1090,11 +1237,11 @@ internal fun DiffView(doc: AgentDiffDoc, wrap: Boolean, modifier: Modifier = Mod
 private data class DiffLook(val background: Color, val mark: Color, val sign: String, val signColor: Color)
 
 @Composable
-private fun LineNumber(number: Int, style: TextStyle) {
+private fun LineNumber(number: Int, style: TextStyle, color: Color) {
     Text(
         if (number > 0) number.toString() else "",
         style = style,
-        color = MaterialTheme.colorScheme.outline,
+        color = color,
         textAlign = TextAlign.End,
         maxLines = 1,
         modifier = Modifier.width(30.dp).padding(end = 4.dp),
@@ -1115,7 +1262,8 @@ private fun GroupRow(row: AgentRow, kind: AgentRowKind.Group, actions: RowAction
             .clickable(role = Role.Button) { actions.toggle(row.key) },
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Gutter(open = kind.open, icon = classIcon(kind.summary.first.toolClass), tint = if (kind.failed) g7Tints().red else scheme.onSurfaceVariant)
+        // Inside a collapsed group the glyph stays muted; red when one of its steps failed (§2.6).
+        Gutter(open = kind.open, icon = classIcon(kind.summary.first.toolClass), tint = if (kind.failed) agentPalette().toolStatusFailed else scheme.onSurfaceVariant)
         Text(text, style = MaterialTheme.typography.bodyMedium, color = scheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
 }
@@ -1170,12 +1318,17 @@ private fun FoldRow(row: AgentRow, kind: AgentRowKind.Fold, actions: RowActions)
     }
 }
 
-/** The files a turn changed, each with its counts; a file opens the turn's edits to it below. */
+/**
+ * The files a turn changed, each with its counts. Recorded by a restore point,
+ * it opens the turn's diff (a file, at that file); else a file opens the
+ * turn's edits to it below.
+ */
 @Composable
 private fun ChangesRow(row: AgentRow, kind: AgentRowKind.Changes, actions: RowActions) {
     val scheme = MaterialTheme.colorScheme
     val fonts = LocalAppFonts.current
     val total = kind.files.size + kind.more.toInt()
+    val recorded = kind.recorded
     Column(
         Modifier
             .fillMaxWidth()
@@ -1183,14 +1336,30 @@ private fun ChangesRow(row: AgentRow, kind: AgentRowKind.Changes, actions: RowAc
             .background(scheme.surfaceContainer)
             .padding(4.dp),
     ) {
+        val opensDiff = stringResource(R.string.agents_changes_open)
         Row(
-            modifier = Modifier.fillMaxWidth().height(40.dp).padding(horizontal = 8.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(40.dp)
+                .clip(RoundedCornerShape(6.dp))
+                .then(
+                    if (recorded) {
+                        Modifier.clickable(role = Role.Button, onClickLabel = opensDiff) { actions.openChanges(row.turn, null) }
+                    } else {
+                        Modifier
+                    },
+                )
+                .padding(horizontal = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             Icon(G7Icons.edit, contentDescription = null, tint = scheme.onSurfaceVariant, modifier = Modifier.size(14.dp))
             Text(pluralStringResource(R.plurals.agents_files_changed, total, total), style = MaterialTheme.typography.labelLarge)
             Counts(kind.adds.toLong(), kind.dels.toLong())
+            if (recorded) {
+                Spacer(Modifier.weight(1f))
+                Icon(G7Icons.chevronRight, contentDescription = null, tint = scheme.onSurfaceVariant, modifier = Modifier.size(12.dp))
+            }
         }
         kind.files.forEachIndexed { index, file ->
             val (dir, name) = AgentText.splitPath(file.path)
@@ -1199,13 +1368,17 @@ private fun ChangesRow(row: AgentRow, kind: AgentRowKind.Changes, actions: RowAc
                     .fillMaxWidth()
                     .height(40.dp)
                     .clip(RoundedCornerShape(6.dp))
-                    .background(if (file.open) scheme.surfaceContainerHigh else Color.Transparent)
-                    .clickable(role = Role.Button) { actions.toggle("${row.key}:$index") }
+                    .background(if (file.open && !recorded) scheme.surfaceContainerHigh else Color.Transparent)
+                    .clickable(role = Role.Button) {
+                        if (recorded) actions.openChanges(row.turn, file.path) else actions.toggle("${row.key}:$index")
+                    }
                     .padding(horizontal = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                Icon(if (file.open) G7Icons.chevronDown else G7Icons.chevronRight, contentDescription = null, tint = scheme.onSurfaceVariant, modifier = Modifier.size(12.dp))
+                if (!recorded) {
+                    Icon(if (file.open) G7Icons.chevronDown else G7Icons.chevronRight, contentDescription = null, tint = scheme.onSurfaceVariant, modifier = Modifier.size(12.dp))
+                }
                 Text(
                     buildAnnotatedString {
                         withStyle(SpanStyle(color = scheme.onSurfaceVariant)) { append(dir) }
@@ -1226,7 +1399,7 @@ private fun ChangesRow(row: AgentRow, kind: AgentRowKind.Changes, actions: RowAc
 @Composable
 private fun MarkRow(kind: AgentRowKind.Mark, actions: RowActions) {
     val scheme = MaterialTheme.colorScheme
-    val tints = g7Tints()
+    val needsYou = agentPalette().statusNeedsYou
     val by = kind.by.takeIf { it.isNotBlank() }
     val (icon, text) = when (kind.kind) {
         AgentMarkKind.WAITING, AgentMarkKind.HELD -> G7Icons.history to stringResource(R.string.agents_mark_waiting)
@@ -1247,11 +1420,11 @@ private fun MarkRow(kind: AgentRowKind.Mark, actions: RowActions) {
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        Icon(icon, contentDescription = null, tint = if (waiting) tints.amber else scheme.onSurfaceVariant, modifier = Modifier.size(13.dp))
+        Icon(icon, contentDescription = null, tint = if (waiting) needsYou else scheme.onSurfaceVariant, modifier = Modifier.size(13.dp))
         Text(
             text,
             style = MaterialTheme.typography.labelMedium.copy(fontWeight = if (waiting) FontWeight.SemiBold else FontWeight.Normal),
-            color = if (waiting) tints.amber else scheme.onSurfaceVariant,
+            color = if (waiting) needsYou else scheme.onSurfaceVariant,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
         )
@@ -1275,7 +1448,7 @@ private fun QuestionRow(row: AgentRow, kind: AgentRowKind.Question, actions: Row
         AgentQuestionState.ANSWERED -> by?.let { stringResource(R.string.agents_question_answered_on, it) } ?: stringResource(R.string.agents_question_you_answered)
         AgentQuestionState.DISMISSED, AgentQuestionState.EXPIRED -> stringResource(R.string.agents_question_not_answered)
     }
-    val tints = g7Tints()
+    val needsYou = agentPalette().statusNeedsYou
     val waiting = kind.state == AgentQuestionState.ASKED
     Column(Modifier.fillMaxWidth()) {
         Row(
@@ -1306,11 +1479,11 @@ private fun QuestionRow(row: AgentRow, kind: AgentRowKind.Question, actions: Row
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
             ) {
-                Icon(G7Icons.history, contentDescription = null, tint = tints.amber, modifier = Modifier.size(13.dp))
+                Icon(G7Icons.history, contentDescription = null, tint = needsYou, modifier = Modifier.size(13.dp))
                 Text(
                     stringResource(R.string.agents_mark_waiting),
                     style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
-                    color = tints.amber,
+                    color = needsYou,
                     maxLines = 1,
                 )
             }
@@ -1318,15 +1491,97 @@ private fun QuestionRow(row: AgentRow, kind: AgentRowKind.Question, actions: Row
     }
 }
 
+/**
+ * One line in place of, or under, a turn's Changes (contract §U9.4):
+ * "Recording changes…", not recorded and why, no longer kept, or files too
+ * large to record.
+ */
 @Composable
-private fun NoticeRow(text: String) {
-    Text(
-        text,
-        style = MaterialTheme.typography.bodySmall,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-        textAlign = TextAlign.Center,
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
-    )
+private fun ChangesNoteRow(kind: AgentRowKind.ChangesNote) {
+    val scheme = MaterialTheme.colorScheme
+    val text = when (kind.note) {
+        AgentChangesNote.RECORDING -> stringResource(R.string.agents_changes_recording)
+        AgentChangesNote.MISSING -> kind.why?.let { stringResource(R.string.agents_changes_missing_why, checkpointWhy(it)) }
+            ?: stringResource(R.string.agents_changes_missing)
+        AgentChangesNote.EXPIRED -> stringResource(R.string.agents_changes_expired)
+        AgentChangesNote.UNRECORDED -> {
+            val count = kind.count.toInt().coerceAtLeast(1)
+            pluralStringResource(R.plurals.agents_changes_unrecorded, count, count)
+        }
+    }
+    Row(
+        modifier = Modifier.fillMaxWidth().heightIn(min = 32.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Box(Modifier.width(GUTTER + 4.dp), contentAlignment = Alignment.CenterEnd) {
+            Icon(G7Icons.edit, contentDescription = null, tint = scheme.onSurfaceVariant, modifier = Modifier.size(14.dp))
+        }
+        Text(text, style = MaterialTheme.typography.bodySmall, color = scheme.onSurfaceVariant)
+    }
+}
+
+/** Why a turn's restore point is missing, in one sentence. */
+@Composable
+internal fun checkpointWhy(why: AgentCheckpointWhy): String = stringResource(
+    when (why) {
+        AgentCheckpointWhy.BUSY -> R.string.agents_why_busy
+        AgentCheckpointWhy.SLOW -> R.string.agents_why_slow
+        AgentCheckpointWhy.LARGE -> R.string.agents_why_large
+        AgentCheckpointWhy.REFUSED -> R.string.agents_why_refused
+        AgentCheckpointWhy.OFF -> R.string.agents_why_off
+        AgentCheckpointWhy.BEFORE -> R.string.agents_why_before
+    },
+)
+
+/**
+ * A line the PC wrote. A rewind's ("Rewound to here") carries Undo while the
+ * thread can still be put back; one that put files back is undone on the PC
+ * ("Undo it on %1.", the button off).
+ */
+@Composable
+private fun NoticeRow(kind: AgentRowKind.Notice, context: RowsContext, actions: RowActions) {
+    val scheme = MaterialTheme.colorScheme
+    val undo = UndoOffer.shown(kind.notice, context.thread, context.nowMs)
+    if (undo == UndoOffer.Shown.NONE) {
+        Text(
+            kind.text,
+            style = MaterialTheme.typography.bodySmall,
+            color = scheme.onSurfaceVariant,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
+        )
+        return
+    }
+    Column(Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier.fillMaxWidth().heightIn(min = 40.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Box(Modifier.width(GUTTER + 4.dp), contentAlignment = Alignment.CenterEnd) {
+                Icon(G7Icons.history, contentDescription = null, tint = scheme.onSurfaceVariant, modifier = Modifier.size(14.dp))
+            }
+            Text(kind.text, style = MaterialTheme.typography.bodySmall, color = scheme.onSurfaceVariant, modifier = Modifier.weight(1f))
+            if (context.undoing) {
+                CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+            } else {
+                G7RowAction(
+                    label = stringResource(R.string.agents_undo),
+                    onClick = actions.undo,
+                    enabled = undo == UndoOffer.Shown.ON,
+                )
+            }
+        }
+        if (undo == UndoOffer.Shown.ON_PC) {
+            Text(
+                stringResource(R.string.agents_undo_on_pc, context.pcName),
+                style = MaterialTheme.typography.labelMedium,
+                color = scheme.onSurfaceVariant,
+                modifier = Modifier.padding(start = GUTTER + 12.dp),
+            )
+        }
+    }
 }
 
 /** The working line, last: "Thinking" in the light band, how long, and the thought so far when there is one. */

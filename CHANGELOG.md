@@ -4,6 +4,86 @@ All notable changes to G7 Link. Versions follow
 [semantic versioning](https://semver.org); before 1.0, a minor version may
 change things that need a step from you, and its notes say so.
 
+## 0.1.19 (unreleased)
+
+Agent threads keep their whole history: search them, rewind to any turn
+with your files put back, fork from any point, and bring in sessions you
+started outside G7. Code and commands are in colour. Messages shows each
+conversation once, and the PC's screen on the phone is sharp.
+
+**Update both together.** The phone and the PC exchange new messages for
+history, undo and the screen; each needs the other on 0.1.19.
+
+### Added
+
+- **Agent history.** Threads are kept in one database on the PC. The list
+  has Needs you, Working, Pinned and Recent, with Archived and Snoozed
+  shelves. Pin, mark unread, snooze (until a time, or until the limit
+  resets), unsnooze, archive and rename, from the PC, the launcher or the
+  phone.
+- **Search** across every thread's messages, from 3 letters, opening the
+  thread at the match.
+- **Rewind and undo.** Before each turn you start, G7 saves a restore point
+  of the folder's files in its own store (never your repository's history).
+  Rewind puts the files back and cuts the conversation to that turn, after
+  showing what will change. Undo lasts 24 hours or until the next turn.
+  "Edit from here" puts your message back in the box. From the phone,
+  rewind changes the conversation only.
+- **Fork** a thread from any turn, with Claude or Codex.
+- **What changed.** Every recorded turn has a Changes view: per file, for
+  that turn or the whole thread.
+- **Bring in sessions** started in a terminal or another app. G7 finds
+  them once an hour while a G7 app is connected; you pick what to bring
+  in (up to 50 at once) after a read-only preview. Compressed Codex
+  history is read too.
+- **The phone works offline.** Threads you've opened stay readable, and
+  messages you write while the PC is away wait and go out once, in order.
+- **Drafts follow you** between the PC, the launcher and the phone.
+- **Colour.** Code is highlighted in both themes, and an untagged block's
+  language is guessed. Commands are coloured like a shell, paths show the
+  folder dimmed and the file bright, and output marks errors, warnings and
+  `file:line`. Each status has its own colour and shape: needs you is a
+  solid amber chip, done is green everywhere. Every colour is checked for
+  contrast in both themes.
+- **Pinch zoom on the PC's screen**, with Fit, 100% and 200% and a map
+  while zoomed.
+
+### Changed
+
+- **Messages shows each conversation once.** A chat is recognised by the
+  phone's own conversation ID, not its title, so a group no longer appears
+  once per "(N messages)". Two sections: On your phone now, and
+  Conversations (texts and chats you kept). A chat you clear on the phone
+  stays open on the PC until you close it, and goes after 24 hours unless
+  you keep it; kept chats stay 30 days. Removing a chat on the PC clears it
+  on the phone. Existing duplicates are merged on update without losing a
+  message.
+- **The PC's screen on the phone is sharp.** It's sent at the screen's own
+  size, no longer scaled to a multiple of 16, at a rate that holds up on a
+  quiet link. A lost frame is noticed and recovered at once, the phone
+  shows each picture the moment it's decoded, and Wi-Fi stays in
+  low-latency mode while you watch.
+- **Touch on the PC's screen works like the touchpad**: tap, double tap,
+  hold for right-click, tap-and-drag, two-finger scroll with glide; a
+  second finger never clicks. "Task View" is now Overview.
+- **Clear states** for sharing turned off, can't reach the PC, and stopped,
+  instead of an endless "Connecting".
+- **A still screen costs nothing.** The PC encodes a picture only when the
+  screen changed, so an idle desktop sends nothing and the laptop stays
+  cooler.
+- **Agent headers are shorter.** A followed session's header is two rows,
+  and "Keep in status bar" is a toggle in it.
+
+### Fixed
+
+- **The PC's hardware encoder is tried in the mode the driver has.** On
+  Intel laptops where the driver offers only fixed-quality encoding, G7
+  asked for a bitrate, was refused, and always fell back to software. It
+  now uses the fixed-quality mode there, picking the quality from the
+  target rate.
+- **The Linux installer no longer hangs** when GitHub's API is slow: it
+  retries, times out, and falls back to the release page.
+
 ## 0.1.18 (2026-11-20)
 
 The phone and the PC stay connected, and talk to each other on G7 Link's own

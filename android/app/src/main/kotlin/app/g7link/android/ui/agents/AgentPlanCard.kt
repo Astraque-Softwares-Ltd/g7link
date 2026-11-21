@@ -26,7 +26,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import app.g7link.android.R
 import app.g7link.android.ui.theme.G7Icons
-import app.g7link.android.ui.theme.g7Tints
 import app.g7link.core.AgentBlock
 import app.g7link.core.AgentBlockKind
 import app.g7link.core.AgentPlanState
@@ -91,7 +90,6 @@ internal object AgentPlanCards {
 @Composable
 internal fun PlanCard(unit: RowUnit.Plan, context: RowsContext, actions: RowActions) {
     val scheme = MaterialTheme.colorScheme
-    val tints = g7Tints()
     val itemId = unit.head.itemId
     val blocks = unit.blocks
     val title = AgentPlanCards.title(blocks.mapNotNull { (it.kind as? AgentRowKind.Block)?.block })
@@ -129,7 +127,7 @@ internal fun PlanCard(unit: RowUnit.Plan, context: RowsContext, actions: RowActi
         when (state) {
             AgentPlanState.REPLACED -> Text(stringResource(R.string.agents_plan_replaced), style = MaterialTheme.typography.bodySmall, color = scheme.onSurfaceVariant)
             AgentPlanState.IMPLEMENTED -> Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                Icon(G7Icons.check, contentDescription = null, tint = tints.teal, modifier = Modifier.size(14.dp))
+                Icon(G7Icons.check, contentDescription = null, tint = agentPalette().statusDone, modifier = Modifier.size(14.dp))
                 Text(stringResource(R.string.agents_plan_implemented), style = MaterialTheme.typography.bodySmall, color = scheme.onSurfaceVariant)
             }
             AgentPlanState.PROPOSED -> Unit

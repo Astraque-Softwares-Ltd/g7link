@@ -98,6 +98,7 @@ internal fun composerHint(hint: ComposerHint, agentName: String, pausedUntil: Lo
         ComposerHint.OTHER_ANSWER -> stringResource(R.string.agents_question_other_hint)
         ComposerHint.CHOOSE_ABOVE -> stringResource(R.string.agents_question_choose_hint)
         ComposerHint.ANSWER_ON_PC -> stringResource(R.string.agents_question_answer_on, pcName)
+        ComposerHint.OFFLINE -> stringResource(R.string.agents_sends_when_back, pcName)
     }
 }
 

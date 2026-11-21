@@ -7,7 +7,6 @@ import android.content.Intent
 import androidx.activity.compose.BackHandler
 import androidx.annotation.StringRes
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -27,7 +26,6 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.DrawerState
 import androidx.compose.material3.DrawerValue
@@ -73,7 +71,6 @@ import app.g7link.android.ui.MainActivity
 import app.g7link.android.ui.theme.G7IconButton
 import app.g7link.android.ui.theme.G7Icons
 import app.g7link.android.ui.theme.G7SectionLabel
-import app.g7link.android.ui.theme.G7StatusDot
 import app.g7link.android.ui.theme.LocalReducedMotion
 import app.g7link.android.ui.theme.g7Tints
 import app.g7link.core.AgentSession
@@ -350,6 +347,7 @@ private fun DrawerContent(
         }
         threadSection("needs", R.string.agents_state_waiting, groups.needsYou, agents, selected, now, onThread)
         threadSection("working", R.string.agents_state_working, groups.working, agents, selected, now, onThread)
+        threadSection("pinned", R.string.agents_shelf_pinned, groups.pinned, agents, selected, now, onThread)
         threadSection("recent", R.string.agents_filter_recent, groups.recent, agents, selected, now, onThread)
         if (groups.sessions.isNotEmpty()) {
             item(key = "sessions", contentType = "label") {
@@ -409,7 +407,7 @@ private fun LazyListScope.threadSection(
             selected = selected == DrawerSelection.Thread(thread.id),
             onClick = { onThread(thread.id) },
         ) {
-            G7StatusDot(statusDotColor(status))
+            ThreadStatusMark(status)
         }
     }
 }
@@ -465,17 +463,14 @@ private fun DrawerRow(
     }
 }
 
-/** A session's dot, as its status line draws it: amber when it needs you, an amber ring when it may, blue at work. */
+/** A session's mark, as its status line draws it: needs you, may need you (a hollow amber ring), at work. */
 @Composable
 private fun SessionDot(session: AgentSession) {
-    val scheme = MaterialTheme.colorScheme
-    val tints = g7Tints()
-    when {
-        AgentsModel.mayNeedYou(session) -> Box(Modifier.size(6.dp).border(1.dp, tints.amber, CircleShape))
-        AgentsModel.needsYouExactly(session) -> G7StatusDot(tints.amber)
-        session.state == AgentSessionState.WORKING -> G7StatusDot(tints.blue)
-        else -> G7StatusDot(scheme.outline)
-    }
+    SessionStatusMark(
+        needsYou = AgentsModel.needsYouExactly(session),
+        mayNeedYou = AgentsModel.mayNeedYou(session),
+        working = session.state == AgentSessionState.WORKING,
+    )
 }
 
 /** How wide the strip is that a swipe to open starts in, past the system's back-gesture area. */

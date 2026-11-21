@@ -37,6 +37,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -70,16 +71,18 @@ import app.g7link.android.core.Core
 import app.g7link.android.core.Device
 import app.g7link.android.ui.theme.G7IconButton
 import app.g7link.android.ui.theme.G7Icons
-import app.g7link.android.ui.theme.G7StatusDot
 import app.g7link.android.ui.theme.LocalAppFonts
 import app.g7link.android.ui.theme.g7Collapse
 import app.g7link.android.ui.theme.g7Expand
 import app.g7link.android.ui.theme.g7Tints
 import app.g7link.android.ui.theme.mono
 import app.g7link.core.AgentAskKind
+import app.g7link.core.AgentCheckpointWhy
 import app.g7link.core.AgentLink
 import app.g7link.core.AgentPlanStatus
 import app.g7link.core.AgentPlanStep
+import app.g7link.core.AgentRow
+import app.g7link.core.AgentRowKind
 import app.g7link.core.AgentThread
 import app.g7link.core.AgentThreadState
 import java.util.Date
@@ -96,11 +99,17 @@ private val OPEN_KEYS = listSaver<Set<String>, String>(save = { it.toList() }, r
 /** Diff rows the request sheet shows; a longer change is reviewed full-screen. */
 private const val SHEET_DIFF_ROWS = 60
 
+/** Pages read back at most to reach a search hit's message. */
+private const val JUMP_PAGES = 10
+
 /**
  * One thread on a PC (contract §P6, the phone board): its rows from the FFI,
  * the request it waits on as a sheet over the reply box with Stop beside send,
  * "Deny and send" when the box has words, the plan pinned above, and full-screen
- * edits and output. Nothing is written to disk; leaving drops the transcript.
+ * edits, output and changes. Phase 3 (§U9.3): a long-press on a message for
+ * Edit from here, Rewind to here (the conversation only) and Fork from here;
+ * Undo on a rewind's notice; the draft kept on the PC; and, while the PC
+ * can't be reached, what this phone saved with the messages held for it.
  */
 @Composable
 fun AgentThreadScreen(
@@ -123,6 +132,7 @@ fun AgentThreadScreen(
     val scope = rememberCoroutineScope()
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     val now = rememberNow()
+    val offline = !device.online
 
     // Leaving the screen drops the transcript.
     DisposableEffect(device.id, threadId) {
@@ -132,6 +142,8 @@ fun AgentThreadScreen(
     LaunchedEffect(device.id, threadId, device.online, hasCatalog, attempt, lifecycle) {
         if (!device.online) {
             load = ThreadLoad.UNREACHABLE
+            // What this phone saved is all there is until the PC is back (contract §U9.3 "Offline").
+            core.agentSavedThread(device.id, threadId)
             return@LaunchedEffect
         }
         lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
@@ -186,7 +198,17 @@ fun AgentThreadScreen(
     DisposableEffect(ffiRows) { onDispose { ffiRows.close() } }
     val feed = remember(ffiRows) { RowsFeed(threadId, ffiRows::make) }
     LaunchedEffect(feed) { feed.start(this) }
-    val input = remember(agents, threadId, openKeys, heldTokens) { AgentsModel.timelineInput(agents, threadId, openKeys) { it in heldTokens } }
+    // A turn whose restore point is still pending reads "Recording changes…" a second after it ended: made again then.
+    var tick by remember(threadId) { mutableLongStateOf(0L) }
+    val recheckAt = remember(open?.turns, tick) { AgentTurns.recheckAtMs(open?.turns.orEmpty(), System.currentTimeMillis()) }
+    LaunchedEffect(recheckAt) {
+        val at = recheckAt ?: return@LaunchedEffect
+        delay((at - System.currentTimeMillis()).coerceAtLeast(0L))
+        tick++
+    }
+    val input = remember(agents, threadId, openKeys, heldTokens, tick) {
+        AgentsModel.timelineInput(agents, threadId, openKeys) { it in heldTokens }?.copy(tick = tick)
+    }
     LaunchedEffect(feed, input) { input?.let(feed::submit) }
     val made by feed.rows.collectAsStateWithLifecycle()
     val rows = made?.takeIf { it.input.key == threadId }?.rows.orEmpty()
@@ -259,8 +281,27 @@ fun AgentThreadScreen(
             images = AgentImages.readyIds(images).size,
             uploading = AgentImages.uploading(images),
             imagesAllowed = imagesAllowed,
+            offline = offline,
         ),
     )
+
+    // ---- Phase 3: the message actions, rewind, undo, the draft and what waits on this phone ----
+    var actionsFor by remember(threadId) { mutableStateOf<AgentRow?>(null) }
+    var rewind by remember(threadId) { mutableStateOf<RewindSheet?>(null) }
+    var rewindAsk by remember(threadId) { mutableIntStateOf(0) }
+    var undoing by remember(threadId) { mutableStateOf(false) }
+    var editingMessage by remember(threadId) { mutableStateOf(false) }
+    var forking by remember(threadId) { mutableStateOf(false) }
+    var heldBusy by remember(threadId) { mutableStateOf(emptySet<String>()) }
+    var drafts by remember(threadId) { mutableStateOf(DraftState()) }
+    var composerFocused by remember(threadId) { mutableStateOf(false) }
+    // A search hit opened the thread at a message: scrolled to, and lit for a moment.
+    val jumpTo = remember(device.id, threadId) { AgentJump.take(device.id, threadId) }
+    var lit by remember(threadId) { mutableStateOf(jumpTo) }
+    val heldHere = remember(agents.held, threadId) { AgentOutbox.of(agents.held, threadId) }
+    val readonly = thread?.readonly != null
+    val drafting = agents.catalog?.canControl == true
+    val questionWaiting = questionQueue != null
 
     val copy = rememberCopy { core.say(resources.getString(R.string.agents_copied)) }
     val guardChanged: () -> Unit = { guardTick++ }
@@ -323,16 +364,26 @@ fun AgentThreadScreen(
                 }
             } else {
                 // While it works: steer it or queue the message (long-press chose the other); else a turn.
+                // Words wait on this phone when the PC can't be reached; pictures can't (contract §U8.3).
                 val followUp = if (composer.action == ComposerAction.FOLLOW_UP) chosen ?: composer.followUp else null
-                when (val result = core.agentSend(device.id, threadId, text, followUp, AgentImages.readyIds(images))) {
+                val ids = AgentImages.readyIds(images)
+                when (val result = core.agentSend(device.id, threadId, text, followUp, ids, hold = ids.isEmpty())) {
                     is AgentCall.Ok -> {
                         draft = ""
                         draftFor = null
                         images = emptyList()
+                        drafts = AgentDrafts.sent(drafts)
+                        editingMessage = false
                         guard.sent()
                         guardChanged()
                     }
-                    is AgentCall.Failed -> core.say(failedSay(result.failure))
+                    is AgentCall.Failed -> core.say(
+                        if (ids.isNotEmpty() && (result.failure == AgentFailure.OFFLINE || result.failure == AgentFailure.TIMEOUT)) {
+                            resources.getString(R.string.agents_pictures_wait, device.name)
+                        } else {
+                            failedSay(result.failure)
+                        },
+                    )
                 }
             }
             sending = false
@@ -345,6 +396,7 @@ fun AgentThreadScreen(
         } else {
             draft = text
             draftFor = AgentDock.editedUnder(queue)
+            drafts = AgentDrafts.edited(drafts)
         }
         guard.typed(System.currentTimeMillis())
         guardChanged()
@@ -462,6 +514,7 @@ fun AgentThreadScreen(
     val changePlan: () -> Unit = { runCatching { focus.requestFocus() } }
     val focused: (Boolean) -> Unit = { on ->
         if (on) guard.focus() else guard.blur()
+        composerFocused = on
         guardChanged()
     }
     val loadEarlier: () -> Unit = {
@@ -497,6 +550,162 @@ fun AgentThreadScreen(
             }
         }
     }
+    // ---- The draft on the PC (phase 2 §Q6.1): read on open, written after a pause, never while a question waits ----
+    val draftKey = AgentDrafts.key(threadId)
+    LaunchedEffect(device.id, threadId, device.online, drafting) {
+        if (!device.online || !drafting) return@LaunchedEffect
+        val read = core.agentDraftGet(device.id, draftKey) as? AgentCall.Ok ?: return@LaunchedEffect
+        val step = AgentDrafts.loaded(drafts, read.value, draft)
+        drafts = step.state
+        step.text?.let { draft = it }
+        step.images?.let { ids -> images = ids.map { PendingImage.Ready(it, it) } }
+    }
+    LaunchedEffect(draft, drafts.dirty, questionWaiting, device.online) {
+        if (!device.online || !drafting || !AgentDrafts.mayWrite(drafts, questionWaiting)) return@LaunchedEffect
+        delay(AgentDrafts.SAVE_AFTER_MS)
+        val text = draft.take(AgentDrafts.MAX_BYTES)
+        val saved = core.agentDraftSet(device.id, draftKey, text, AgentImages.readyIds(images), drafts.rev)
+        if (saved is AgentCall.Ok) {
+            // Typed again while it was on its way: still to be written.
+            val next = AgentDrafts.saved(drafts, saved.value, text)
+            drafts = if (draft.take(AgentDrafts.MAX_BYTES) != text) AgentDrafts.edited(next) else next
+        }
+    }
+    // Changed on another device: taken while the box isn't focused, offered while it is.
+    val changedRev = agents.draftChanges[draftKey]
+    LaunchedEffect(changedRev, device.online) {
+        val rev = changedRev ?: return@LaunchedEffect
+        if (!device.online || !drafting || questionWaiting || !AgentDrafts.stale(drafts, rev)) return@LaunchedEffect
+        val read = core.agentDraftGet(device.id, draftKey) as? AgentCall.Ok ?: return@LaunchedEffect
+        val step = AgentDrafts.arrived(drafts, read.value, composerFocused, draft)
+        drafts = step.state
+        step.text?.let { draft = it }
+        step.images?.let { ids -> images = ids.map { PendingImage.Ready(it, it) } }
+    }
+    val leaving by rememberUpdatedState(Triple(draft, drafts, questionWaiting))
+    val leavingImages by rememberUpdatedState(AgentImages.readyIds(images))
+    val leavingDrafting by rememberUpdatedState(drafting && device.online)
+    DisposableEffect(device.id, threadId) {
+        onDispose {
+            val (text, state, asking) = leaving
+            if (leavingDrafting && AgentDrafts.mayWrite(state, asking)) {
+                core.agentDraftLeave(device.id, draftKey, text.take(AgentDrafts.MAX_BYTES), leavingImages, state.rev)
+            }
+        }
+    }
+
+    // ---- A search hit: the transcript is read back to that message, then scrolled to and lit ----
+    LaunchedEffect(jumpTo, load) {
+        val target = jumpTo ?: return@LaunchedEffect
+        if (load != ThreadLoad.READY) return@LaunchedEffect
+        var pages = 0
+        while (pages++ < JUMP_PAGES) {
+            val shown = core.agents.value[device.id]?.open?.takeIf { it.threadId == threadId } ?: break
+            val first = shown.items.firstOrNull()?.seq ?: break
+            if (first <= target || !shown.moreBefore) break
+            if (core.agentRead(device.id, threadId, first) is AgentCall.Failed) break
+        }
+    }
+    val litShown = lit != null && rows.any { it.seq == lit }
+    LaunchedEffect(litShown) {
+        if (!litShown) return@LaunchedEffect
+        delay(AgentJump.HIGHLIGHT_MS)
+        lit = null
+    }
+
+    // ---- Edit from here, Rewind to here, Fork from here (board 20, 21) ----
+    val openRewind: (UInt, Boolean) -> Unit = { turn, refill ->
+        rewind = AgentRewind.opened(turn, refill)
+        rewindAsk++
+    }
+    LaunchedEffect(rewindAsk) {
+        val asking = rewind as? RewindSheet.Loading ?: return@LaunchedEffect
+        rewind = when (val plan = core.agentRewindPreview(device.id, threadId, asking.turn)) {
+            is AgentCall.Ok -> AgentRewind.previewed(rewind, asking.turn, plan.value)
+            is AgentCall.Failed -> AgentRewind.previewFailed(rewind, asking.turn, plan.failure)
+        }
+    }
+    val applyRewind: () -> Unit = apply@{
+        val ready = rewind as? RewindSheet.Ready ?: return@apply
+        if (!AgentRewind.canApply(ready, System.currentTimeMillis())) return@apply
+        rewind = AgentRewind.applying(ready)
+        scope.launch {
+            when (val result = core.agentRewindApply(device.id, ready.plan.token, ready.refill)) {
+                is AgentCall.Ok -> {
+                    rewind = null
+                    if (ready.refill) {
+                        // Edit from here: the message comes back through the draft, whatever the box held.
+                        val back = core.agentDraftGet(device.id, draftKey) as? AgentCall.Ok
+                        val restored = back?.value
+                        if (restored != null) {
+                            draft = restored.text
+                            images = restored.images.map { PendingImage.Ready(it.id, it.id) }
+                            drafts = drafts.copy(loaded = true, rev = restored.rev, dirty = false, offer = null)
+                        }
+                        editingMessage = true
+                        runCatching { focus.requestFocus() }
+                    }
+                }
+                is AgentCall.Failed -> {
+                    rewind = AgentRewind.applyFailed(rewind, result.failure)
+                    if (rewind is RewindSheet.Loading) rewindAsk++
+                }
+            }
+        }
+    }
+    val undo: () -> Unit = {
+        if (!undoing && !offline) {
+            undoing = true
+            scope.launch {
+                when (val result = core.agentRewindUndo(device.id, threadId)) {
+                    is AgentCall.Ok -> if (editingMessage) {
+                        editingMessage = false
+                        draft = ""
+                        images = emptyList()
+                        drafts = AgentDrafts.edited(drafts)
+                    }
+                    is AgentCall.Failed -> core.say(failedSay(result.failure))
+                }
+                undoing = false
+            }
+        }
+    }
+    val fork: (UInt) -> Unit = { turn ->
+        if (!forking) {
+            forking = true
+            scope.launch {
+                when (val result = core.agentFork(device.id, threadId, turn)) {
+                    is AgentCall.Ok -> AgentsNavigation.open(context, device.id, threadId = result.value.id)
+                    is AgentCall.Failed -> core.say(failedSay(result.failure))
+                }
+                forking = false
+            }
+        }
+    }
+    val onMessageAction: (AgentRow, MessageAction) -> Unit = { row, action ->
+        actionsFor = null
+        when (action) {
+            MessageAction.COPY -> {
+                val text = when (val kind = row.kind) {
+                    is AgentRowKind.User -> kind.text
+                    else -> itemsById[row.itemId]?.text.orEmpty()
+                }
+                if (text.isNotEmpty()) copy(text)
+            }
+            MessageAction.EDIT -> openRewind(row.turn, true)
+            MessageAction.REWIND -> openRewind(row.turn, false)
+            MessageAction.FORK -> fork(row.turn)
+        }
+    }
+    val heldOp: (String, suspend () -> AgentCall<Unit>) -> Unit = { key, op ->
+        heldBusy = heldBusy + key
+        scope.launch {
+            if (op() is AgentCall.Failed) core.say(resources.getString(R.string.agents_failed_generic))
+            heldBusy = heldBusy - key
+        }
+    }
+
+    val undoLatest by rememberUpdatedState(undo)
     val actions = remember(copy, focus) {
         RowActions(
             toggle = { key -> openKeys = if (key in openKeys) openKeys - key else openKeys + key },
@@ -512,6 +721,9 @@ fun AgentThreadScreen(
             mark = { sheetCollapsed = false },
             implement = { itemId -> implementLatest(itemId) },
             changePlan = changePlan,
+            messageActions = { row -> actionsFor = row },
+            openChanges = { turn, path -> full = FullView.Changes(turn, path) },
+            undo = { undoLatest() },
         )
     }
 
@@ -546,6 +758,21 @@ fun AgentThreadScreen(
             DiffFullScreen(title = view.title, doc = view.doc, onClose = { full = null })
             return
         }
+        is FullView.Changes -> {
+            val turn = open?.turns?.firstOrNull { it.turn == view.turn }
+            ChangesFullScreen(
+                core = core,
+                pcId = device.id,
+                threadId = threadId,
+                title = thread?.title.orEmpty(),
+                turn = view.turn,
+                newestTurn = maxOf(thread?.turns ?: 0u, open?.turns?.maxOfOrNull { it.turn } ?: 0u),
+                turnFiles = turn?.let { (it.files + it.skipped).toInt() },
+                startPath = view.path,
+                onClose = { full = null },
+            )
+            return
+        }
         null -> Unit
     }
 
@@ -570,9 +797,12 @@ fun AgentThreadScreen(
                 onDetails = { details = true },
                 drawer = drawer,
             )
+            // What this phone saved stands in while the PC can't be reached (or hasn't answered yet).
+            val saved = open != null && open.loaded && open.savedMs != null
+            if (offline && saved) OfflineBar(device.name, open?.savedMs, now)
             when {
                 load == ThreadLoad.GONE || open?.removed == true -> AgentsEmptyState(title = stringResource(R.string.agents_thread_gone))
-                load == ThreadLoad.UNREACHABLE -> AgentsEmptyState(
+                load == ThreadLoad.UNREACHABLE && !saved -> AgentsEmptyState(
                     title = stringResource(R.string.agents_unreachable_title, device.name),
                     body = stringResource(R.string.agents_unreachable_body),
                     action = stringResource(R.string.agents_try_again),
@@ -602,20 +832,63 @@ fun AgentThreadScreen(
                     // The request sheet rests at most at half the thread's height (reconcile file, the dock, item 4).
                     val sheetMax = maxHeight / 2
                     Column(Modifier.fillMaxSize()) {
+                        val end = threadEnd(status, thread, agents, device.name)
+                        val heldRows: (LazyListScope.() -> Unit)? = if (heldHere.isEmpty()) {
+                            null
+                        } else {
+                            {
+                                items(heldHere.size, key = { "held:${heldHere[it].key}" }, contentType = { "held" }) { index ->
+                                    val held = heldHere[index]
+                                    HeldMessage(
+                                        held = held,
+                                        pcName = device.name,
+                                        folder = folder,
+                                        busy = held.key in heldBusy,
+                                        onSend = { heldOp(held.key) { core.agentOutboxSend(device.id, held.key) } },
+                                        onDiscard = { heldOp(held.key) { core.agentOutboxDiscard(device.id, held.key) } },
+                                    )
+                                }
+                            }
+                        }
                         AgentRowsList(
                             rows = rows,
-                            context = remember(itemsById, folder, newestPlan, running, implementing, thumbs) {
-                                RowsContext(itemsById, folder, newestPlan, running, implementing, thumbs)
+                            context = remember(itemsById, folder, newestPlan, running, implementing, thumbs, thread, now, lit, undoing) {
+                                RowsContext(
+                                    itemsById,
+                                    folder,
+                                    newestPlan,
+                                    running,
+                                    implementing,
+                                    thumbs,
+                                    thread = thread,
+                                    pcName = device.name,
+                                    nowMs = now,
+                                    highlightSeq = lit,
+                                    undoing = undoing,
+                                )
                             },
                             actions = actions,
-                            earlier = open.moreBefore && open.items.isNotEmpty(),
+                            earlier = open.moreBefore && open.items.isNotEmpty() && !offline,
                             loadingEarlier = loadingEarlier,
                             onLoadEarlier = loadEarlier,
                             listState = listState,
                             modifier = Modifier.weight(1f),
-                            footer = threadEnd(status, thread, agents, device.name),
+                            footer = if (end == null && heldRows == null) {
+                                null
+                            } else {
+                                {
+                                    end?.invoke(this)
+                                    heldRows?.invoke(this)
+                                }
+                            },
+                            scrollTo = jumpTo,
                         )
-                        Column(Modifier.fillMaxWidth().padding(horizontal = 10.dp)) {
+                        if (readonly) {
+                            // Read only: no composer; the PC's folders decide (contract §U9.1 "Read-only thread").
+                            Box(Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 8.dp)) {
+                                ComposerNote(stringResource(R.string.agents_readonly_add, folder), icon = G7Icons.folder)
+                            }
+                        } else Column(Modifier.fillMaxWidth().padding(horizontal = 10.dp)) {
                             val plan = thread?.plan
                             if (!plan.isNullOrEmpty()) TasksLine(plan, key = threadId)
                             // Pinned, never a row: the limit line above the queue, the dock and the reply box.
@@ -667,6 +940,20 @@ fun AgentThreadScreen(
                                     onReview = { full = FullView.Edit(queue.shown.token) },
                                 )
                             }
+                            drafts.offer?.let { offer ->
+                                DraftOfferLine(byName = offer.byName?.takeIf { it.isNotBlank() } ?: device.name) {
+                                    val step = AgentDrafts.used(drafts)
+                                    drafts = step.state
+                                    step.text?.let { draft = it }
+                                    step.images?.let { ids -> images = ids.map { PendingImage.Ready(it, it) } }
+                                }
+                            }
+                            if (editingMessage && thread?.undo != null) EditingStrip(busy = undoing, onCancel = undo)
+                            // Brought in and not yet sent to from G7: sending continues a copy (contract §U0.3).
+                            if (thread?.found == true && open.turns.all { it.why == AgentCheckpointWhy.BEFORE }) {
+                                ComposerNote(stringResource(R.string.agents_found_copy_note))
+                            }
+                            if (offline && images.isNotEmpty()) ComposerNote(stringResource(R.string.agents_pictures_wait, device.name), icon = G7Icons.photo, warn = true)
                             AgentComposer(
                                 view = composer,
                                 hint = composerHint(composer.hint, agentName, pausedUntil, device.name),
@@ -689,6 +976,7 @@ fun AgentThreadScreen(
                                     plan = control.mode == ThreadMode.PLAN,
                                 ),
                                 onSettings = openSettings,
+                                // Offline it shows off: pictures can't wait for the PC (board 22).
                                 attachShown = abilities.control && imagesAllowed,
                                 onAttach = { if (composer.attach) imageSheet = true },
                                 images = images,
@@ -752,10 +1040,32 @@ fun AgentThreadScreen(
             onDismiss = { link = null },
         )
     }
+    actionsFor?.let { row ->
+        MessageActionsSheet(
+            rows = AgentMessageActions.rows(row.acts, user = row.kind is AgentRowKind.User, offline = offline),
+            agentName = agentName,
+            pcName = device.name,
+            onAction = { action -> onMessageAction(row, action) },
+            onDismiss = { actionsFor = null },
+        )
+    }
+    rewind?.let { sheet ->
+        val message = open?.items?.firstOrNull { it.turn == sheet.turn && it.kind == app.g7link.core.AgentItemKind.USER }?.text.orEmpty()
+        RewindSheetView(
+            sheet = sheet,
+            message = message,
+            agentName = agentName,
+            pcName = device.name,
+            nowMs = System.currentTimeMillis(),
+            onRewind = applyRewind,
+            onRetry = { openRewind(sheet.turn, sheet.refill) },
+            onDismiss = { if (rewind !is RewindSheet.Applying) rewind = null },
+        )
+    }
 }
 
 /**
- * The header: Back, the title (two lines at most), its state in words with the
+ * The header: Back, the title (one line), its state in words with the
  * agent and folder under it, the drawer of threads, and More (Share). Stop is
  * in the reply box.
  */
@@ -779,10 +1089,11 @@ private fun ThreadHeader(
         ) {
             G7IconButton(icon = G7Icons.back, contentDescription = stringResource(R.string.action_back), onClick = onBack)
             Column(Modifier.weight(1f).padding(start = 4.dp, top = 8.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                // Two rows (owner's feedback, 2026-11-21): the title on one line, the state line under it.
                 Text(
                     thread?.title.orEmpty(),
                     style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
-                    maxLines = 2,
+                    maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
                 if (thread != null && status != null) ThreadMeta(status, agentName, thread.folder)
@@ -822,19 +1133,19 @@ private fun ThreadHeader(
 @Composable
 private fun ThreadMeta(status: ThreadStatus, agentName: String, folder: String) {
     val scheme = MaterialTheme.colorScheme
-    val tints = g7Tints()
-    val (word, color) = when (status) {
-        ThreadStatus.NeedsYou -> stringResource(R.string.agents_state_waiting) to tints.amber
-        ThreadStatus.Working -> stringResource(R.string.agents_state_working) to scheme.onSurfaceVariant
-        ThreadStatus.Done -> stringResource(R.string.agents_state_done) to scheme.onSurfaceVariant
-        ThreadStatus.PlanReady -> stringResource(R.string.agents_state_plan_ready) to scheme.onSurfaceVariant
-        ThreadStatus.Stopped -> stringResource(R.string.agents_state_interrupted) to scheme.onSurfaceVariant
-        is ThreadStatus.Paused -> stringResource(R.string.agents_state_paused) to scheme.onSurfaceVariant
-        is ThreadStatus.Failed -> stringResource(R.string.agents_state_failed) to scheme.error
+    val word = when (status) {
+        ThreadStatus.NeedsYou -> stringResource(R.string.agents_state_waiting)
+        ThreadStatus.Working -> stringResource(R.string.agents_state_working)
+        ThreadStatus.Done -> stringResource(R.string.agents_state_done)
+        ThreadStatus.PlanReady -> stringResource(R.string.agents_state_plan_ready)
+        ThreadStatus.Stopped -> stringResource(R.string.agents_state_interrupted)
+        is ThreadStatus.Paused -> stringResource(R.string.agents_state_paused)
+        is ThreadStatus.Failed -> stringResource(R.string.agents_state_failed)
     }
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-        G7StatusDot(statusDotColor(status))
-        Text(word, style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold), color = color, maxLines = 1)
+        // The header's chip (§2.9): a mark of its own shape, then the word.
+        ThreadStatusMark(status)
+        StatusWord(status, word, MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold))
         Text(
             listOf(agentName, folder).filter { it.isNotBlank() }.joinToString(" · ", prefix = "· "),
             style = MaterialTheme.typography.labelMedium,
@@ -856,6 +1167,7 @@ private fun threadEnd(status: ThreadStatus?, thread: AgentThread?, agents: Agent
     val context = LocalContext.current
     val scheme = MaterialTheme.colorScheme
     val tints = g7Tints()
+    val colours = agentPalette()
     val fonts = LocalAppFonts.current
     return when (status) {
         is ThreadStatus.Failed -> {
@@ -873,7 +1185,7 @@ private fun threadEnd(status: ThreadStatus?, thread: AgentThread?, agents: Agent
             val end: LazyListScope.() -> Unit = {
                 item(key = "end", contentType = "end") {
                     Column(Modifier.fillMaxWidth().padding(top = 12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        EndLine(AgentGlyphs.warning, tints.red, word, scheme.error)
+                        EndLine(AgentGlyphs.warning, colours.statusFailed, word, colours.statusFailedText)
                         if (message != null) Text(message, style = style, color = scheme.onSurfaceVariant, modifier = Modifier.padding(start = 42.dp))
                         if (login != null) Text(login, style = loginStyle, modifier = Modifier.padding(start = 42.dp))
                     }
@@ -967,12 +1279,12 @@ private fun TasksLine(plan: List<AgentPlanStep>, key: String) {
 @Composable
 private fun PlanStepRow(step: AgentPlanStep) {
     val scheme = MaterialTheme.colorScheme
-    val tints = g7Tints()
     Row(Modifier.heightIn(min = 30.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        // Done steps a green check, the current one a blue ring (§2.9).
         Box(Modifier.size(14.dp), contentAlignment = Alignment.Center) {
             when (step.status) {
-                AgentPlanStatus.COMPLETED -> Icon(G7Icons.check, contentDescription = null, tint = tints.teal, modifier = Modifier.size(14.dp))
-                AgentPlanStatus.IN_PROGRESS -> Box(Modifier.size(7.dp).clip(CircleShape).background(tints.blue))
+                AgentPlanStatus.COMPLETED -> ThreadStatusMark(ThreadStatus.Done, size = 12.dp)
+                AgentPlanStatus.IN_PROGRESS -> ThreadStatusMark(ThreadStatus.Working, size = 10.dp)
                 AgentPlanStatus.PENDING -> Box(Modifier.size(6.dp).border(1.5.dp, scheme.outline, CircleShape))
             }
         }

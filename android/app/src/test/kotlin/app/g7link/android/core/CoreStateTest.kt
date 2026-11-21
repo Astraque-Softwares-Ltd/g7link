@@ -63,6 +63,38 @@ class CoreStateTest {
     }
 
     @Test
+    fun agentHistoryEventsAreKeptByTheAgentsStateNotHere() {
+        val turn = app.g7link.core.AgentTurn(
+            turn = 1u,
+            promptSeq = 1uL,
+            lastSeq = null,
+            startedMs = 0L,
+            endedMs = null,
+            ended = null,
+            checkpoint = app.g7link.core.AgentCheckpoint.PENDING,
+            why = null,
+            files = 0u,
+            adds = 0u,
+            dels = 0u,
+            moreFiles = false,
+            skipped = 0u,
+            canFork = false,
+            canRewind = false,
+        )
+        val events = listOf(
+            Event.AgentTurn("a", "t1", turn),
+            Event.AgentCut("a", "t1", 1uL, 2uL, false),
+            Event.AgentImport("a", app.g7link.core.AgentImportProgress("j", 0u, 0u, 1u, null)),
+            Event.AgentOutbox("a", emptyList()),
+        )
+        val state = CoreState().reduce(Event.DeviceAdded(pc("a", "Desk", 10)))
+        for (event in events) {
+            assertFalse(event.affectsCoreState())
+            assertEquals(state, state.reduce(event))
+        }
+    }
+
+    @Test
     fun aPcWithAnOlderAppIsShownAsNeedingAnUpdateUntilItConnects() {
         var state = CoreState().reduce(Event.DeviceAdded(pc("a", "Desk", 10)))
         assertFalse(state.device("a")!!.needsUpdate)

@@ -41,7 +41,6 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.res.stringResource
@@ -82,6 +81,9 @@ sealed interface FullView {
 
     /** An edit read from a step or a changed file, with its heading. */
     data class Diff(val title: String, val doc: AgentDiffDoc) : FullView
+
+    /** A turn's recorded changes (contract §U9.1 "Changes"), at [path] when a file was tapped. */
+    data class Changes(val turn: UInt, val path: String?) : FullView
 }
 
 /** A link waiting for Open or Cancel: the target as the render crate let it through, and the text that showed it. */
@@ -210,7 +212,7 @@ internal fun EditFullScreen(
             }
             ask.reason?.takeIf { it.isNotBlank() }?.let { AgentSays(agentName, it, Modifier.padding(horizontal = 6.dp)) }
             when {
-                doc != null -> Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(6.dp)).background(scheme.surfaceContainer).padding(vertical = 4.dp)) {
+                doc != null -> Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(6.dp)).background(agentPalette().groundCode).padding(vertical = 4.dp)) {
                     DiffView(doc, wrap = true)
                     Row(
                         modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
@@ -297,7 +299,7 @@ internal fun AnswerButtons(
 @Composable
 internal fun OutputFullScreen(item: AgentItem?, folder: String, onClose: () -> Unit, onCopy: (String) -> Unit) {
     val scheme = MaterialTheme.colorScheme
-    val tints = g7Tints()
+    val palette = agentPalette()
     val fonts = LocalAppFonts.current
     val resources = LocalResources.current
     val tool = item?.tool
@@ -311,10 +313,10 @@ internal fun OutputFullScreen(item: AgentItem?, folder: String, onClose: () -> U
             subtitle = {
                 if (item != null && tool != null) {
                     val (dot, word, color) = when (tool.status) {
-                        AgentToolStatus.RUNNING -> Triple(tints.blue, stringResource(R.string.agents_step_running), scheme.onSurfaceVariant)
-                        AgentToolStatus.OK -> Triple(tints.teal, stringResource(R.string.agents_state_done), scheme.onSurfaceVariant)
-                        AgentToolStatus.ERROR -> Triple(tints.red, stringResource(R.string.agents_state_failed), scheme.error)
-                        AgentToolStatus.DENIED -> Triple(scheme.outline, stringResource(R.string.agents_step_denied), scheme.onSurfaceVariant)
+                        AgentToolStatus.RUNNING -> Triple(palette.toolStatusRunning, stringResource(R.string.agents_step_running), scheme.onSurfaceVariant)
+                        AgentToolStatus.OK -> Triple(palette.toolStatusOk, stringResource(R.string.agents_state_done), scheme.onSurfaceVariant)
+                        AgentToolStatus.ERROR -> Triple(palette.toolStatusFailed, stringResource(R.string.agents_state_failed), palette.statusFailedText)
+                        AgentToolStatus.DENIED -> Triple(palette.toolStatusDenied, stringResource(R.string.agents_step_denied), scheme.onSurfaceVariant)
                     }
                     val end = item.endMs
                     val took = if (end != null && end > item.whenMs) durationText(resources, end - item.whenMs) else null
@@ -338,7 +340,7 @@ internal fun OutputFullScreen(item: AgentItem?, folder: String, onClose: () -> U
             val command = tool?.detail?.takeIf { it.isNotBlank() }
             if (command != null) {
                 Column(
-                    Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).background(scheme.surfaceContainer).padding(horizontal = 12.dp, vertical = 10.dp),
+                    Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).background(agentPalette().groundCode).padding(horizontal = 12.dp, vertical = 10.dp),
                     verticalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
                     FolderLabel(folder)
@@ -374,7 +376,7 @@ internal fun DiffFullScreen(title: String, doc: AgentDiffDoc, onClose: () -> Uni
             trailing = { Box(Modifier.padding(end = 12.dp)) { Counts(doc.adds.toLong(), doc.dels.toLong()) } },
         )
         Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 10.dp, vertical = 12.dp)) {
-            Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(6.dp)).background(scheme.surfaceContainer).padding(vertical = 4.dp)) {
+            Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(6.dp)).background(agentPalette().groundCode).padding(vertical = 4.dp)) {
                 DiffView(doc, wrap = true)
             }
         }
@@ -425,20 +427,5 @@ internal fun openLink(context: Context, href: String): Boolean {
         true
     } catch (_: ActivityNotFoundException) {
         false
-    }
-}
-
-/** The colour of a thread's state dot (the status line's). */
-@Composable
-internal fun statusDotColor(status: ThreadStatus): Color {
-    val tints = g7Tints()
-    val scheme = MaterialTheme.colorScheme
-    return when (status) {
-        ThreadStatus.NeedsYou -> tints.amber
-        ThreadStatus.Working -> tints.blue
-        ThreadStatus.Done, ThreadStatus.PlanReady -> tints.teal
-        ThreadStatus.Stopped -> scheme.outline
-        is ThreadStatus.Paused -> scheme.outline
-        is ThreadStatus.Failed -> tints.red
     }
 }

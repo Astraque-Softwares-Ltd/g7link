@@ -3,6 +3,7 @@ package app.g7link.android.ui.agents
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -14,6 +15,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -32,6 +35,10 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.toggleableState
+import androidx.compose.ui.state.ToggleableState
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
@@ -42,11 +49,9 @@ import app.g7link.android.R
 import app.g7link.android.core.Core
 import app.g7link.android.core.Device
 import app.g7link.android.ui.theme.G7Header
+import app.g7link.android.ui.theme.G7IconButton
 import app.g7link.android.ui.theme.G7Icons
 import app.g7link.android.ui.theme.G7PrimaryButton
-import app.g7link.android.ui.theme.G7RowAction
-import app.g7link.android.ui.theme.G7StatusDot
-import app.g7link.android.ui.theme.G7SwitchRow
 import app.g7link.android.ui.theme.LocalAppFonts
 import app.g7link.android.ui.theme.g7Tints
 import app.g7link.android.ui.theme.mono
@@ -67,6 +72,11 @@ private enum class SessionLoad { LOADING, READY, NOT_ALLOWED, UNAVAILABLE, UNREA
  * Keep in status bar. Nothing here types into it or answers it; once it's no
  * longer open anywhere it can be continued here as a thread. Nothing is
  * written to disk; leaving drops the transcript.
+ *
+ * Its header is two rows (owner's feedback, 2026-11-21): Back, the title and
+ * its actions (Keep in status bar as a toggle, More), then one line with its
+ * state, agent, folder and where it runs; tapping the line shows the whole
+ * sentence. The footer under the transcript is one component, [SessionFooter].
  */
 @Composable
 fun AgentSessionScreen(
@@ -241,7 +251,7 @@ fun AgentSessionScreen(
             DiffFullScreen(title = view.title, doc = view.doc, onClose = { full = null })
             return
         }
-        is FullView.Edit, null -> Unit
+        is FullView.Edit, is FullView.Changes, null -> Unit
     }
 
     AgentsDrawer(
@@ -257,15 +267,17 @@ fun AgentSessionScreen(
         Column(Modifier.fillMaxSize()) {
             G7Header(title = session?.title.orEmpty(), onBack = onBack) {
                 AgentsDrawerButton(drawer)
-                if (session != null && load == SessionLoad.READY) {
-                    G7RowAction(label = stringResource(R.string.agents_share), enabled = !sharing, onClick = share)
+                if (session != null && session.state != AgentSessionState.ENDED) {
+                    KeepToggle(kept = kept, onChange = { on -> core.agentSessionKeep(device.id, sessionId, on) })
                 }
+                SessionMenu(canShare = session != null && load == SessionLoad.READY && !sharing, onShare = share)
             }
             if (session != null) {
-                SessionStatusLine(
+                SessionLine(
                     session = session,
+                    agentName = agentName,
+                    pcName = device.name,
                     now = now,
-                    trailing = listOfNotNull(agentName, session.folder.ifBlank { null }).joinToString(" · "),
                     modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 8.dp),
                 )
             }
@@ -297,16 +309,6 @@ fun AgentSessionScreen(
                     Text(stringResource(R.string.agents_loading), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 else -> {
-                    StartedBanner(session = session, agentName = agentName, pcName = device.name)
-                    if (session.state != AgentSessionState.ENDED) {
-                        G7SwitchRow(
-                            label = stringResource(R.string.agents_session_keep),
-                            sublabel = stringResource(R.string.agents_session_keep_note),
-                            checked = kept,
-                            onCheckedChange = { on -> core.agentSessionKeep(device.id, sessionId, on) },
-                            modifier = Modifier.padding(horizontal = 4.dp),
-                        )
-                    }
                     AgentRowsList(
                         rows = rows,
                         context = remember(itemsById, session.folder) { RowsContext(itemsById, session.folder) },
@@ -333,35 +335,100 @@ fun AgentSessionScreen(
     }
 }
 
-/** "Started in a terminal on guchu. Read only." */
+/** "Started in a terminal on guchu. Read only.": where it runs, whole; an ended one can be continued, so it isn't only read. */
 @Composable
-private fun StartedBanner(session: AgentSession, agentName: String, pcName: String) {
-    val scheme = MaterialTheme.colorScheme
+private fun startedSentence(session: AgentSession, agentName: String, pcName: String): String {
     val where = when (session.source) {
         AgentSessionSource.TERMINAL -> stringResource(R.string.agents_session_started_terminal, pcName)
         AgentSessionSource.DESKTOP_APP -> stringResource(R.string.agents_session_started_app, agentName, pcName)
         AgentSessionSource.OTHER -> stringResource(R.string.agents_session_started_other, pcName)
     }
-    // An ended one can be continued here, so it's no longer only read.
-    val text = if (session.state == AgentSessionState.ENDED) where else "$where ${stringResource(R.string.agents_session_read_only)}"
-    Row(
-        modifier = Modifier
+    return if (session.state == AgentSessionState.ENDED) where else "$where ${stringResource(R.string.agents_session_read_only)}"
+}
+
+/**
+ * The header's second row: "● Working for 1 h · Claude · g7linux · in the
+ * Claude app, read only" on one line; a tap shows where it was started in a
+ * whole sentence under it.
+ */
+@Composable
+private fun SessionLine(session: AgentSession, agentName: String, pcName: String, now: Long, modifier: Modifier = Modifier) {
+    val scheme = MaterialTheme.colorScheme
+    val p = agentPalette()
+    var whole by remember(session.id) { mutableStateOf(false) }
+    val (word, color) = when {
+        AgentsModel.needsYouExactly(session) -> stringResource(R.string.agents_state_waiting) to p.statusNeedsYou
+        AgentsModel.mayNeedYou(session) -> stringResource(R.string.agents_session_state_may_need_you) to p.statusMayNeedYou
+        session.state == AgentSessionState.WORKING -> workingFor(session.sinceMs, now) to p.statusWorking
+        session.state == AgentSessionState.IDLE -> stringResource(R.string.agents_session_state_idle) to scheme.onSurfaceVariant
+        else -> stringResource(R.string.agents_session_state_ended) to scheme.onSurfaceVariant
+    }
+    val where = when (session.source) {
+        AgentSessionSource.TERMINAL -> stringResource(R.string.agents_session_in_terminal)
+        AgentSessionSource.DESKTOP_APP -> stringResource(R.string.agents_session_in_app, agentName)
+        AgentSessionSource.OTHER -> null
+    }
+    val place = where?.let { if (session.state == AgentSessionState.ENDED) it else stringResource(R.string.agents_session_line_read_only, it) }
+    val rest = listOfNotNull(agentName.ifBlank { null }, session.folder.ifBlank { null }, place).joinToString(" · ", prefix = "· ")
+    val sentence = startedSentence(session, agentName, pcName)
+    Column(
+        modifier = modifier
             .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 4.dp)
-            .clip(RoundedCornerShape(8.dp))
-            .background(scheme.surfaceContainer)
-            .padding(horizontal = 12.dp, vertical = 10.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
+            .clip(RoundedCornerShape(6.dp))
+            .clickable(role = Role.Button, onClickLabel = sentence) { whole = !whole },
+        verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
-        Icon(G7Icons.terminal, contentDescription = null, tint = scheme.onSurfaceVariant, modifier = Modifier.size(16.dp))
-        Text(text, style = MaterialTheme.typography.bodySmall, color = scheme.onSurfaceVariant)
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            SessionStatusMark(
+                needsYou = AgentsModel.needsYouExactly(session),
+                mayNeedYou = AgentsModel.mayNeedYou(session),
+                working = session.state == AgentSessionState.WORKING,
+            )
+            Text(word, style = MaterialTheme.typography.labelMedium, color = color, maxLines = 1)
+            Text(rest, style = MaterialTheme.typography.labelMedium, color = scheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+        if (whole) Text(sentence, style = MaterialTheme.typography.bodySmall, color = scheme.onSurfaceVariant)
+    }
+}
+
+/** "Keep in status bar" as a toggle in the header: a bell, on while it's kept. */
+@Composable
+private fun KeepToggle(kept: Boolean, onChange: (Boolean) -> Unit) {
+    val label = stringResource(R.string.agents_session_keep)
+    G7IconButton(
+        icon = G7Icons.bell,
+        contentDescription = label,
+        onClick = { onChange(!kept) },
+        selected = kept,
+        tint = if (kept) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.semantics { toggleableState = if (kept) ToggleableState.On else ToggleableState.Off },
+    )
+}
+
+/** The header's More: Share. */
+@Composable
+private fun SessionMenu(canShare: Boolean, onShare: () -> Unit) {
+    var open by remember { mutableStateOf(false) }
+    Box {
+        G7IconButton(icon = AgentGlyphs.more, contentDescription = stringResource(R.string.agents_more), onClick = { open = true })
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            DropdownMenuItem(
+                text = { Text(stringResource(R.string.agents_share)) },
+                enabled = canShare,
+                onClick = {
+                    open = false
+                    onShare()
+                },
+            )
+        }
     }
 }
 
 /**
  * Under the transcript, by state: where it waits for you (answered on the PC),
- * what it does now, or how to continue it here (and why not yet).
+ * what it does now, or how to continue it here (and why not yet). One
+ * component for every state, so a reply box can join it in one place
+ * ("Reply on the PC", plans/reply-on-pc.md).
  */
 @Composable
 private fun SessionFooter(
@@ -413,7 +480,7 @@ private fun SessionFooter(
         }
         session.state == AgentSessionState.WORKING -> Column(card, verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                G7StatusDot(tints.blue)
+                SessionStatusMark(needsYou = false, mayNeedYou = false, working = true)
                 Text(
                     session.step?.takeIf { it.isNotBlank() }?.let { stringResource(R.string.agents_step_now, it) }
                         ?: stringResource(R.string.agents_state_working),

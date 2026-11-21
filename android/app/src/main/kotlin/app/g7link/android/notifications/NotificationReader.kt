@@ -32,6 +32,8 @@ import app.g7link.core.NotificationAction as MirroredAction
 import app.g7link.core.NotificationChatMessage
 import app.g7link.core.NotificationConversation
 import app.g7link.core.NotificationLive
+import java.security.MessageDigest
+import java.util.Base64
 
 /**
  * Turns Android notifications into what G7 Link mirrors, and decides
@@ -52,7 +54,7 @@ internal class NotificationReader(private val context: Context) {
         val content = content(n) ?: return null
         val silent = isSilent(sbn, ranking) ||
             (update && (n.flags and Notification.FLAG_ONLY_ALERT_ONCE != 0 || live != null))
-        val conversation = extractConversation(sbn, n, content.title)
+        val conversation = extractConversation(sbn, n, ranking, content.title)
         // A chat re-posted when another one gets a message keeps its own time.
         val whenMs = if (live?.chronometer == true && n.`when` > 0L) {
             n.`when`
@@ -360,6 +362,7 @@ internal class NotificationReader(private val context: Context) {
     private fun extractConversation(
         sbn: StatusBarNotification,
         n: Notification,
+        ranking: RankingMap?,
         fallbackTitle: String?,
     ): NotificationConversation? = runCatching {
         val style = NotificationCompat.MessagingStyle.extractMessagingStyleFromNotification(n) ?: return null
@@ -410,6 +413,8 @@ internal class NotificationReader(private val context: Context) {
 
         val convAvatar = avatarFromIcon(n.getLargeIcon(), postingUid(sbn))
             ?: rawMessages.lastOrNull { !it.selfSent && it.avatar != null }?.avatar
+        // Without an ID the core knows the chat by its title.
+        val rawId = runCatching { rawConversationId(sbn, n, ranking) }.getOrNull()
 
         buildConversation(
             styleTitle = style.conversationTitle?.toString(),
@@ -417,8 +422,28 @@ internal class NotificationReader(private val context: Context) {
             isGroup = isGroup,
             convAvatar = convAvatar,
             messages = rawMessages,
+            id = conversationId(sbn.packageName, rawId),
         )
     }.getOrNull()
+
+    /**
+     * The app's own ID for the conversation: its shortcut, its locus, or the
+     * shortcut Android ranks it under, whichever comes first. It can hold a
+     * phone number, so it only ever goes through [conversationId].
+     */
+    private fun rawConversationId(sbn: StatusBarNotification, n: Notification, ranking: RankingMap?): String? {
+        n.shortcutId?.takeIf { it.isNotBlank() }?.let { return it }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            n.locusId?.id?.takeIf { it.isNotBlank() }?.let { return it }
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && ranking != null) {
+            val r = Ranking()
+            if (ranking.getRanking(sbn.key, r)) {
+                r.conversationShortcutInfo?.id?.takeIf { it.isNotBlank() }?.let { return it }
+            }
+        }
+        return null
+    }
 
     /** Scales and compresses a notification or person `Icon` to a `<= 16 KiB` JPEG. */
     /**
@@ -466,6 +491,10 @@ internal class NotificationReader(private val context: Context) {
         const val MAX_CONVERSATION_MESSAGES = 25
         const val MAX_SENDER_CHARS = 128
         const val MAX_TITLE_CHARS = 256
+        /** A conversation title is cut here, not at [MAX_TITLE_CHARS]: the core strips its message count first, then cuts. */
+        const val MAX_CONVERSATION_TITLE_CHARS = 1024
+        /** A conversation ID on the wire: 132 bits of its hash, in base64url. */
+        const val CONVERSATION_ID_CHARS = 22
         /** Pictures' longest side, and the fallback for large ones. */
         const val IMAGE_PX = 512
         const val SMALL_IMAGE_PX = 360
@@ -499,12 +528,25 @@ internal class NotificationReader(private val context: Context) {
             return providerExported && !providerReadPerm.isNullOrEmpty() && holdsReadPerm
         }
 
+        /** What goes on the wire for an app's conversation ID: stable, and not the ID itself. */
+        internal fun conversationId(packageName: String, rawId: String?): String? {
+            if (rawId.isNullOrBlank()) return null
+            val digest = MessageDigest.getInstance("SHA-256")
+                .digest("$packageName\u0000$rawId".toByteArray(Charsets.UTF_8))
+            return Base64.getUrlEncoder().withoutPadding().encodeToString(digest).take(CONVERSATION_ID_CHARS)
+        }
+
+        /**
+         * The conversation as mirrored. The title goes as the app wrote it;
+         * the core removes a message count from it.
+         */
         internal fun buildConversation(
             styleTitle: String?,
             fallbackTitle: String?,
             isGroup: Boolean,
             convAvatar: ByteArray?,
             messages: List<NotificationChatMessage>,
+            id: String? = null,
         ): NotificationConversation? {
             val cleanMessages = messages
                 .filter { it.text.isNotBlank() }
@@ -531,10 +573,11 @@ internal class NotificationReader(private val context: Context) {
                 ?: return null
             return NotificationConversation(
                 v = 1u,
-                title = title.take(MAX_TITLE_CHARS),
+                title = title.take(MAX_CONVERSATION_TITLE_CHARS),
                 group = isGroup,
                 avatar = convAvatar?.takeIf { it.isNotEmpty() && it.size <= MAX_AVATAR_BYTES },
                 messages = cleanMessages,
+                id = id,
             )
         }
 

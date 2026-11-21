@@ -5,7 +5,11 @@ import androidx.compose.runtime.Immutable
 import app.g7link.core.AgentAsk
 import app.g7link.core.AgentAskKind
 import app.g7link.core.AgentAskOutcome
+import app.g7link.core.AgentCachedItems
+import app.g7link.core.AgentCachedThreads
 import app.g7link.core.AgentCatalog
+import app.g7link.core.AgentHeld
+import app.g7link.core.AgentImportProgress
 import app.g7link.core.AgentInfo
 import app.g7link.core.AgentItem
 import app.g7link.core.AgentItemKind
@@ -22,13 +26,18 @@ import app.g7link.core.AgentStreaming
 import app.g7link.core.AgentThread
 import app.g7link.core.AgentThreadState
 import app.g7link.core.AgentToolStatus
+import app.g7link.core.AgentTurn
+import app.g7link.core.AgentTurnFile
+import app.g7link.core.AgentTurnPaths
 import app.g7link.core.Event
 
 /**
  * A PC's agent threads as this phone knows them (docs/protocol/agents.md), in
- * memory only: the catalog, the threads, the requests waiting for an answer,
- * the one thread whose transcript is open, and the sessions started on the PC
- * outside G7 (§3) with the one being followed.
+ * memory: the catalog, the threads (every shelf's: [listed] is the main
+ * list), the requests waiting for an answer, the one thread whose transcript
+ * is open, and the sessions started on the PC outside G7 (§3) with the one
+ * being followed. What the core saved on this phone fills it first while the
+ * PC is away (contract §U8.3).
  */
 @Immutable
 data class AgentsState(
@@ -52,8 +61,24 @@ data class AgentsState(
     val questions: Map<String, QuestionInfo> = emptyMap(),
     /** Questions this phone answered or dismissed and hasn't heard back about. */
     val replying: Set<String> = emptySet(),
+    /** The list came from what this phone saved then, and the PC hasn't answered since; null once it has. */
+    val savedMs: Long? = null,
+    /** When the PC last gave the main list. */
+    val listedMs: Long? = null,
+    /** The shelves read from the PC since it connected (Archived, Snoozed). */
+    val shelves: Set<Shelf> = emptySet(),
+    /** Messages held on this phone until the PC takes them, in the order written. */
+    val held: List<AgentHeld> = emptyList(),
+    /** How the last import of sessions goes. */
+    val importing: AgentImportProgress? = null,
+    /** Drafts changed on another device, by key: their rev. */
+    val draftChanges: Map<String, ULong> = emptyMap(),
 ) {
     fun thread(id: String): AgentThread? = threads.firstOrNull { it.id == id }
+
+    /** The main list: neither archived nor snoozed. */
+    val listed: List<AgentThread>
+        get() = threads.filter { AgentShelves.shelfOf(it) == Shelf.MAIN }
 
     fun session(id: String): AgentSession? = sessions.firstOrNull { it.id == id }
 
@@ -135,6 +160,12 @@ data class OpenThread(
     val removed: Boolean = false,
     /** Questions that ended while it was open: their rows say how (the FFI reads it from their marks). */
     val resolvedQuestions: List<ResolvedQuestion> = emptyList(),
+    /** Its turns, in order (contract §U7.1): each turn's Changes and the messages' actions. */
+    val turns: List<AgentTurn> = emptyList(),
+    /** The first files of the turns whose files were read, by turn. */
+    val turnFiles: Map<UInt, List<AgentTurnFile>> = emptyMap(),
+    /** The items shown are what this phone saved then; the PC hasn't sent its page since. */
+    val savedMs: Long? = null,
 ) {
     /** The highest `seq` seen, finished or streaming; 0 before any. */
     val lastSeq: ULong
@@ -191,6 +222,11 @@ data class TimelineInput(
     val open: List<String>,
     /** The questions waiting in it, for how many each asks. */
     val questions: List<QuestionInfo> = emptyList(),
+    /** Its turns and the first files of those read, for Changes and the messages' actions. */
+    val turns: List<AgentTurn> = emptyList(),
+    val turnFiles: List<AgentTurnPaths> = emptyList(),
+    /** Bumped when time alone changes the rows (a restore point still pending a second after its turn). */
+    val tick: Long = 0L,
 )
 
 /**
@@ -265,8 +301,9 @@ data class DrawerGroups(
     val working: List<AgentThread> = emptyList(),
     val recent: List<AgentThread> = emptyList(),
     val sessions: List<AgentSession> = emptyList(),
+    val pinned: List<AgentThread> = emptyList(),
 ) {
-    val empty: Boolean get() = needsYou.isEmpty() && working.isEmpty() && recent.isEmpty() && sessions.isEmpty()
+    val empty: Boolean get() = needsYou.isEmpty() && working.isEmpty() && pinned.isEmpty() && recent.isEmpty() && sessions.isEmpty()
 }
 
 /** How a thread reads at a glance (the reconcile file's state words). */
@@ -277,7 +314,7 @@ sealed interface ThreadStatus {
     data object Done : ThreadStatus
     data object Stopped : ThreadStatus
 
-    /** A plan-mode turn ended: its plan waits for "Implement" (listed with what finished, teal). */
+    /** A plan-mode turn ended: its plan waits for "Implement" (listed with what finished, green). */
     data object PlanReady : ThreadStatus
 
     /** Stopped by the agent's usage limit; [resetsMs] when the CLI said when it resets. */
@@ -356,6 +393,11 @@ object AgentsModel {
         is Event.AgentSessionItem -> event.id
         is Event.AgentQuestion -> event.id
         is Event.AgentQuestioned -> event.id
+        is Event.AgentDraftChanged -> event.id
+        is Event.AgentTurn -> event.id
+        is Event.AgentCut -> event.id
+        is Event.AgentImport -> event.id
+        is Event.AgentOutbox -> event.id
         else -> null
     }
 
@@ -385,8 +427,129 @@ object AgentsModel {
         is Event.AgentQuestioned -> AgentsUpdate(
             questioned(state, event.token, event.thread, AgentControlFfi.outcome(event.outcome), event.byName),
         )
+        is Event.AgentDraftChanged -> AgentsUpdate(draftChanged(state, event.key, event.rev))
+        is Event.AgentTurn -> AgentsUpdate(withTurn(state, event.thread, event.turn))
+        is Event.AgentCut -> cut(state, event.thread, event.fromSeq, event.toSeq, event.restored)
+        is Event.AgentImport -> AgentsUpdate(state.copy(importing = event.progress))
+        is Event.AgentOutbox -> AgentsUpdate(state.copy(held = event.held.take(MAX_HELD)))
         else -> AgentsUpdate(state)
     }
+
+    // ---- History and undo (contract §U7, §U8.3, §U9) ----
+
+    /** The most held messages a PC can make the phone keep (the core keeps 20 a PC). */
+    private const val MAX_HELD = 64
+
+    /** The most draft changes remembered (the PC keeps 64 drafts). */
+    private const val MAX_DRAFT_CHANGES = 64
+
+    /** The most files kept for one turn's Changes row (the render crate shows 20). */
+    private const val MAX_TURN_FILES = 20
+
+    /** A draft changed elsewhere: its newest rev, remembered until the composer reads it. */
+    fun draftChanged(state: AgentsState, key: String, rev: ULong): AgentsState {
+        if (key.isEmpty() || state.draftChanges[key] == rev) return state
+        val changes = state.draftChanges - key + (key to rev)
+        return state.copy(draftChanges = if (changes.size > MAX_DRAFT_CHANGES) changes.entries.drop(changes.size - MAX_DRAFT_CHANGES).associate { it.toPair() } else changes)
+    }
+
+    /** The open thread's turns as the PC listed them (newest first there; kept in turn order here). */
+    fun withTurns(state: AgentsState, threadId: String, turns: List<AgentTurn>): AgentsState {
+        val open = state.open?.takeIf { it.threadId == threadId } ?: return state
+        val sorted = turns.distinctBy { it.turn }.sortedBy { it.turn }
+        val kept = sorted.mapTo(HashSet()) { it.turn }
+        return state.copy(open = open.copy(turns = sorted, turnFiles = open.turnFiles.filterKeys { it in kept }))
+    }
+
+    /** A turn started, ended, or its restore point settled. */
+    fun withTurn(state: AgentsState, threadId: String, turn: AgentTurn): AgentsState {
+        val open = state.open?.takeIf { it.threadId == threadId } ?: return state
+        val before = open.turns.firstOrNull { it.turn == turn.turn }
+        if (before == turn) return state
+        // Its files may have changed with its restore point: read again when wanted.
+        val files = if (before != null && (before.checkpoint != turn.checkpoint || before.files != turn.files)) open.turnFiles - turn.turn else open.turnFiles
+        return state.copy(open = open.copy(turns = AgentTurns.with(open.turns, turn), turnFiles = files))
+    }
+
+    /** A turn's first files, for its Changes row. */
+    fun withTurnFiles(state: AgentsState, threadId: String, turn: UInt, files: List<AgentTurnFile>): AgentsState {
+        val open = state.open?.takeIf { it.threadId == threadId } ?: return state
+        return state.copy(open = open.copy(turnFiles = open.turnFiles + (turn to files.take(MAX_TURN_FILES))))
+    }
+
+    /**
+     * Messages [fromSeq] to [toSeq] left a thread (a rewind): they're dropped
+     * from the open transcript with their turns; [restored] (its undo) reads it
+     * again.
+     */
+    fun cut(state: AgentsState, threadId: String, fromSeq: ULong, toSeq: ULong, restored: Boolean): AgentsUpdate {
+        val open = state.open?.takeIf { it.threadId == threadId } ?: return AgentsUpdate(state)
+        if (restored) return AgentsUpdate(state, threadId)
+        if (toSeq < fromSeq) return AgentsUpdate(state)
+        val range = fromSeq..toSeq
+        val turns = open.turns.filterNot { it.promptSeq in range }
+        val kept = turns.mapTo(HashSet()) { it.turn }
+        return AgentsUpdate(
+            state.copy(
+                open = open.copy(
+                    items = open.items.filterNot { it.seq in range },
+                    streaming = open.streaming.filterValues { it.seq !in range },
+                    resolved = open.resolved.filter { it.afterSeq < fromSeq },
+                    turns = turns,
+                    turnFiles = open.turnFiles.filterKeys { it in kept },
+                ),
+            ),
+        )
+    }
+
+    /** The PC's list of one shelf: replaces what was known of that shelf only. */
+    fun withShelf(state: AgentsState, shelf: Shelf, threads: List<AgentThread>, nowMs: Long): AgentsState {
+        val others = state.threads.filter { AgentShelves.shelfOf(it) != shelf && threads.none { t -> t.id == it.id } }
+        val fresh = threads.distinctBy { it.id }
+        val next = state.copy(threads = sorted((fresh + others).take(MAX_THREADS)), shelves = state.shelves + shelf)
+        return if (shelf == Shelf.MAIN) next.copy(savedMs = null, listedMs = nowMs) else next
+    }
+
+    /**
+     * What this phone saved of the PC's list, shown at once: only while the PC
+     * hasn't given its own since (the live list always wins).
+     */
+    fun withSaved(state: AgentsState, saved: AgentCachedThreads): AgentsState {
+        // The PC gave its list, or its threads are arriving: those win.
+        if (state.listedMs != null || (state.threads.isNotEmpty() && state.savedMs == null) || saved.threads.isEmpty()) return state
+        val savedMs = saved.savedMs ?: return state
+        return state.copy(threads = sorted(saved.threads.distinctBy { it.id }.take(MAX_THREADS)), savedMs = savedMs)
+    }
+
+    /** What this phone saved of a thread, shown at once while the PC's page hasn't come. */
+    fun withSavedItems(state: AgentsState, threadId: String, saved: AgentCachedItems): AgentsState {
+        val known = saved.thread?.takeIf { it.id == threadId && state.thread(threadId) == null }?.let { withThread(state, it) } ?: state
+        val open = known.open?.takeIf { it.threadId == threadId } ?: return known
+        if (open.loaded && open.savedMs == null) return known
+        val savedMs = saved.savedMs ?: return known
+        val items = saved.items.distinctBy { it.seq }.sortedBy { it.seq }.let { if (it.size > MAX_ITEMS) it.takeLast(MAX_ITEMS) else it }
+        if (items.isEmpty()) return known
+        return known.copy(open = open.copy(items = items, loaded = true, savedMs = savedMs, moreBefore = false))
+    }
+
+    /** Marks shown at once on [ids] (the PC's answer replaces them, a refusal puts [before] back). */
+    fun marked(state: AgentsState, ids: Collection<String>, change: MarkChange): AgentsState {
+        val set = ids.toSet()
+        if (set.isEmpty()) return state
+        return state.copy(threads = sorted(state.threads.map { if (it.id in set) AgentMarks.applied(it, change) else it }))
+    }
+
+    /** The threads as they were before a mark the PC refused. */
+    fun unmarked(state: AgentsState, before: List<AgentThread>): AgentsState =
+        before.fold(state) { acc, thread -> if (acc.thread(thread.id) != null) withThread(acc, thread) else acc }
+
+    /** The PC's answer to a mark, rename, rewind or fork: each thread as it is now. */
+    fun withThreadsChanged(state: AgentsState, threads: List<AgentThread>): AgentsState =
+        threads.fold(state) { acc, thread -> withThread(acc, thread) }
+
+    /** The PC took a held message or its state changed: the outbox as the core has it. */
+    fun withHeld(state: AgentsState, held: List<AgentHeld>): AgentsState =
+        if (state.held == held) state else state.copy(held = held.take(MAX_HELD))
 
     // ---- Questions (contract §Q4.4) ----
 
@@ -613,10 +776,11 @@ object AgentsModel {
      * the thread that ran last; else Start.
      */
     fun homeLine(state: AgentsState): HomeLine {
-        val waitingThreads = state.threads.filter { needsYou(it) }
+        val threads = state.listed
+        val waitingThreads = threads.filter { needsYou(it) }
         val threadRequests = maxOf(
             state.asks.size + state.questions.size,
-            state.threads.sumOf { it.asks.toInt() + it.asking.toInt() },
+            threads.sumOf { it.asks.toInt() + it.asking.toInt() },
             waitingThreads.size,
         )
         val waitingSessions = state.sessions.filter { needsYouExactly(it) }
@@ -629,7 +793,7 @@ object AgentsModel {
                 ?: ""
             return HomeLine.NeedsYou(asker, needs)
         }
-        val working = state.threads.filter { it.state == AgentThreadState.WORKING }
+        val working = threads.filter { it.state == AgentThreadState.WORKING }
         if (working.isNotEmpty()) {
             val one = working.maxBy { it.updatedMs }
             return HomeLine.Working(one.agent, one.sinceMs?.takeIf { it > 0L }, working.size, sessions = false)
@@ -639,33 +803,44 @@ object AgentsModel {
             val one = workingSessions.maxBy { it.updatedMs }
             return HomeLine.Working(one.agent, one.sinceMs?.takeIf { it > 0L }, workingSessions.size, sessions = true)
         }
-        val last = state.threads.filterNot { running(it) }.maxByOrNull { it.updatedMs }
+        val last = threads.filterNot { running(it) }.maxByOrNull { it.updatedMs }
         return if (last != null) HomeLine.Finished(last.title, status(last), last.updatedMs) else HomeLine.Start
     }
 
     /**
      * The drawer's groups, in the list's order (requests first, then the newest):
-     * Needs you (a request waits), Working (no request), Recent (everything that
-     * stopped), and the sessions the PC lists.
+     * Needs you (a request waits), Working (no request), Pinned, Recent
+     * (everything else that stopped), and the sessions the PC lists. Archived
+     * and snoozed threads are on their shelves, not here.
      */
     fun drawerGroups(state: AgentsState): DrawerGroups {
         val needsYou = ArrayList<AgentThread>()
         val working = ArrayList<AgentThread>()
+        val pinned = ArrayList<AgentThread>()
         val recent = ArrayList<AgentThread>()
-        for (thread in state.threads) {
+        for (thread in state.listed) {
             when {
                 needsYou(thread) -> needsYou += thread
                 thread.state == AgentThreadState.WORKING -> working += thread
+                thread.pinned -> pinned += thread
                 else -> recent += thread
             }
         }
         val sessions = if (state.sessionsAllowed == true && !state.sessionsUnsupported) state.sessions else emptyList()
-        return DrawerGroups(needsYou, working, recent, sessions)
+        return DrawerGroups(needsYou, working, recent, sessions, pinned)
     }
 
-    /** The thread list as the PC sent it. */
-    fun withThreads(state: AgentsState, threads: List<AgentThread>): AgentsState =
-        state.copy(threads = sorted(threads.distinctBy { it.id }.take(MAX_THREADS)))
+    /**
+     * The main list as the PC sent it: replaces the threads known of it, and
+     * keeps those of the shelves (archived, snoozed) the PC lists apart.
+     */
+    fun withThreads(state: AgentsState, threads: List<AgentThread>, nowMs: Long? = null): AgentsState {
+        val fresh = threads.distinctBy { it.id }
+        val ids = fresh.mapTo(HashSet()) { it.id }
+        val shelved = state.threads.filter { it.id !in ids && AgentShelves.shelfOf(it) != Shelf.MAIN }
+        val next = state.copy(threads = sorted((fresh + shelved).take(MAX_THREADS)), savedMs = null)
+        return if (nowMs != null) next.copy(listedMs = nowMs) else next
+    }
 
     /** One thread, added or replaced. */
     fun withThread(state: AgentsState, thread: AgentThread): AgentsState {
@@ -717,6 +892,7 @@ object AgentsModel {
                 moreBefore = page.moreBefore,
                 loaded = true,
                 resolved = open.resolved.filter { it.afterSeq >= (items.firstOrNull()?.seq ?: 0uL) },
+                savedMs = null,
             ),
         )
     }
@@ -977,6 +1153,8 @@ object AgentsModel {
             marks = marks(state, threadId, held),
             open = openKeys.sorted(),
             questions = state.questionsFor(threadId),
+            turns = open.turns,
+            turnFiles = open.turnFiles.entries.sortedBy { it.key }.map { (turn, files) -> AgentTurnPaths(turn, files) },
         )
     }
 

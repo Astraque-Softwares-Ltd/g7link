@@ -319,7 +319,6 @@
     <string name="remote_mode_touchpad">Touchpad</string>
     <string name="remote_mode_air">Air mouse</string>
     <string name="remote_mode_presentation">Presentation</string>
-    <string name="remote_touchpad_hint">Drag to move · Tap to click · Two fingers to right-click or scroll · Double-tap and hold to drag</string>
     <string name="remote_air_hold">Hold to aim at %1$s</string>
     <string name="remote_air_active">Moving on %1$s · tilt phone or tap to click</string>
     <string name="remote_air_hint">Hold the pad and tilt your phone to move the pointer · Tap the pad to click · Release to stop</string>
@@ -413,15 +412,41 @@
     <string name="pc_mirror_fullscreen">Full screen</string>
     <string name="pc_mirror_exit_fullscreen">Exit full screen</string>
     <string name="pc_mirror_right_click">Right click</string>
-    <string name="pc_mirror_task_view">Task View</string>
+    <!-- GNOME's word for the view of every window (the Super key). -->
+    <string name="pc_mirror_overview">Overview</string>
     <string name="pc_mirror_keyboard">Keyboard</string>
     <string name="pc_mirror_hide_keyboard">Hide keys</string>
-    <string name="pc_mirror_send_text">Send</string>
-    <string name="pc_mirror_backspace">Backspace</string>
-    <string name="pc_mirror_quality_720p">720p</string>
-    <string name="pc_mirror_quality_1080p">1080p</string>
-    <string name="pc_mirror_quality_desc">Stream quality: %1$s</string>
+    <string name="pc_mirror_quality_sharp">Sharp</string>
+    <string name="pc_mirror_quality_saver">Saver</string>
     <string name="pc_mirror_viewport_desc">%1$s screen</string>
+    <string name="pc_mirror_more">More</string>
+    <!-- The zoom chip: the PC's screen fitted to the phone's. -->
+    <string name="pc_mirror_zoom_fit">Fit</string>
+    <!-- The zoom chip: phone pixels to each of the PC's, as a percentage (100% is one to one). -->
+    <string name="pc_mirror_zoom_percent">%1$d%%</string>
+    <string name="pc_mirror_zoom_desc">Zoom: %1$s. Tap to change</string>
+    <string name="pc_mirror_minimap_desc">Where you are on the screen</string>
+    <string name="pc_mirror_dragging">Dragging</string>
+    <string name="pc_mirror_right_click_armed">Tap where to right-click</string>
+    <string name="pc_mirror_direct_hint">Touch where you want to click. Touch and hold to right-click.</string>
+    <!-- "See this screen" is the switch's name in G7 Link on the PC. -->
+    <string name="pc_mirror_off_title">%1$s isn\'t sharing its screen</string>
+    <string name="pc_mirror_off_text">In G7 Link on %1$s, turn on See this screen for this phone.</string>
+    <string name="pc_mirror_cant_capture_title">%1$s can\'t share its screen</string>
+    <string name="pc_mirror_cant_capture_text">Open G7 Link on %1$s and run Doctor.</string>
+    <string name="pc_mirror_reconnecting">Reconnecting…</string>
+    <string name="pc_mirror_unreachable">Can\'t reach %1$s</string>
+    <string name="pc_mirror_stopped">%1$s stopped sharing</string>
+    <string name="pc_mirror_start_again">Start again</string>
+    <string name="pc_mirror_watch_starting">Starting on this phone…</string>
+    <string name="pc_mirror_window_lost_title">Can\'t find the player\'s window</string>
+    <string name="pc_mirror_window_lost_text">Play the video on %1$s again, then choose Play on phone.</string>
+    <!-- Developer options only: a line of figures over the PC's picture. -->
+    <string name="pc_mirror_show_stats">Show stats</string>
+    <!-- Size, codec and decoder, frames a second, data rate, latency: 1366×768 · H.264 hardware · 30 fps · 1.8 Mbit/s · 62 ms -->
+    <string name="pc_mirror_stats_line">%1$d×%2$d · %3$s %4$s · %5$d fps · %6$s Mbit/s · %7$s ms</string>
+    <string name="pc_mirror_stats_hardware">hardware</string>
+    <string name="pc_mirror_stats_software">software</string>
 
     <!-- Voice recorder to PC -->
     <string name="channel_recorder">Voice recorder</string>
@@ -1756,4 +1781,142 @@
     <string name="agents_question_answered_on">Answered on %1$s</string>
     <string name="agents_question_not_answered">Not answered</string>
     <string name="agents_notify_plan_title">%1$s has a plan in %2$s</string>
+    <!-- Agents: history, undo, saved threads and held messages (phase 3) -->
+    <string name="agents_phone_settings">Agent settings</string>
+    <string name="agents_cache_keep">Keep threads on this phone</string>
+    <string name="agents_cache_clear">Clear saved threads (%1$s)</string>
+    <string name="agents_brought_in">Brought in</string>
+    <string name="agents_fork_of">Fork of %1$s</string>
+    <string name="agents_snoozed_until">Snoozed until %1$s</string>
+    <string name="agents_shelf_pinned">Pinned</string>
+    <string name="agents_shelf_archived">Archived</string>
+    <string name="agents_shelf_snoozed">Snoozed</string>
+    <string name="agents_shelf_archived_empty">Nothing is archived.</string>
+    <string name="agents_shelf_snoozed_empty">Nothing is snoozed.</string>
+    <string name="agents_mark_pin">Pin</string>
+    <string name="agents_mark_unpin">Unpin</string>
+    <string name="agents_mark_unread">Mark unread</string>
+    <string name="agents_mark_read">Mark read</string>
+    <string name="agents_mark_snooze">Snooze</string>
+    <string name="agents_mark_archive">Archive</string>
+    <string name="agents_mark_unarchive">Unarchive</string>
+    <string name="agents_mark_rename">Rename</string>
+    <string name="agents_snooze_hour">In an hour</string>
+    <string name="agents_snooze_evening">This evening</string>
+    <string name="agents_snooze_tomorrow">Tomorrow</string>
+    <string name="agents_snooze_next_week">Next week</string>
+    <string name="agents_snooze_limit">When %1$s\'s limit resets (%2$s)</string>
+    <string name="agents_needs_pc">Needs %1$s</string>
+    <string name="agents_wait_until_finishes">Wait until it finishes.</string>
+    <string name="agents_search">Search threads</string>
+    <string name="agents_search_short">Type 3 letters or more to search messages.</string>
+    <string name="agents_search_none">No messages match</string>
+    <string name="agents_search_archived">Include archived</string>
+    <string name="agents_search_foot">Searches threads in G7. Bring in earlier sessions to search them.</string>
+    <string name="agents_search_clear">Clear the search</string>
+    <string name="agents_search_you">You</string>
+    <string name="agents_import_title">Bring in earlier sessions</string>
+    <string name="agents_import_on">On %1$s</string>
+    <string name="agents_import_search">Search sessions</string>
+    <string name="agents_import_scanning">Looking for sessions… %1$s so far</string>
+    <string name="agents_import_progress">Bringing in %1$d of %2$d</string>
+    <string name="agents_import_done_failed">%1$d brought in, %2$d couldn\'t be read</string>
+    <string name="agents_import_open">Open in a terminal now</string>
+    <string name="agents_import_outside">Outside your agent folders</string>
+    <string name="agents_import_damaged">Damaged</string>
+    <string name="agents_import_none">No sessions found on this PC.</string>
+    <string name="agents_import_select">Select %1$s</string>
+    <string name="agents_changes_open">Open the changes</string>
+    <string name="agents_changes_recording">Recording changes…</string>
+    <string name="agents_changes_missing">Changes weren\'t recorded for this turn.</string>
+    <string name="agents_changes_missing_why">Changes weren\'t recorded for this turn. %1$s</string>
+    <string name="agents_changes_expired">This restore point is no longer kept.</string>
+    <string name="agents_why_busy">Git was busy.</string>
+    <string name="agents_why_slow">It took too long.</string>
+    <string name="agents_why_large">Too many large new files.</string>
+    <string name="agents_why_refused">Git refused.</string>
+    <string name="agents_why_off">Restore points are off for this folder.</string>
+    <string name="agents_why_before">It ran before G7 kept restore points.</string>
+    <string name="agents_diff_title">Changes</string>
+    <string name="agents_diff_this_turn">This turn</string>
+    <string name="agents_diff_whole">Whole thread</string>
+    <string name="agents_diff_wrap">Wrap lines</string>
+    <string name="agents_diff_binary">Binary file</string>
+    <string name="agents_diff_cut">Showing the first 1 MB</string>
+    <string name="agents_edit_from_here">Edit from here</string>
+    <string name="agents_rewind_to_here">Rewind to here</string>
+    <string name="agents_fork_from_here">Fork from here</string>
+    <string name="agents_latest_only">%1$s can only be forked from its latest message.</string>
+    <string name="agents_no_restore_point">No restore point for this turn.</string>
+    <string name="agents_not_git">This isn\'t a git repository, so G7 can\'t undo file changes here.</string>
+    <string name="agents_shared_folder">Another thread worked in this folder since then.</string>
+    <string name="agents_git_busy">Git is in the middle of something in this folder. Finish it, then try again.</string>
+    <string name="agents_rewind_title">Rewind to before this message?</string>
+    <string name="agents_rewind_phone">Files aren\'t changed from the phone. Do that on %1$s.</string>
+    <string name="agents_rewind">Rewind</string>
+    <string name="agents_undo">Undo</string>
+    <string name="agents_undo_on_pc">Undo it on %1$s.</string>
+    <string name="agents_editing">Editing your message</string>
+    <string name="agents_draft_newer">A newer draft from %1$s</string>
+    <string name="agents_draft_use">Use it</string>
+    <string name="agents_offline_unsaved">%1$s isn\'t reachable.</string>
+    <string name="agents_sends_when_back">Sends when %1$s is back</string>
+    <string name="agents_held_waiting">Waiting to send</string>
+    <string name="agents_held_sending">Sending</string>
+    <string name="agents_held_not_sent">Not sent</string>
+    <string name="agents_held_send">Send</string>
+    <string name="agents_held_discard">Discard</string>
+    <string name="agents_held_answer_first">Answer the request first</string>
+    <string name="agents_held_queue_full">Waiting: the queue on %1$s is full</string>
+    <string name="agents_held_too_old">It waited more than a day.</string>
+    <string name="agents_held_refused">%1$s didn\'t take it.</string>
+    <string name="agents_pictures_wait">Pictures can\'t wait. Send when %1$s is back.</string>
+    <string name="agents_readonly_add">Add %1$s to your agent folders to continue it.</string>
+    <string name="agents_session_line_read_only">%1$s, read only</string>
+    <plurals name="agents_changes_unrecorded">
+        <item quantity="one">%1$d file wasn\'t recorded (too large).</item>
+        <item quantity="other">%1$d files weren\'t recorded (too large).</item>
+    </plurals>
+    <plurals name="agents_diff_more">
+        <item quantity="one">and %1$d more</item>
+        <item quantity="other">and %1$d more</item>
+    </plurals>
+    <plurals name="agents_import_bring">
+        <item quantity="one">Bring in %1$d</item>
+        <item quantity="other">Bring in %1$d</item>
+    </plurals>
+    <plurals name="agents_import_done">
+        <item quantity="one">%1$d brought in</item>
+        <item quantity="other">%1$d brought in</item>
+    </plurals>
+    <plurals name="agents_import_selected">
+        <item quantity="one">%1$d selected</item>
+        <item quantity="other">%1$d selected</item>
+    </plurals>
+    <plurals name="agents_import_sessions">
+        <item quantity="one">%1$d session</item>
+        <item quantity="other">%1$d sessions</item>
+    </plurals>
+    <plurals name="agents_offline_minutes">
+        <item quantity="one">%1$s isn\'t reachable. Saved %2$d min ago.</item>
+        <item quantity="other">%1$s isn\'t reachable. Saved %2$d min ago.</item>
+    </plurals>
+    <plurals name="agents_offline_hours">
+        <item quantity="one">%1$s isn\'t reachable. Saved %2$d h ago.</item>
+        <item quantity="other">%1$s isn\'t reachable. Saved %2$d h ago.</item>
+    </plurals>
+    <plurals name="agents_offline_days">
+        <item quantity="one">%1$s isn\'t reachable. Saved %2$d day ago.</item>
+        <item quantity="other">%1$s isn\'t reachable. Saved %2$d days ago.</item>
+    </plurals>
+    <plurals name="agents_rewind_leave">
+        <item quantity="one">%1$d later message leaves the thread.</item>
+        <item quantity="other">%1$d later messages leave the thread.</item>
+    </plurals>
+    <plurals name="agents_search_more">
+        <item quantity="one">%1$d more in this thread</item>
+        <item quantity="other">%1$d more in this thread</item>
+    </plurals>
+    <string name="agents_found_copy_note">This continues as a copy. The original session stays as it is.</string>
+    <string name="agents_unsnooze">Unsnooze</string>
 </resources>

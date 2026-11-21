@@ -8,6 +8,7 @@ import java.io.ByteArrayOutputStream
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -171,6 +172,70 @@ class MmsPduTest {
         assertEquals("Family Chat", groupConv!!.title)
         assertTrue(groupConv.group)
         assertNull(groupConv.avatar)
+    }
+
+    @Test
+    fun `conversationId is stable, 22 characters, and not the raw ID`() {
+        val raw = "group-42@chat.example"
+        val id = NotificationReader.conversationId("com.example.chat", raw)
+        // Every stored chat is keyed by this value: changing the scheme splits them all.
+        assertEquals("3E-euRGyUS4HtLevjNI6Lx", id)
+        assertEquals(id, NotificationReader.conversationId("com.example.chat", raw))
+        assertTrue(Regex("[A-Za-z0-9_-]{22}").matches(id!!))
+        assertFalse(id.contains("group"))
+    }
+
+    @Test
+    fun `conversationId differs by package and is null for a blank ID`() {
+        val raw = "group-42@chat.example"
+        assertEquals("Zjq8_19RSW8mImcY-AJ4sq", NotificationReader.conversationId("org.example.other", raw))
+        assertNotEquals(
+            NotificationReader.conversationId("com.example.chat", raw),
+            NotificationReader.conversationId("org.example.other", raw),
+        )
+        assertNotEquals(
+            NotificationReader.conversationId("com.example.chat", "group-42"),
+            NotificationReader.conversationId("com.example.chat", "group-43"),
+        )
+        assertNull(NotificationReader.conversationId("com.example.chat", null))
+        assertNull(NotificationReader.conversationId("com.example.chat", ""))
+        assertNull(NotificationReader.conversationId("com.example.chat", "  \t"))
+    }
+
+    @Test
+    fun `buildConversation carries the ID through`() {
+        val messages = listOf(
+            NotificationChatMessage(
+                sender = "Ana",
+                text = "Bring snacks",
+                time = 1_760_000_000_000L,
+                selfSent = false,
+                avatar = null,
+            ),
+        )
+        val id = NotificationReader.conversationId("com.example.chat", "group-42@chat.example")
+        val conv = NotificationReader.buildConversation(
+            styleTitle = "Book Club (3 messages)",
+            fallbackTitle = "Book Club",
+            isGroup = true,
+            convAvatar = null,
+            messages = messages,
+            id = id,
+        )
+        assertEquals(id, conv!!.id)
+        // The core removes the count; the phone sends the title as the app wrote it.
+        assertEquals("Book Club (3 messages)", conv.title)
+
+        val withoutId = NotificationReader.buildConversation(
+            styleTitle = null,
+            fallbackTitle = null,
+            isGroup = false,
+            convAvatar = null,
+            messages = messages,
+            id = null,
+        )
+        assertNull(withoutId!!.id)
+        assertEquals("Ana", withoutId.title)
     }
 
     @Test

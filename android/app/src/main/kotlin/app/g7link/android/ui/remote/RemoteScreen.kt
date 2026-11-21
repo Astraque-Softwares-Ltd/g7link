@@ -11,7 +11,6 @@ import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
-import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.speech.RecognitionListener
@@ -19,7 +18,6 @@ import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.view.WindowManager
 import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.StringRes
 import androidx.compose.animation.AnimatedContent
@@ -38,14 +36,13 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
-import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
@@ -61,13 +58,10 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -80,7 +74,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
-import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -90,25 +83,16 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.input.key.Key
-import androidx.compose.ui.input.key.KeyEventType
-import androidx.compose.ui.input.key.key
-import androidx.compose.ui.input.key.onPreviewKeyEvent
-import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
@@ -116,13 +100,6 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.onClick
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.text.TextRange
-import androidx.compose.ui.text.input.ImeAction
-import androidx.compose.ui.text.input.KeyboardCapitalization
-import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.input.PasswordVisualTransformation
-import androidx.compose.ui.text.input.TextFieldValue
-import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -147,11 +124,9 @@ import app.g7link.android.ui.capture.recordLabel
 import app.g7link.android.ui.capture.screenshotLabel
 import app.g7link.android.ui.home.PcSoundRows
 import app.g7link.android.ui.theme.G7Header
-import app.g7link.android.ui.theme.G7IconButton
 import app.g7link.android.ui.theme.G7IconKeycap
 import app.g7link.android.ui.theme.G7Icons
 import app.g7link.android.ui.theme.G7Keycap
-import app.g7link.android.ui.theme.G7KeycapSurface
 import app.g7link.android.ui.theme.G7Motion
 import app.g7link.android.ui.theme.G7RaisedButton
 import app.g7link.android.ui.theme.G7Row
@@ -166,15 +141,11 @@ import app.g7link.android.ui.theme.g7Tints
 import app.g7link.core.PcClipKind
 import kotlin.math.abs
 import kotlin.math.hypot
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeoutOrNull
 
 enum class RemoteMode { Touchpad, AirMouse, Presentation, Screen, Media }
 
@@ -210,6 +181,8 @@ fun RemoteScreen(
 
     var mode by rememberSaveable(initialMode) { mutableStateOf(initialMode) }
     var showKeyboard by rememberSaveable { mutableStateOf(false) }
+    // The Screen tab's own keyboard: the same typing input, under its picture.
+    var screenKeyboard by rememberSaveable { mutableStateOf(false) }
     var screenFullScreen by rememberSaveable { mutableStateOf(false) }
     var showConnection by rememberSaveable(device.id) { mutableStateOf(false) }
 
@@ -254,17 +227,28 @@ fun RemoteScreen(
         core.state.map { device.id in it.pcTextFocus }.distinctUntilChanged()
     }.collectAsStateWithLifecycle(initialValue = false)
     var keyboardOpenedForPc by rememberSaveable { mutableStateOf(false) }
+    var screenKeyboardOpenedForPc by rememberSaveable { mutableStateOf(false) }
     LaunchedEffect(pcTyping) {
         if (pcTyping) {
             if (!showKeyboard && mode == RemoteMode.Touchpad && !touchpadOnly) {
                 showKeyboard = true
                 keyboardOpenedForPc = true
+            } else if (!screenKeyboard && mode == RemoteMode.Screen && !screenFullScreen) {
+                // Not over a full-screen picture, which it would mostly cover.
+                screenKeyboard = true
+                screenKeyboardOpenedForPc = true
             }
-        } else if (keyboardOpenedForPc) {
+        } else if (keyboardOpenedForPc || screenKeyboardOpenedForPc) {
             // Focus moving from one box to the next isn't leaving text.
             delay(1_500)
-            showKeyboard = false
-            keyboardOpenedForPc = false
+            if (keyboardOpenedForPc) {
+                showKeyboard = false
+                keyboardOpenedForPc = false
+            }
+            if (screenKeyboardOpenedForPc) {
+                screenKeyboard = false
+                screenKeyboardOpenedForPc = false
+            }
         }
     }
     // Something copied on the PC after the remote opened can be pasted there from
@@ -301,6 +285,11 @@ fun RemoteScreen(
     LaunchedEffect(mode) {
         if (mode != RemoteMode.Screen && screenFullScreen) {
             screenFullScreen = false
+        }
+        // The Screen tab opens without its keyboard, as it always has.
+        if (mode != RemoteMode.Screen && screenKeyboard) {
+            screenKeyboard = false
+            screenKeyboardOpenedForPc = false
         }
     }
 
@@ -422,6 +411,7 @@ fun RemoteScreen(
                     sensitivity = sensitivity,
                     utteranceJoiner = utteranceJoiner,
                     onStatus = onStatus,
+                    haptics = haptic,
                     modifier = Modifier.fillMaxSize(),
                 )
                 RemoteMode.Presentation -> PresentationView(
@@ -437,6 +427,8 @@ fun RemoteScreen(
                     modifier = Modifier.fillMaxSize().imePadding(),
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
+                    // The Touchpad tab's typing input, its own state for this tab.
+                    val screenTyping = rememberTypingInput(device.id, core, screenKeyboard, onStatus)
                     PcMirrorView(
                         pcId = device.id,
                         pcName = device.name,
@@ -445,6 +437,29 @@ fun RemoteScreen(
                         onFullScreenChange = { screenFullScreen = it },
                         touchpadSensitivity = sensitivity,
                         onStatus = onStatus,
+                        showKeyboard = screenKeyboard,
+                        onShowKeyboard = {
+                            screenKeyboard = it
+                            screenKeyboardOpenedForPc = false
+                        },
+                        keyboard = {
+                            TypingInput(
+                                state = screenTyping,
+                                pcName = device.name,
+                                core = core,
+                                utteranceJoiner = utteranceJoiner,
+                                onStatus = onStatus,
+                                pasteReady = freshClip != null,
+                                onPasted = onPasted,
+                                // Typing makes the keyboard the user's: it no longer goes by itself.
+                                onTypedHere = { screenKeyboardOpenedForPc = false },
+                                haptics = haptic,
+                                // Compact over a full-screen picture, which it shrinks.
+                                spacing = if (screenFullScreen) 6.dp else 10.dp,
+                            )
+                        },
+                        onPcClick = screenTyping::caretMoved,
+                        haptics = haptic,
                         modifier = Modifier.weight(1f).fillMaxWidth(),
                     )
                     // The touchpad under the screen: watch the PC and move its pointer together.
@@ -464,6 +479,7 @@ fun RemoteScreen(
                             core = core,
                             sensitivity = sensitivity,
                             onStatus = onStatus,
+                            haptics = haptic,
                             modifier = Modifier.fillMaxWidth().height(180.dp),
                         )
                     }
@@ -488,18 +504,27 @@ fun RemoteScreen(
                     device = device,
                     core = core,
                     screen = mode == RemoteMode.Screen,
-                    keyboardOn = showKeyboard && mode == RemoteMode.Touchpad,
+                    keyboardOn = when (mode) {
+                        RemoteMode.Touchpad -> showKeyboard
+                        RemoteMode.Screen -> screenKeyboard
+                        else -> false
+                    },
                     onKeyboard = {
-                        keyboardOpenedForPc = false
-                        if (mode != RemoteMode.Touchpad) {
-                            mode = RemoteMode.Touchpad
-                            showKeyboard = true
+                        if (mode == RemoteMode.Screen) {
+                            // The Screen tab types under its own picture.
+                            screenKeyboardOpenedForPc = false
+                            screenKeyboard = !screenKeyboard
                         } else {
-                            showKeyboard = !showKeyboard
+                            keyboardOpenedForPc = false
+                            if (mode != RemoteMode.Touchpad) {
+                                mode = RemoteMode.Touchpad
+                                showKeyboard = true
+                            } else {
+                                showKeyboard = !showKeyboard
+                            }
                         }
                     },
                     onVolume = { mode = RemoteMode.Media },
-                    keycaps = mode == RemoteMode.Touchpad,
                     haptics = haptic,
                 )
             }
@@ -513,8 +538,8 @@ fun RemoteScreen(
 
 /**
  * Under every mode: the keyboard, the PC's sound, play or pause, and Lock and
- * Sleep when the PC takes them. On the Touchpad tab ([keycaps]) they're raised
- * keys that tap in the hand.
+ * Sleep when the PC takes them: raised keys that tap in the hand, as on every
+ * remote tab.
  */
 @Composable
 private fun RemoteToolbar(
@@ -524,7 +549,6 @@ private fun RemoteToolbar(
     keyboardOn: Boolean,
     onKeyboard: () -> Unit,
     onVolume: () -> Unit,
-    keycaps: Boolean,
     haptics: (TrackpadHaptic) -> Unit,
 ) {
     val tints = g7Tints()
@@ -544,7 +568,6 @@ private fun RemoteToolbar(
             tint = tints.pink,
             selected = keyboardOn,
             enabled = device.inputReachable,
-            keycap = keycaps,
             haptics = haptics,
             modifier = Modifier.weight(1f),
         )
@@ -554,7 +577,6 @@ private fun RemoteToolbar(
             onClick = onVolume,
             tint = tints.teal,
             enabled = device.online,
-            keycap = keycaps,
             haptics = haptics,
             modifier = Modifier.weight(1f),
         )
@@ -571,7 +593,6 @@ private fun RemoteToolbar(
             },
             tint = tints.pink,
             enabled = device.online,
-            keycap = keycaps,
             haptics = haptics,
             modifier = Modifier.weight(1f),
         )
@@ -585,7 +606,6 @@ private fun RemoteToolbar(
                 onClick = { core.pcCapture.screenshot(device.id) },
                 tint = tints.blue,
                 enabled = device.online && !capture.shooting,
-                keycap = keycaps,
                 haptics = haptics,
                 modifier = Modifier.weight(1f),
             )
@@ -596,7 +616,6 @@ private fun RemoteToolbar(
                 tint = tints.red,
                 enabled = device.online && !capture.recordingBusy,
                 selected = capture.recordingSince != null,
-                keycap = keycaps,
                 haptics = haptics,
                 modifier = Modifier.weight(1f),
             )
@@ -608,7 +627,6 @@ private fun RemoteToolbar(
                 onClick = { core.pcPower(device.id, false) },
                 tint = tints.teal,
                 enabled = device.online,
-                keycap = keycaps,
                 haptics = haptics,
                 modifier = Modifier.weight(1f),
             )
@@ -618,7 +636,6 @@ private fun RemoteToolbar(
                 onClick = { core.pcPower(device.id, true) },
                 tint = tints.red,
                 enabled = device.online,
-                keycap = keycaps,
                 haptics = haptics,
                 modifier = Modifier.weight(1f),
             )
@@ -626,46 +643,33 @@ private fun RemoteToolbar(
     }
 }
 
-/** One of the quick actions: a raised key with a tap in the hand, or the plain toolbar button. */
+/** One of the quick actions: a raised key with a tap in the hand. */
 @Composable
 private fun QuickKey(
     icon: ImageVector,
     contentDescription: String,
     onClick: () -> Unit,
     tint: Color,
-    keycap: Boolean,
     haptics: (TrackpadHaptic) -> Unit,
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
     selected: Boolean = false,
 ) {
-    if (keycap) {
-        G7IconKeycap(
-            icon = icon,
-            contentDescription = contentDescription,
-            onClick = {
-                haptics(TrackpadHaptic.Key)
-                onClick()
-            },
-            tint = tint,
-            enabled = enabled,
-            selected = selected,
-            modifier = modifier.height(QUICK_KEY_HEIGHT),
-        )
-    } else {
-        G7IconButton(
-            icon = icon,
-            contentDescription = contentDescription,
-            onClick = onClick,
-            tint = tint,
-            enabled = enabled,
-            selected = selected,
-            modifier = modifier,
-        )
-    }
+    G7IconKeycap(
+        icon = icon,
+        contentDescription = contentDescription,
+        onClick = {
+            haptics(TrackpadHaptic.Key)
+            onClick()
+        },
+        tint = tint,
+        enabled = enabled,
+        selected = selected,
+        modifier = modifier.height(QUICK_KEY_HEIGHT),
+    )
 }
 
-/** The quick-action keys on the Touchpad tab. */
+/** The quick-action keys under every remote tab. */
 private val QUICK_KEY_HEIGHT = 56.dp
 
 /** The PC's sound: what plays, with its controls, the volume and where it plays. */
@@ -771,11 +775,10 @@ private fun StatusBanner(title: String?, text: String) {
 }
 
 /**
- * The touchpad surface: moves, clicks, drags and scrolls the PC pointer. On the
- * Touchpad tab ([keycapLook]) it's a sunken well with a faint dot grid and a
- * tick in the hand for each input; it stays empty, and a help button in its
- * corner shows what the gestures are for a while. Under the Screen tab's
- * picture it keeps its plain look, with the gestures written on it.
+ * The touchpad surface: moves, clicks, drags and scrolls the PC pointer. On
+ * every tab that has one it's a sunken well with a faint dot grid and a tick in
+ * the hand for each input; it stays empty, and a help button in its corner
+ * shows what the gestures are for a while.
  */
 @Composable
 private fun TouchpadSurface(
@@ -785,7 +788,6 @@ private fun TouchpadSurface(
     onStatus: (Core.RemoteAccess) -> Unit,
     modifier: Modifier = Modifier,
     scrollLocked: Boolean = false,
-    keycapLook: Boolean = false,
     haptics: (TrackpadHaptic) -> Unit = {},
 ) {
     var dragging by remember { mutableStateOf(false) }
@@ -825,28 +827,6 @@ private fun TouchpadSurface(
                 onHaptic = { currentHaptics(it) },
             )
         }
-    if (!keycapLook) {
-        Surface(
-            shape = MaterialTheme.shapes.extraLarge,
-            color = scheme.surfaceContainer,
-            border = if (dragging || scrollLocked) BorderStroke(2.dp, primaryColor) else null,
-            modifier = modifier.then(padInput),
-        ) {
-            Box(Modifier.fillMaxSize()) {
-                TouchMark(point = { touchPoint }, color = primaryColor)
-                Text(
-                    stringResource(if (scrollLocked) R.string.remote_scroll_mode_hint else R.string.remote_touchpad_hint),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = if (scrollLocked) primaryColor else scheme.onSurfaceVariant,
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier
-                        .align(Alignment.Center)
-                        .padding(horizontal = 24.dp, vertical = 14.dp),
-                )
-            }
-        }
-        return
-    }
     BoxWithConstraints(modifier = modifier) {
         // The strip left while typing has no room to explain itself.
         val roomForLegend = maxHeight >= ROOM_FOR_GESTURE_LEGEND
@@ -1048,127 +1028,13 @@ private fun TouchpadView(
     haptics: (TrackpadHaptic) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    // The typing box: a real field, so the keyboard keeps its page, autocorrects
-    // and has something to delete. It follows the PC's focused field: that
-    // field's text where the PC shares it, or what was typed here into it.
-    var typed by remember { mutableStateOf(TextFieldValue("")) }
-    val typing = remember(pcId) { TypingSync(FieldDrafts.of(pcId)) }
-    val sendTyping = remember(pcId) { Channel<Unit>(Channel.CONFLATED) }
-    var pcField by remember(pcId) { mutableStateOf<PcField?>(null) }
-    var pcUnverified by remember(pcId) { mutableStateOf(false) }
-    val scope = rememberCoroutineScope()
-    /** The bubble follows what [typing] knows of the PC's field. */
-    fun showField() {
-        pcField = typing.current
-        pcUnverified = typing.unverified
-    }
-    DisposableEffect(typing) {
-        typing.onReplace = { box -> typed = TextFieldValue(box.text, TextRange(box.selStart, box.selEnd)) }
-        onDispose { typing.onReplace = null }
-    }
-    // While the box is open, the PC tells of its focused field.
-    DisposableEffect(pcId, showKeyboard) {
-        if (showKeyboard) core.remoteTextWatch(pcId, true)
-        onDispose {
-            if (showKeyboard) {
-                core.remoteTextWatch(pcId, false)
-                typing.close()
-                showField()
-            }
-        }
-    }
-    // The PC sends the field on the path the box last asked on: after a switch, it asks again.
-    val startPath = remember(core, pcId) { core.state.value.device(pcId)?.activePath }
-    val activePath by remember(core, pcId) {
-        core.state.map { it.device(pcId)?.activePath }.distinctUntilChanged()
-    }.collectAsStateWithLifecycle(initialValue = startPath)
-    var watchedPath by remember(pcId) { mutableStateOf(activePath) }
-    LaunchedEffect(showKeyboard, activePath) {
-        if (watchAgain(showKeyboard, activePath, watchedPath)) core.remoteTextWatch(pcId, true)
-        watchedPath = activePath
-    }
-    val pcState by remember(core, pcId) {
-        core.state.map { it.pcTextState[pcId] }.distinctUntilChanged()
-    }.collectAsStateWithLifecycle(initialValue = null)
-    LaunchedEffect(typing, pcState) {
-        val state = pcState ?: return@LaunchedEffect
-        typing.onState(state.toPcField())
-        showField()
-        sendTyping.trySend(Unit)
-    }
-    // One change at a time, each worked out from what the PC has.
-    LaunchedEffect(typing) {
-        for (wake in sendTyping) {
-            val op = typing.nextOp() ?: continue
-            core.remoteTyping(pcId, op, onStatus) { result ->
-                typing.onDone(op, result)
-                sendTyping.trySend(Unit)
-            }
-        }
-    }
-    // The PC's own changes come in once both sides are quiet.
-    LaunchedEffect(typing) {
-        while (true) {
-            delay(100)
-            if (typing.tick()) sendTyping.trySend(Unit)
-        }
-    }
-    // A click or key from here moved the PC's caret: what's in the box may no longer match.
-    LaunchedEffect(core, typing) {
-        core.pcCaretMoved.collect { id ->
-            if (id == pcId) {
-                typing.onPcCaretMoved()
-                showField()
-            }
-        }
-    }
-    /** Waits (briefly) until everything typed has reached the PC, then runs [then]. */
-    fun afterTyping(then: () -> Unit) {
-        scope.launch {
-            withTimeoutOrNull(2_000) {
-                while (!typing.synced) {
-                    sendTyping.trySend(Unit)
-                    delay(20)
-                }
-            }
-            then()
-        }
-    }
-    val activeMods = remember { mutableStateListOf<String>() }
+    // The typing box, the keys over it and what it knows of the PC's field (TypingInput.kt).
+    val typingInput = rememberTypingInput(pcId, core, showKeyboard, onStatus)
     // Middle locks the touchpad to scrolling, as a middle click starts autoscroll.
     var scrollLocked by rememberSaveable(pcId) { mutableStateOf(false) }
 
-    val focusRequester = remember { FocusRequester() }
-    val keyboardController = LocalSoftwareKeyboardController.current
     val imeVisible = WindowInsets.isImeVisible
     val reducedMotion = LocalReducedMotion.current
-    // Pictures and files picked wait over the box, to go with the next Send.
-    var attachments by rememberSaveable(pcId, stateSaver = Attachment.listSaver) {
-        mutableStateOf(emptyList<Attachment>())
-    }
-    val appContext = LocalContext.current.applicationContext
-    val attach: (List<Uri>) -> Unit = { uris ->
-        scope.launch {
-            val picked = withContext(Dispatchers.IO) { uris.mapNotNull { Attachment.describe(appContext, it) } }
-            attachments = (attachments + picked.filter { new -> attachments.none { it.uri == new.uri } })
-                .take(Attachment.MAX)
-        }
-    }
-    val pickImage = rememberLauncherForActivityResult(
-        ActivityResultContracts.PickMultipleVisualMedia(Attachment.MAX),
-    ) { uris -> if (uris.isNotEmpty()) attach(uris) }
-    val pickFiles = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
-        if (uris.isNotEmpty()) attach(uris)
-    }
-
-    LaunchedEffect(showKeyboard) {
-        if (showKeyboard) {
-            focusRequester.requestFocus()
-            keyboardController?.show()
-        } else {
-            keyboardController?.hide()
-        }
-    }
 
     // Above the keyboard while it's open: apps are drawn edge to edge
     // (Android 15 and later), so the keyboard would cover the typing field.
@@ -1210,7 +1076,6 @@ private fun TouchpadView(
                     onStatus = onStatus,
                     modifier = Modifier.fillMaxSize(),
                     scrollLocked = scrollLocked,
-                    keycapLook = true,
                     haptics = haptics,
                 )
             }
@@ -1247,39 +1112,14 @@ private fun TouchpadView(
                     }
                 }
                 // The mouse buttons, and in landscape the switch to the touchpad alone
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                MouseButtons(
+                    pcId = pcId,
+                    core = core,
+                    onStatus = onStatus,
+                    haptics = haptics,
+                    scrollLock = ScrollLock(scrollLocked) { scrollLocked = it },
+                    keyModifier = Modifier.animatedHeight(mouseKeyHeight),
                 ) {
-                    G7Keycap(
-                        label = stringResource(R.string.remote_left_click),
-                        onClick = {
-                            haptics(TrackpadHaptic.Click)
-                            core.remoteButton(pcId, "left", "click", onStatus)
-                        },
-                        modifier = Modifier.weight(1f).animatedHeight(mouseKeyHeight),
-                    )
-                    G7Keycap(
-                        label = stringResource(if (scrollLocked) R.string.remote_scroll_mode else R.string.remote_middle_click),
-                        onClick = {
-                            haptics(if (scrollLocked) TrackpadHaptic.ScrollLockOff else TrackpadHaptic.ScrollLockOn)
-                            scrollLocked = !scrollLocked
-                        },
-                        onLongClick = {
-                            haptics(TrackpadHaptic.LongPress)
-                            core.remoteButton(pcId, "middle", "click", onStatus)
-                        },
-                        selected = scrollLocked,
-                        modifier = Modifier.weight(1f).animatedHeight(mouseKeyHeight),
-                    )
-                    G7Keycap(
-                        label = stringResource(R.string.remote_right_click),
-                        onClick = {
-                            haptics(TrackpadHaptic.Click)
-                            core.remoteButton(pcId, "right", "click", onStatus)
-                        },
-                        modifier = Modifier.weight(1f).animatedHeight(mouseKeyHeight),
-                    )
                     if (canBeTouchpadOnly) {
                         G7Keycap(
                             label = stringResource(if (touchpadOnly) R.string.remote_more_controls else R.string.remote_touchpad_only),
@@ -1298,126 +1138,20 @@ private fun TouchpadView(
 
             if (!showKeyboard) return@Column
 
-            // Special keys & modifiers bar (always accessible in Touchpad mode)
-            SpecialKeysBar(
-                activeMods = activeMods,
-                showExtraKeys = showKeyboard,
-                pasteReady = pasteReady,
-                onToggleMod = { mod ->
-                    haptics(TrackpadHaptic.Key)
-                    if (mod in activeMods) activeMods.remove(mod) else activeMods.add(mod)
-                },
-                onKey = { key, forceMods ->
-                    haptics(TrackpadHaptic.Key)
-                    val mods = forceMods ?: activeMods.toList()
-                    core.remoteKey(pcId, key, mods, onStatus)
-                    if (forceMods == null) activeMods.clear()
-                    if (key == "paste") onPasted()
-                },
-            )
-
-            // Typing as in a chat app: what's typed appears on the PC as it's typed,
-            // the phone's Enter is a new line (or loads a link), and the round
-            // button sends or dictates.
-            TypingComposer(
-                pcId = pcId,
+            TypingInput(
+                state = typingInput,
                 pcName = pcName,
                 core = core,
                 utteranceJoiner = utteranceJoiner,
                 onStatus = onStatus,
-                typed = typed,
-                field = pcField,
-                unverified = pcUnverified,
-                onStartAfresh = {
-                    typing.startAfresh()
-                    showField()
-                },
-                onTyped = { next ->
-                    val diff = typingDiff(typed.text, next.text)
-                    if (activeMods.isNotEmpty() && diff.backspaces == 0 && diff.added.length == 1 &&
-                        diff.added[0].isLetterOrDigit()
-                    ) {
-                        // A shortcut (Ctrl+C...), not text: it stays out of the field.
-                        core.remoteKey(pcId, diff.added.lowercase(), activeMods.toList(), onStatus)
-                        activeMods.clear()
-                        return@TypingComposer
-                    }
-                    // Enter after a link, or with nothing typed here, loads it: a plain
-                    // Enter, as Shift+Enter opens a browser's address in a new window.
-                    if (diff.backspaces == 0 && diff.added == "\n" && next.text == typed.text + "\n" &&
-                        typing.kind != FieldKind.Secret && enterGoesAsIs(typed.text)
-                    ) {
-                        val mods = activeMods.toList()
-                        activeMods.clear()
-                        afterTyping {
-                            core.remoteKey(pcId, "enter", mods, onStatus)
-                            typing.onSent()
-                            showField()
-                        }
-                        return@TypingComposer
-                    }
-                    // Modifiers are for shortcuts and keys: typing lets go of them.
-                    if (next.text != typed.text) {
-                        activeMods.clear()
-                        onTypedHere()
-                    }
-                    // What changed goes over as one edit where it changed (a new
-                    // line is Shift+Enter: a line break in chats and prompts).
-                    typed = next
-                    typing.onLocal(
-                        BoxText(next.text, next.selection.start, next.selection.end, next.composition != null),
-                    )
-                    sendTyping.trySend(Unit)
-                },
-                attachments = attachments,
-                onRemoveAttachment = { gone -> attachments = attachments.filterNot { it.uri == gone.uri } },
-                onSend = {
-                    val mods = activeMods.toList()
-                    activeMods.clear()
-                    val sending = attachments
-                    attachments = emptyList()
-                    // Pictures paste where the PC is typing, files go to it, then
-                    // Enter sends what's typed (with nothing typed, no Enter).
-                    afterTyping {
-                        scope.launch {
-                            val failed = mutableListOf<Attachment>()
-                            val files = mutableListOf<Uri>()
-                            for (item in sending) {
-                                val uri = Uri.parse(item.uri)
-                                if (!item.isImage) {
-                                    files += uri
-                                } else if (!core.pasteImageOnPc(pcId, uri, onStatus)) {
-                                    failed += item
-                                } else {
-                                    delay(PASTE_SETTLE_MS)
-                                }
-                            }
-                            if (files.isNotEmpty()) core.sendFiles(pcId, files)
-                            attachments = failed + attachments
-                            if (typed.text.isNotEmpty() && failed.isEmpty()) {
-                                core.remoteKey(pcId, "enter", mods, onStatus)
-                                typing.onSent()
-                                showField()
-                            }
-                        }
-                    }
-                },
-                onBackspaceWhenEmpty = {
-                    core.remoteKey(pcId, "backspace", activeMods.toList(), onStatus)
-                    activeMods.clear()
-                },
-                onPickImage = {
-                    pickImage.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
-                },
-                onPickFiles = { pickFiles.launch(arrayOf("*/*")) },
-                focusRequester = focusRequester,
+                pasteReady = pasteReady,
+                onPasted = onPasted,
+                onTypedHere = onTypedHere,
+                haptics = haptics,
             )
         }
     }
 }
-
-/** A moment after a picture's paste key, for the app to take it before the next. */
-private const val PASTE_SETTLE_MS = 300L
 
 /** The touchpad strip while the keyboard is open. */
 private val PAD_WHILE_TYPING = 96.dp
@@ -1427,6 +1161,66 @@ private fun Modifier.animatedHeight(height: State<Dp>): Modifier = layout { meas
     val px = height.value.roundToPx().coerceIn(constraints.minHeight, constraints.maxHeight)
     val placeable = measurable.measure(constraints.copy(minHeight = px, maxHeight = px))
     layout(placeable.width, placeable.height) { placeable.place(0, 0) }
+}
+
+/** The Middle key's scroll lock: whether the pad scrolls, and the switch. */
+internal class ScrollLock(val locked: Boolean, val onChange: (Boolean) -> Unit)
+
+/**
+ * The mouse buttons, as every remote tab has them: Left and Right click, and
+ * with a [scrollLock], Middle between them (a tap locks the pad to scrolling, a
+ * long press middle-clicks). Each is a key that taps in the hand. [trailing]
+ * keys follow in the same row.
+ */
+@Composable
+internal fun MouseButtons(
+    pcId: String,
+    core: Core,
+    onStatus: (Core.RemoteAccess) -> Unit,
+    haptics: (TrackpadHaptic) -> Unit,
+    modifier: Modifier = Modifier,
+    scrollLock: ScrollLock? = null,
+    keyModifier: Modifier = Modifier.height(MOUSE_KEY_HEIGHT),
+    trailing: @Composable RowScope.() -> Unit = {},
+) {
+    Row(
+        modifier = modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        G7Keycap(
+            label = stringResource(R.string.remote_left_click),
+            onClick = {
+                haptics(TrackpadHaptic.Click)
+                core.remoteButton(pcId, "left", "click", onStatus)
+            },
+            modifier = Modifier.weight(1f).then(keyModifier),
+        )
+        if (scrollLock != null) {
+            val locked = scrollLock.locked
+            G7Keycap(
+                label = stringResource(if (locked) R.string.remote_scroll_mode else R.string.remote_middle_click),
+                onClick = {
+                    haptics(if (locked) TrackpadHaptic.ScrollLockOff else TrackpadHaptic.ScrollLockOn)
+                    scrollLock.onChange(!locked)
+                },
+                onLongClick = {
+                    haptics(TrackpadHaptic.LongPress)
+                    core.remoteButton(pcId, "middle", "click", onStatus)
+                },
+                selected = locked,
+                modifier = Modifier.weight(1f).then(keyModifier),
+            )
+        }
+        G7Keycap(
+            label = stringResource(R.string.remote_right_click),
+            onClick = {
+                haptics(TrackpadHaptic.Click)
+                core.remoteButton(pcId, "right", "click", onStatus)
+            },
+            modifier = Modifier.weight(1f).then(keyModifier),
+        )
+        trailing()
+    }
 }
 
 /**
@@ -1442,9 +1236,6 @@ private val MOUSE_KEY_HEIGHT = 48.dp
 /** Room the touchpad tab needs before its mouse keys stand tall. */
 private val ROOM_FOR_TALL_MOUSE_KEYS = 420.dp
 
-/** A special key with its edge: a 40 dp face over a 4 dp edge, 44 dp to touch. */
-private val SPECIAL_KEY_HEIGHT = 44.dp
-
 @Composable
 private fun AirMouseView(
     pcId: String,
@@ -1453,6 +1244,7 @@ private fun AirMouseView(
     sensitivity: Float,
     utteranceJoiner: UtteranceJoiner,
     onStatus: (Core.RemoteAccess) -> Unit,
+    haptics: (TrackpadHaptic) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
@@ -1663,22 +1455,9 @@ private fun AirMouseView(
             }
         }
 
-        // Left / Right click buttons under the air mouse pad
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            G7RaisedButton(
-                label = stringResource(R.string.remote_left_click),
-                onClick = { core.remoteButton(pcId, "left", "click", onStatus) },
-                modifier = Modifier.weight(1f),
-            )
-            G7RaisedButton(
-                label = stringResource(R.string.remote_right_click),
-                onClick = { core.remoteButton(pcId, "right", "click", onStatus) },
-                modifier = Modifier.weight(1f),
-            )
-        }
+        // Left / Right click under the air mouse pad: the remote's mouse buttons. No
+        // Middle: its tap locks a touchpad to scrolling, which the air mouse doesn't do.
+        MouseButtons(pcId = pcId, core = core, onStatus = onStatus, haptics = haptics)
 
         // Voice typing bar (Dictate button: hold to talk, or tap to start/stop)
         VoiceTypingBar(
@@ -1691,14 +1470,14 @@ private fun AirMouseView(
     }
 }
 
-private enum class DictateError {
+internal enum class DictateError {
     NoRecognizer,
     PermissionNeeded,
     NoSpeech,
     Failed,
 }
 
-private sealed interface DictateState {
+internal sealed interface DictateState {
     data class Idle(val lastTyped: String? = null) : DictateState
     data class Listening(val partial: String = "") : DictateState
     data class Typing(val text: String) : DictateState
@@ -1710,7 +1489,7 @@ private sealed interface DictateState {
  * the microphone first when needed), stopping (what was heard is typed) and
  * cancelling it (nothing is typed).
  */
-private class Dictation(
+internal class Dictation(
     val state: DictateState,
     val start: () -> Unit,
     val stop: () -> Unit,
@@ -1718,7 +1497,7 @@ private class Dictation(
 )
 
 @Composable
-private fun rememberDictation(
+internal fun rememberDictation(
     pcId: String,
     core: Core,
     utteranceJoiner: UtteranceJoiner,
@@ -2071,372 +1850,6 @@ private fun VoiceTypingBar(
         }
     }
 }
-
-/**
- * Typing into the PC the way a chat app types: a round field that grows to
- * five lines, a paperclip (send files) and a picture (paste an image) inside
- * it, and a round button beside it. With text it sends (Enter on the PC) and
- * clears the field; empty it dictates: a tap starts and the next one stops, or
- * hold to talk, let go to type it and slide left to drop it, as a voice note.
- */
-@Composable
-private fun TypingComposer(
-    pcId: String,
-    pcName: String,
-    core: Core,
-    utteranceJoiner: UtteranceJoiner,
-    onStatus: (Core.RemoteAccess) -> Unit,
-    typed: TextFieldValue,
-    field: PcField?,
-    unverified: Boolean,
-    onStartAfresh: () -> Unit,
-    attachments: List<Attachment>,
-    onRemoveAttachment: (Attachment) -> Unit,
-    onTyped: (TextFieldValue) -> Unit,
-    onSend: () -> Unit,
-    onBackspaceWhenEmpty: () -> Unit,
-    onPickImage: () -> Unit,
-    onPickFiles: () -> Unit,
-    focusRequester: FocusRequester,
-) {
-    val scheme = MaterialTheme.colorScheme
-    val tints = g7Tints()
-    val dictation = rememberDictation(pcId, core, utteranceJoiner, onStatus)
-    val latest by rememberUpdatedState(dictation)
-    val state = dictation.state
-    val listening = state is DictateState.Listening
-    val sends = (typed.text.isNotEmpty() || attachments.isNotEmpty()) && !listening
-    val secret = field?.kind == FieldKind.Secret
-    val currentSends by rememberUpdatedState(sends)
-    val currentOnSend by rememberUpdatedState(onSend)
-    // Held down to talk, and dragged far enough left to drop what's heard.
-    var holding by remember { mutableStateOf(false) }
-    var dropping by remember { mutableStateOf(false) }
-    // The round key goes down under the finger, as the keycaps do.
-    var buttonDown by remember { mutableStateOf(false) }
-    val placeholder = stringResource(R.string.remote_type_placeholder, pcName)
-    val pillShape = RoundedCornerShape(24.dp)
-
-    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        FieldBubble(
-            field = field,
-            pcName = pcName,
-            unverified = unverified,
-            onStartAfresh = onStartAfresh,
-            loadIcon = { key -> core.pcAppIcon(pcId, key) },
-        )
-        if (attachments.isNotEmpty()) {
-            AttachmentTray(attachments, onRemoveAttachment, Modifier.padding(bottom = 4.dp))
-        }
-        Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            if (listening) {
-                // Like a voice note: the field gives way to what's heard.
-                G7Well(modifier = Modifier.weight(1f), shape = pillShape) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .heightIn(min = 48.dp)
-                            .padding(horizontal = 16.dp, vertical = 12.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(10.dp),
-                    ) {
-                        Box(Modifier.size(10.dp).clip(CircleShape).background(tints.red))
-                        Text(
-                            (state as? DictateState.Listening)?.partial?.ifEmpty { null }
-                                ?: stringResource(R.string.remote_dictate_listening, pcName),
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = if (dropping) scheme.onSurfaceVariant else scheme.onSurface,
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.weight(1f),
-                        )
-                    }
-                }
-            } else {
-                G7Well(modifier = Modifier.weight(1f), shape = pillShape) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .heightIn(min = 48.dp)
-                            .padding(start = 16.dp, end = 2.dp),
-                        verticalAlignment = Alignment.Bottom,
-                    ) {
-                        BasicTextField(
-                            value = typed,
-                            onValueChange = onTyped,
-                            textStyle = MaterialTheme.typography.bodyLarge.copy(color = scheme.onSurface),
-                            cursorBrush = SolidColor(scheme.primary),
-                            maxLines = 5,
-                            // Enter is a new line here, as in a chat app; the round button sends.
-                            // A password goes through unseen, without suggestions.
-                            keyboardOptions = if (secret) {
-                                KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Default)
-                            } else {
-                                KeyboardOptions(
-                                    capitalization = KeyboardCapitalization.Sentences,
-                                    imeAction = ImeAction.Default,
-                                )
-                            },
-                            visualTransformation = if (secret) PasswordVisualTransformation() else VisualTransformation.None,
-                            modifier = Modifier
-                                .weight(1f)
-                                .padding(vertical = 13.dp)
-                                .focusRequester(focusRequester)
-                                // Backspace with nothing typed here still deletes on the PC.
-                                .onPreviewKeyEvent { event ->
-                                    if (event.type == KeyEventType.KeyDown && event.key == Key.Backspace &&
-                                        typed.text.isEmpty()
-                                    ) {
-                                        onBackspaceWhenEmpty()
-                                        true
-                                    } else {
-                                        false
-                                    }
-                                }
-                                .semantics { contentDescription = placeholder },
-                            decorationBox = { field ->
-                                Box {
-                                    if (typed.text.isEmpty()) {
-                                        Text(
-                                            placeholder,
-                                            style = MaterialTheme.typography.bodyLarge,
-                                            color = scheme.onSurfaceVariant,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis,
-                                        )
-                                    }
-                                    field()
-                                }
-                            },
-                        )
-                        IconButton(onClick = onPickFiles) {
-                            Icon(
-                                G7Icons.paperclip,
-                                contentDescription = stringResource(R.string.remote_send_files, pcName),
-                                tint = scheme.onSurfaceVariant,
-                                modifier = Modifier.size(20.dp),
-                            )
-                        }
-                        IconButton(onClick = onPickImage) {
-                            Icon(
-                                G7Icons.photo,
-                                contentDescription = stringResource(R.string.remote_paste_image, pcName),
-                                tint = scheme.onSurfaceVariant,
-                                modifier = Modifier.size(20.dp),
-                            )
-                        }
-                    }
-                }
-            }
-
-            val buttonLabel = stringResource(
-                when {
-                    sends -> R.string.remote_send
-                    listening -> R.string.remote_dictate_stop
-                    else -> R.string.remote_dictate
-                },
-            )
-            G7KeycapSurface(
-                pressed = buttonDown,
-                face = if (listening) tints.red else scheme.primary,
-                shape = CircleShape,
-                edge = SEND_KEY_EDGE,
-                modifier = Modifier
-                    .width(48.dp)
-                    .height(48.dp + SEND_KEY_EDGE)
-                    .semantics(mergeDescendants = true) {
-                        role = Role.Button
-                        contentDescription = buttonLabel
-                        onClick(label = buttonLabel) {
-                            when {
-                                currentSends -> currentOnSend()
-                                latest.state is DictateState.Listening -> latest.stop()
-                                else -> latest.start()
-                            }
-                            true
-                        }
-                    }
-                    .pointerInput(pcId) {
-                        val holdMs = 350L
-                        val dropPx = 80.dp.toPx()
-                        awaitEachGesture {
-                            val down = awaitFirstDown(requireUnconsumed = false)
-                            val downTime = System.currentTimeMillis()
-                            buttonDown = true
-                            try {
-                                if (currentSends) {
-                                    waitForUpOrCancellation()?.let { currentOnSend() }
-                                    return@awaitEachGesture
-                                }
-                                if (latest.state is DictateState.Listening) {
-                                    waitForUpOrCancellation()
-                                    latest.stop()
-                                    return@awaitEachGesture
-                                }
-                                latest.start()
-                                while (true) {
-                                    val change = awaitPointerEvent().changes.firstOrNull { it.id == down.id }
-                                    if (change == null || !change.pressed) break
-                                    if (System.currentTimeMillis() - downTime >= holdMs) holding = true
-                                    dropping = holding && change.position.x - down.position.x < -dropPx
-                                }
-                                // A tap leaves it listening until the next tap; a hold ends on lifting.
-                                if (holding) {
-                                    if (dropping) latest.cancel() else latest.stop()
-                                }
-                                holding = false
-                                dropping = false
-                            } finally {
-                                buttonDown = false
-                            }
-                        }
-                    },
-            ) {
-                Icon(
-                    if (sends) G7Icons.arrowUp else G7Icons.mic,
-                    contentDescription = null,
-                    tint = if (listening) scheme.surface else scheme.onPrimary,
-                    modifier = Modifier.size(22.dp),
-                )
-            }
-        }
-
-        // What dictation is doing, under the field, only while there's something to say.
-        val status = when (val s = state) {
-            is DictateState.Listening -> stringResource(
-                if (holding) R.string.remote_dictate_hold_hint else R.string.remote_dictate_tap_hint,
-            )
-            is DictateState.Typing -> stringResource(R.string.remote_dictate_typing, pcName)
-            is DictateState.Error -> when (s.kind) {
-                DictateError.NoRecognizer -> stringResource(R.string.remote_dictate_no_recognizer)
-                DictateError.PermissionNeeded -> stringResource(R.string.remote_dictate_permission_needed, pcName)
-                DictateError.NoSpeech -> stringResource(R.string.remote_dictate_no_speech)
-                DictateError.Failed -> stringResource(R.string.remote_dictate_error)
-            }
-            is DictateState.Idle -> null
-        }
-        if (status != null) {
-            Text(
-                status,
-                style = MaterialTheme.typography.bodySmall,
-                color = if (state is DictateState.Error) tints.red else scheme.onSurfaceVariant,
-                modifier = Modifier.padding(start = 16.dp),
-            )
-        }
-    }
-}
-
-@Composable
-private fun SpecialKeysBar(
-    activeMods: List<String>,
-    showExtraKeys: Boolean,
-    pasteReady: Boolean,
-    onToggleMod: (String) -> Unit,
-    onKey: (key: String, forceMods: List<String>?) -> Unit,
-) {
-    val keyModifier = Modifier.height(SPECIAL_KEY_HEIGHT)
-    val keyStyle = MaterialTheme.typography.labelMedium
-    val keyPadding = PaddingValues(horizontal = 2.dp)
-    Column(
-        modifier = Modifier.fillMaxWidth(),
-        verticalArrangement = Arrangement.spacedBy(6.dp),
-    ) {
-        // Modifier keys row: 4 equal columns that fit at every font scale without overflowing
-        val mods = listOf(
-            "ctrl" to stringResource(R.string.remote_key_ctrl),
-            "alt" to stringResource(R.string.remote_key_alt),
-            "shift" to stringResource(R.string.remote_key_shift),
-            "win" to stringResource(R.string.remote_key_win),
-        )
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            for ((id, label) in mods) {
-                // A held modifier goes with the next key: latched down in the accent so it's never missed.
-                G7Keycap(
-                    label = label,
-                    onClick = { onToggleMod(id) },
-                    selected = id in activeMods,
-                    corner = SPECIAL_KEY_CORNER,
-                    edge = SPECIAL_KEY_EDGE,
-                    role = Role.Switch,
-                    contentDescription = label,
-                    style = keyStyle,
-                    contentPadding = keyPadding,
-                    modifier = keyModifier.weight(1f),
-                )
-            }
-        }
-
-        // Navigation & special keys row: 6 equal columns across the full width
-        val keys = listOf(
-            Triple("escape", stringResource(R.string.remote_key_esc), stringResource(R.string.remote_key_esc_desc)),
-            Triple("tab", stringResource(R.string.remote_key_tab), stringResource(R.string.remote_key_tab)),
-            Triple("left", "←", stringResource(R.string.remote_key_left_desc)),
-            Triple("up", "↑", stringResource(R.string.remote_key_up_desc)),
-            Triple("down", "↓", stringResource(R.string.remote_key_down_desc)),
-            Triple("right", "→", stringResource(R.string.remote_key_right_desc)),
-        )
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            for ((key, label, a11yLabel) in keys) {
-                G7Keycap(
-                    label = label,
-                    onClick = { onKey(key, null) },
-                    corner = SPECIAL_KEY_CORNER,
-                    edge = SPECIAL_KEY_EDGE,
-                    contentDescription = a11yLabel,
-                    style = keyStyle,
-                    contentPadding = keyPadding,
-                    modifier = keyModifier.weight(1f),
-                )
-            }
-        }
-
-        if (showExtraKeys) {
-            val extra = listOf(
-                Triple("home", stringResource(R.string.remote_key_home), stringResource(R.string.remote_key_home)),
-                Triple("end", stringResource(R.string.remote_key_end), stringResource(R.string.remote_key_end)),
-                Triple("delete", stringResource(R.string.remote_key_del), stringResource(R.string.remote_key_del_desc)),
-                Triple("copy", stringResource(R.string.remote_key_copy), stringResource(R.string.remote_key_copy)),
-                Triple("paste", stringResource(R.string.remote_key_paste), stringResource(R.string.remote_key_paste)),
-            )
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                for ((key, label, a11yLabel) in extra) {
-                    val isShortcut = key == "copy" || key == "paste"
-                    G7Keycap(
-                        label = label,
-                        onClick = { onKey(key, if (isShortcut) emptyList() else null) },
-                        // Something new was copied on the PC: the key that pastes it stands out.
-                        ready = key == "paste" && pasteReady,
-                        corner = SPECIAL_KEY_CORNER,
-                        edge = SPECIAL_KEY_EDGE,
-                        contentDescription = a11yLabel,
-                        style = keyStyle,
-                        contentPadding = keyPadding,
-                        modifier = keyModifier.weight(1f),
-                    )
-                }
-            }
-        }
-    }
-}
-
-/** A special key's corners and the edge under its face. */
-private val SPECIAL_KEY_CORNER = 11.dp
-private val SPECIAL_KEY_EDGE = 4.dp
-
-/** The edge under the round send and dictate key. */
-private val SEND_KEY_EDGE = 4.dp
 
 /** How long the Paste chip stays for something copied on the PC. */
 private const val PASTE_CHIP_MS = 30_000L

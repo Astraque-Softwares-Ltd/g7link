@@ -3,6 +3,7 @@ package app.g7link.android.mirror
 
 import android.content.Context
 import android.net.wifi.WifiManager
+import android.os.Build
 import android.os.PowerManager
 import app.g7link.android.elevated.Elevated
 
@@ -17,16 +18,23 @@ import app.g7link.android.elevated.Elevated
  *   then restarts every few seconds.
  * - Stay awake keeps the screen on; screen off keeps it on too, with the
  *   panel turned off through Elevated, so apps on the PC keep running.
+ * - While the phone shows a PC's screen ([VIEW]: the Screen tab, Play on
+ *   phone), a low-latency Wi-Fi lock keeps its radio from dozing between
+ *   packets, which otherwise holds the picture back.
  */
 object StreamPower {
     const val SCREEN = "screen"
     const val APPS = "apps"
+
+    /** The phone shows a PC's screen: the Wi-Fi lock only, as its own screen is on. */
+    const val VIEW = "view"
 
     private data class Want(val stayAwake: Boolean, val screenOff: Boolean)
 
     private val wants = HashMap<String, Want>()
     private var cpu: PowerManager.WakeLock? = null
     private var wifi: WifiManager.WifiLock? = null
+    private var lowLatency: WifiManager.WifiLock? = null
     private var screen: PowerManager.WakeLock? = null
     /** What Elevated was last told; the panel is on until something turns it off. */
     private var panelOff = false
@@ -40,7 +48,8 @@ object StreamPower {
 
     @Suppress("DEPRECATION")
     private fun apply(context: Context) {
-        val streaming = wants.isNotEmpty()
+        val streaming = wants.keys.any { it != VIEW }
+        val viewing = VIEW in wants
         val off = wants.values.any { it.screenOff }
         val awake = off || wants.values.any { it.stayAwake }
         val power = context.getSystemService(PowerManager::class.java)
@@ -57,6 +66,23 @@ object StreamPower {
                 }
         } else {
             wifi?.let { if (it.isHeld) runCatching { it.release() } }
+            null
+        }
+        // LOW_LATENCY (Android 10 and later) works while the screen is on and the
+        // app in front, which is when a PC's screen shows.
+        lowLatency = if (viewing) {
+            val mode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                WifiManager.WIFI_MODE_FULL_LOW_LATENCY
+            } else {
+                WifiManager.WIFI_MODE_FULL_HIGH_PERF
+            }
+            (lowLatency ?: wifiManager?.createWifiLock(mode, "g7link:view"))
+                ?.apply {
+                    setReferenceCounted(false)
+                    if (!isHeld) runCatching { acquire() }
+                }
+        } else {
+            lowLatency?.let { if (it.isHeld) runCatching { it.release() } }
             null
         }
         screen = hold(screen, awake) {

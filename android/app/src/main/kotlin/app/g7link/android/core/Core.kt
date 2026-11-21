@@ -447,12 +447,34 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
         val height: Int,
     )
 
+    /**
+     * A packet of a PC's screen: [seq] numbers it from 0 after each config, [timeUs]
+     * is the PC's clock when its frame was captured, and [arrivedNs] the phone's
+     * (`System.nanoTime`) when it arrived here.
+     */
     data class PcMirrorPacket(
         val pcId: String,
+        val seq: Long,
         val keyframe: Boolean,
         val timeUs: Long,
         val data: ByteArray,
+        val arrivedNs: Long = System.nanoTime(),
     )
+
+    /** What a PC answered when asked to share its screen. */
+    enum class PcMirrorStartResult { Started, Denied, Unsupported, Offline }
+
+    /** What a PC's screen stream says besides pictures: it ended, or a notice (`mirror.notice`). */
+    sealed interface PcMirrorSignal {
+        val pcId: String
+
+        data class Ended(override val pcId: String) : PcMirrorSignal
+
+        data class Notice(override val pcId: String, val notice: app.g7link.core.PcMirrorNoticeKind) : PcMirrorSignal
+    }
+
+    private val _pcMirrorSignals = MutableSharedFlow<PcMirrorSignal>(extraBufferCapacity = 8)
+    val pcMirrorSignals: SharedFlow<PcMirrorSignal> = _pcMirrorSignals.asSharedFlow()
 
     private val _pcMirrorConfig = MutableStateFlow<PcMirrorConfigState?>(null)
     val pcMirrorConfig: StateFlow<PcMirrorConfigState?> = _pcMirrorConfig.asStateFlow()
@@ -997,6 +1019,7 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
             is Event.PcMirrorFrame -> {
                 val pkt = PcMirrorPacket(
                     pcId = event.id,
+                    seq = event.seq.toLong(),
                     keyframe = event.keyframe,
                     timeUs = event.timeUs.toLong(),
                     data = event.data,
@@ -1013,7 +1036,10 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
                 if (lastPcMirrorKeyframe?.pcId == event.id) {
                     lastPcMirrorKeyframe = null
                 }
+                _pcMirrorSignals.tryEmit(PcMirrorSignal.Ended(event.id))
             }
+            // GNOME asks someone at the PC to allow sharing, or the player's window is gone.
+            is Event.PcMirrorNotice -> _pcMirrorSignals.tryEmit(PcMirrorSignal.Notice(event.id, event.notice))
             is Event.PcCapturePrompt -> pcCapture.onPrompt(event.id)
             is Event.PcCaptureRecordEnded -> pcCapture.onRecordingEnded(event.id, event.name)
             // A PC that's gone isn't playing for this phone anymore; it
@@ -3151,24 +3177,51 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
     /**
      * Asks a paired PC to start streaming its desktop screen to this phone (`mirror.start`,
      * session 0), or with [watch], what that PC player plays, with its sound (Play on phone).
+     * Says what the PC answered: sharing, sharing turned off for this phone, can't share
+     * its screen, or not reached ([PcMirrorStartResult.Offline]).
      */
-    fun startPcMirror(
+    suspend fun startPcMirror(
         id: String,
-        maxSize: Int = 1280,
-        fps: Int = 30,
-        bitrate: Int = 4_000_000,
+        maxSize: Int = app.g7link.android.ui.remote.PcMirrorQuality.SHARP_MAX_SIZE,
+        fps: Int = app.g7link.android.ui.remote.PcMirrorQuality.FPS,
+        bitrate: Int = app.g7link.android.ui.remote.PcMirrorQuality.SHARP_BITRATE,
         watch: String? = null,
-    ) {
-        command {
-            it.startPcMirror(
+    ): PcMirrorStartResult {
+        startJob?.join()
+        val node = node ?: return PcMirrorStartResult.Offline
+        return try {
+            val answer = node.startPcMirror(
                 id,
-                maxSize.coerceIn(320, 1920).toUInt(),
+                // The PC sends its own size up to this, and picks the bitrate from it.
+                maxSize.coerceIn(320, app.g7link.android.ui.remote.PcMirrorQuality.SHARP_MAX_SIZE).toUInt(),
                 fps.coerceIn(10, 60).toUInt(),
                 bitrate.coerceIn(500_000, 20_000_000).toUInt(),
                 watch,
             )
+            when (answer) {
+                app.g7link.core.PcMirrorStart.STARTED -> PcMirrorStartResult.Started
+                app.g7link.core.PcMirrorStart.DENIED -> PcMirrorStartResult.Denied
+                app.g7link.core.PcMirrorStart.UNSUPPORTED -> PcMirrorStartResult.Unsupported
+            }
+        } catch (e: G7LinkException) {
+            when (e) {
+                is G7LinkException.Denied -> PcMirrorStartResult.Denied
+                is G7LinkException.Unsupported -> PcMirrorStartResult.Unsupported
+                else -> {
+                    android.util.Log.i(TAG, "screen sharing not started: ${describe(e)}")
+                    PcMirrorStartResult.Offline
+                }
+            }
         }
     }
+
+    /**
+     * How a PC's clock stands to this phone's while it shares its screen: its
+     * offset (PC minus phone `CLOCK_MONOTONIC`, µs) and the round trip, or null
+     * until the first pong.
+     */
+    fun pcMirrorClock(id: String): app.g7link.core.PcMirrorClock? =
+        runCatching { node?.pcMirrorClock(id) }.getOrNull()
 
     /** Stops an active PC-to-phone screen mirror session (`mirror.stop`, session 0). */
     fun stopPcMirror(id: String) {
@@ -3284,6 +3337,10 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
             is Event.AgentCatalog -> if (event.catalog != null) agentRefresh(pcId)
             // Allowed on the PC (it sends these only then): the whole list, not just this one.
             is Event.AgentSessionChanged -> if (before.sessionsAllowed != true) agentRefreshSessions(pcId)
+            // A turn's restore point settled: its Changes row names its first files.
+            is Event.AgentTurn -> if (after.open?.threadId == event.thread) agentReadTurnFiles(pcId, event.thread)
+            // A rewind or its undo: the open thread's turns as they are now.
+            is Event.AgentCut -> if (after.open?.threadId == event.thread) agentRereadTurns(pcId, event.thread)
             else -> Unit
         }
         val shown = agentForeground?.takeIf { it.first == pcId }?.second
@@ -3328,6 +3385,7 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
         _agentKeptSessions.update { kept -> kept.filterNot { it.startsWith("$pcId/") }.toSet() }
         agentRefreshes.remove(pcId)?.cancel()
         agentSessionRefreshes.remove(pcId)?.cancel()
+        agentTurnReads.keys.filter { it.startsWith("$pcId/") }.forEach { agentTurnReads.remove(it)?.cancel() }
         AgentNotifications.cancelPc(context, pcId)
         AgentChoices.forgetPc(pcId)
     }
@@ -3384,9 +3442,10 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
         val result = agentCall { current ->
             val catalog = withContext(Dispatchers.IO) { runCatching { current.agentCatalog(pcId) }.getOrNull() }
             if (catalog != null) updateAgents(pcId) { if (it.catalog == catalog) it else it.copy(catalog = catalog) }
-            current.agentThreads(pcId)
+            // The main list: neither archived nor snoozed (show, before_ms).
+            current.agentThreads(pcId, null, null)
         }
-        if (result is AgentCall.Ok) updateAgents(pcId) { AgentsModel.withThreads(it, result.value) }
+        if (result is AgentCall.Ok) updateAgents(pcId) { AgentsModel.withThreads(it, result.value, System.currentTimeMillis()) }
         return result
     }
 
@@ -3421,18 +3480,29 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
         return result
     }
 
-    /** A message: a turn when it's stopped; while it works, steered in or queued ([followUp]). Images by id (agentImageSend). */
+    /**
+     * A message: a turn when it's stopped; while it works, steered in or queued
+     * ([followUp]). Images by id (agentImageSend). [hold]: when the PC can't be
+     * reached it waits on this phone and goes once, in order, when it's back
+     * (contract §U8.3): the answer is then the held message, else null. A
+     * message with images never waits.
+     */
     suspend fun agentSend(
         pcId: String,
         threadId: String,
         text: String,
         followUp: FollowUp? = null,
         images: List<String> = emptyList(),
-    ): AgentCall<Unit> {
+        hold: Boolean = false,
+    ): AgentCall<app.g7link.core.AgentHeld?> {
         val sendable = AgentsModel.fits(text) || (text.isBlank() && images.isNotEmpty())
         if (!sendable || AgentsModel.tooLong(text)) return AgentCall.Failed(AgentFailure.OTHER)
-        val result = agentCall { it.agentSend(pcId, threadId, text, followUp?.let(AgentControlFfi::dispatch), images) }
-        if (result is AgentCall.Ok) agentFollowed += "$pcId/$threadId"
+        val result = agentCall { it.agentSend(pcId, threadId, text, followUp?.let(AgentControlFfi::dispatch), images, hold && images.isEmpty()) }
+        if (result is AgentCall.Ok) {
+            agentFollowed += "$pcId/$threadId"
+            val held = result.value
+            if (held != null) updateAgents(pcId) { state -> if (state.held.any { it.key == held.key }) state else AgentsModel.withHeld(state, state.held + held) }
+        }
         return result
     }
 
@@ -3521,10 +3591,18 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
         agentForeground = pcId to threadId
         updateAgents(pcId) { AgentsModel.opened(it, threadId) }
         AgentNotifications.cancel(context, pcId, threadId)
+        // What this phone saved shows while the PC answers (contract §U8.3).
+        agentSavedThread(pcId, threadId)
         agentWatchWanted[pcId] = threadId
         val watched = agentSyncWatch(pcId)
         if (watched is AgentCall.Failed) return AgentCall.Failed(watched.failure)
-        return agentRead(pcId, threadId, null)
+        val read = agentRead(pcId, threadId, null)
+        if (read is AgentCall.Ok) {
+            agentRereadTurns(pcId, threadId)
+            // Looked at here: no longer unread on the PC either.
+            if (read.value.thread.unread) scope.launch { agentMark(pcId, listOf(threadId), app.g7link.android.ui.agents.MarkChange.Unread(false)) }
+        }
+        return read
     }
 
     /** A thread's screen went out of view: its text stops, and what waits there notifies again. */
@@ -3717,6 +3795,253 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
      */
     suspend fun agentExport(pcId: String, threadId: String?, sessionId: String?): AgentCall<AgentExport> =
         agentCall { it.agentExport(pcId, threadId, sessionId) }
+
+    // ---- Agents: history, undo, saved threads and held messages (contract §U7, §U8) ----
+
+    /** Reading a thread's turns and their first files, once at a time per thread ("pc/thread"). */
+    private val agentTurnReads = java.util.concurrent.ConcurrentHashMap<String, Job>()
+
+    /** The open thread's turns, newest first from the PC, as far back as its items go (a few pages at most). */
+    suspend fun agentTurns(pcId: String, threadId: String): AgentCall<List<app.g7link.core.AgentTurn>> {
+        val all = ArrayList<app.g7link.core.AgentTurn>()
+        var before: UInt? = null
+        for (page in 0 until app.g7link.android.ui.agents.AgentTurns.PAGES) {
+            val from = before
+            val result = agentCall { it.agentTurns(pcId, threadId, from, app.g7link.android.ui.agents.AgentTurns.PAGE.toUInt()) }
+            if (result is AgentCall.Failed) {
+                if (all.isEmpty()) return result
+                break
+            }
+            val turns = (result as AgentCall.Ok).value
+            all += turns
+            val oldest = turns.minOfOrNull { it.turn } ?: break
+            // Far enough: the PC has no more, or the transcript shown starts after these.
+            val oldestShown = _agents.value[pcId]?.open?.takeIf { it.threadId == threadId }?.items?.filter { it.turn > 0u }?.minOfOrNull { it.turn }
+            if (turns.size < app.g7link.android.ui.agents.AgentTurns.PAGE || oldest <= 1u || oldestShown == null || oldestShown >= oldest) break
+            before = oldest
+        }
+        updateAgents(pcId) { AgentsModel.withTurns(it, threadId, all) }
+        return AgentCall.Ok(all)
+    }
+
+    /** Reads the open thread's turns again, then the first files of those that want them. */
+    private fun agentRereadTurns(pcId: String, threadId: String) {
+        val key = "$pcId/$threadId"
+        agentTurnReads.remove(key)?.cancel()
+        agentTurnReads[key] = scope.launch {
+            if (agentTurns(pcId, threadId) is AgentCall.Ok) agentTurnFiles(pcId, threadId)
+        }
+    }
+
+    private fun agentReadTurnFiles(pcId: String, threadId: String) {
+        val key = "$pcId/$threadId"
+        if (agentTurnReads[key]?.isActive == true) return
+        agentTurnReads[key] = scope.launch { agentTurnFiles(pcId, threadId) }
+    }
+
+    /** The first files of the open thread's recorded turns, for their Changes rows, one turn at a time. */
+    private suspend fun agentTurnFiles(pcId: String, threadId: String) {
+        val tried = HashSet<UInt>()
+        while (true) {
+            val open = _agents.value[pcId]?.open?.takeIf { it.threadId == threadId } ?: return
+            val turn = app.g7link.android.ui.agents.AgentTurns.filesWanted(open.turns, open.turnFiles.keys + tried).firstOrNull() ?: return
+            tried += turn
+            val files = agentDiffFiles(pcId, threadId, app.g7link.core.AgentTurnRange.Turn(turn))
+            if (files is AgentCall.Ok) updateAgents(pcId) { AgentsModel.withTurnFiles(it, threadId, turn, files.value.files) }
+        }
+    }
+
+    /** The files a turn, or the whole thread, changed: at most 500, `more` past that. */
+    suspend fun agentDiffFiles(pcId: String, threadId: String, range: app.g7link.core.AgentTurnRange): AgentCall<app.g7link.core.AgentTurnFiles> =
+        agentCall { it.agentDiffFiles(pcId, threadId, range) }
+
+    /** One file's patch, at most 1 MiB (`truncated` past it); parse it off the main thread. */
+    suspend fun agentDiffPatch(pcId: String, threadId: String, range: app.g7link.core.AgentTurnRange, path: String): AgentCall<app.g7link.core.AgentPatch> =
+        agentCall { it.agentDiffPatch(pcId, threadId, range, path) }
+
+    /** Searches the PC's threads ([app.g7link.android.ui.agents.AgentSearch]). */
+    suspend fun agentSearch(pcId: String, request: app.g7link.android.ui.agents.SearchRequest): AgentCall<app.g7link.core.AgentHits> =
+        agentCall { it.agentSearch(pcId, request.query, app.g7link.android.ui.agents.AgentSearch.PAGE.toUInt(), request.cursor, request.archived) }
+
+    /** A shelf of the PC's threads (Archived, Snoozed), read when it's shown. */
+    suspend fun agentShelf(pcId: String, shelf: app.g7link.android.ui.agents.Shelf): AgentCall<List<AgentThread>> {
+        val show = when (shelf) {
+            app.g7link.android.ui.agents.Shelf.MAIN -> app.g7link.core.AgentThreadShow.MAIN
+            app.g7link.android.ui.agents.Shelf.ARCHIVED -> app.g7link.core.AgentThreadShow.ARCHIVED
+            app.g7link.android.ui.agents.Shelf.SNOOZED -> app.g7link.core.AgentThreadShow.SNOOZED
+        }
+        val result = agentCall { it.agentThreads(pcId, show, null) }
+        if (result is AgentCall.Ok) updateAgents(pcId) { AgentsModel.withShelf(it, shelf, result.value, System.currentTimeMillis()) }
+        return result
+    }
+
+    /**
+     * Pins, marks unread, snoozes or archives up to 50 threads: shown at once,
+     * then as the PC has them; one the PC skipped (archiving one at work) goes back.
+     */
+    suspend fun agentMark(
+        pcId: String,
+        threadIds: List<String>,
+        change: app.g7link.android.ui.agents.MarkChange,
+    ): AgentCall<List<AgentThread>> {
+        val ids = threadIds.distinct().take(app.g7link.android.ui.agents.AgentMarks.MAX_THREADS)
+        if (ids.isEmpty() || !app.g7link.android.ui.agents.AgentMarks.valid(change, System.currentTimeMillis())) {
+            return AgentCall.Failed(AgentFailure.OTHER)
+        }
+        val before = _agents.value[pcId]?.threads.orEmpty().filter { it.id in ids }
+        updateAgents(pcId) { AgentsModel.marked(it, ids, change) }
+        val result = agentCall { node ->
+            when (change) {
+                // pinned, archived, unread, snooze_until_ms: null leaves a mark as it is.
+                is app.g7link.android.ui.agents.MarkChange.Pin -> node.agentMark(pcId, ids, change.on, null, null, null)
+                is app.g7link.android.ui.agents.MarkChange.Archive -> node.agentMark(pcId, ids, null, change.on, null, null)
+                is app.g7link.android.ui.agents.MarkChange.Unread -> node.agentMark(pcId, ids, null, null, change.on, null)
+                is app.g7link.android.ui.agents.MarkChange.Snooze -> node.agentMark(pcId, ids, null, null, null, change.untilMs)
+            }
+        }
+        when (result) {
+            is AgentCall.Ok -> updateAgents(pcId) { state ->
+                val changed = result.value.mapTo(HashSet()) { it.id }
+                AgentsModel.withThreadsChanged(AgentsModel.unmarked(state, before.filter { it.id !in changed }), result.value)
+            }
+            is AgentCall.Failed -> updateAgents(pcId) { AgentsModel.unmarked(it, before) }
+        }
+        return result
+    }
+
+    /** Renames a thread (one line, 1 to 80 bytes). */
+    suspend fun agentRename(pcId: String, threadId: String, title: String): AgentCall<AgentThread> {
+        val shown = app.g7link.android.ui.agents.AgentMarks.title(title) ?: return AgentCall.Failed(AgentFailure.OTHER)
+        val result = agentCall { it.agentRename(pcId, threadId, shown) }
+        if (result is AgentCall.Ok) updateAgents(pcId) { AgentsModel.withThread(it, result.value) }
+        return result
+    }
+
+    /** A new thread from a copy of this one through [turn] (the latest when null); nothing runs. */
+    suspend fun agentFork(pcId: String, threadId: String, turn: UInt?): AgentCall<AgentThread> {
+        val result = agentCall { it.agentFork(pcId, threadId, turn) }
+        if (result is AgentCall.Ok) {
+            agentFollowed += "$pcId/${result.value.id}"
+            updateAgents(pcId) { AgentsModel.withThread(it, result.value) }
+        }
+        return result
+    }
+
+    /** What rewinding the conversation to before [turn] would leave out; nothing changes yet. */
+    suspend fun agentRewindPreview(pcId: String, threadId: String, turn: UInt): AgentCall<app.g7link.core.AgentRewindPlan> =
+        agentCall { it.agentRewindPreview(pcId, threadId, turn) }
+
+    /** Rewinds the conversation as previewed; [refill] puts the message back in the composer (Edit from here). */
+    suspend fun agentRewindApply(pcId: String, token: String, refill: Boolean): AgentCall<AgentThread> {
+        val result = agentCall { it.agentRewindApply(pcId, token, refill) }
+        if (result is AgentCall.Ok) updateAgents(pcId) { AgentsModel.withThread(it, result.value) }
+        return result
+    }
+
+    /** Undoes the last rewind of the conversation (not one that put files back: that's on the PC). */
+    suspend fun agentRewindUndo(pcId: String, threadId: String): AgentCall<AgentThread> {
+        val result = agentCall { it.agentRewindUndo(pcId, threadId) }
+        if (result is AgentCall.Ok) updateAgents(pcId) { AgentsModel.withThread(it, result.value) }
+        return result
+    }
+
+    /**
+     * The Claude and Codex sessions on the PC, to bring in. They need the PC's
+     * sessions switch for this phone: unless asking can't make the PC prompt
+     * unasked ([agentSessionsConsent]) or the user [asked], nothing is sent and
+     * the answer is Denied.
+     */
+    suspend fun agentFound(
+        pcId: String,
+        query: String?,
+        agent: String?,
+        beforeMs: Long?,
+        asked: Boolean = false,
+    ): AgentCall<app.g7link.core.AgentFoundList> {
+        if (asked) agentSessionsConsent.userAsked(pcId)
+        if (!asked && !agentSessionsConsent.mayAskAutomatically(pcId)) return AgentCall.Failed(AgentFailure.DENIED)
+        val result = agentCall {
+            it.agentFound(pcId, query?.takeIf { q -> q.isNotBlank() }, agent, null, beforeMs, app.g7link.android.ui.agents.AgentImport.PAGE.toUInt())
+        }
+        when (result) {
+            is AgentCall.Ok -> agentSessionsConsent.answered(pcId, app.g7link.android.ui.agents.SessionsConsent.Answer.LISTED)
+            is AgentCall.Failed -> if (result.failure == AgentFailure.DENIED) agentSessionsRefused(pcId, result.failure)
+        }
+        return result
+    }
+
+    /** A found session's newest messages, read now and kept nowhere. */
+    suspend fun agentFoundPreview(pcId: String, sessionId: String): AgentCall<List<app.g7link.core.AgentItem>> =
+        agentCall { it.agentFoundPreview(pcId, sessionId, app.g7link.android.ui.agents.AgentImport.PREVIEW.toUInt()) }
+
+    /** Brings found sessions in as threads (1 to 50); how it goes comes as AgentImport events. */
+    suspend fun agentImport(pcId: String, sessionIds: List<String>): AgentCall<app.g7link.core.AgentImportJob> {
+        val ids = sessionIds.distinct().take(app.g7link.android.ui.agents.AgentImport.MAX_PER_JOB)
+        if (ids.isEmpty()) return AgentCall.Failed(AgentFailure.OTHER)
+        return agentCall { it.agentImport(pcId, ids) }
+    }
+
+    suspend fun agentImportCancel(pcId: String, job: String): AgentCall<Unit> = agentCall { it.agentImportCancel(pcId, job) }
+
+    /** What this phone saved of a PC's list, and the messages waiting for it: shown at once, and while it's away. */
+    suspend fun agentSaved(pcId: String) {
+        val saved = agentCall { it.agentCachedThreads(pcId) }
+        if (saved is AgentCall.Ok) updateAgents(pcId) { AgentsModel.withSaved(it, saved.value) }
+        agentOutbox(pcId)
+    }
+
+    /** What this phone saved of a thread, shown while the PC's page hasn't come (or can't). */
+    suspend fun agentSavedThread(pcId: String, threadId: String) {
+        updateAgents(pcId) { AgentsModel.opened(it, threadId) }
+        val saved = agentCall { it.agentCachedItems(pcId, threadId) }
+        if (saved is AgentCall.Ok) updateAgents(pcId) { AgentsModel.withSavedItems(it, threadId, saved.value) }
+        agentOutbox(pcId)
+    }
+
+    /** The messages waiting on this phone for a PC, in the order written. */
+    suspend fun agentOutbox(pcId: String): AgentCall<List<app.g7link.core.AgentHeld>> {
+        val result = agentCall { it.agentOutbox(pcId) }
+        if (result is AgentCall.Ok) updateAgents(pcId) { AgentsModel.withHeld(it, result.value) }
+        return result
+    }
+
+    /** "Send" on a held message that wasn't sent: it waits again and goes when it can. */
+    suspend fun agentOutboxSend(pcId: String, key: String): AgentCall<Unit> {
+        val result = agentCall { it.agentOutboxSend(pcId, key) }
+        agentOutbox(pcId)
+        return result
+    }
+
+    /** "Discard" on a held message. */
+    suspend fun agentOutboxDiscard(pcId: String, key: String): AgentCall<Unit> {
+        val result = agentCall { it.agentOutboxDiscard(pcId, key) }
+        agentOutbox(pcId)
+        return result
+    }
+
+    /** "Keep threads on this phone"; off forgets what was saved (held messages stay and go). */
+    suspend fun agentCacheKeeps(): AgentCall<Boolean> = agentCall { it.agentCacheKeeps() }
+
+    suspend fun agentCacheKeep(keep: Boolean): AgentCall<Unit> = agentCall { it.agentCacheKeep(keep) }
+
+    /** What the saved threads take on this phone, in bytes. */
+    suspend fun agentCacheBytes(): AgentCall<Long> = agentCall { it.agentCacheBytes().toLong() }
+
+    /** "Clear saved threads": held messages stay. */
+    suspend fun agentCacheClear(): AgentCall<Unit> = agentCall { it.agentCacheClear() }
+
+    /** A thread's draft on the PC (its key is the thread's id); null when there's none. */
+    suspend fun agentDraftGet(pcId: String, key: String): AgentCall<app.g7link.core.AgentDraft?> = agentCall { it.agentDraftGet(pcId, key) }
+
+    /** Stores a draft when [rev] is still the stored one's (0: a new one); an empty one clears it. */
+    suspend fun agentDraftSet(pcId: String, key: String, text: String, images: List<String>, rev: ULong): AgentCall<app.g7link.core.AgentDraftSaved> =
+        agentCall { it.agentDraftSet(pcId, key, text, images, rev) }
+
+    /** A composer that's going away stores its draft after it (the screen's own scope ends with it). */
+    fun agentDraftLeave(pcId: String, key: String, text: String, images: List<String>, rev: ULong) {
+        if (text.isEmpty() && images.isEmpty() && rev == 0uL) return
+        scope.launch { agentDraftSet(pcId, key, text, images, rev) }
+    }
 
     /** A short message at the bottom of the app's screen. */
     fun say(message: String) {

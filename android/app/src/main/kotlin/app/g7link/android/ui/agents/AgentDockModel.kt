@@ -28,6 +28,9 @@ enum class ComposerHint {
 
     /** "Answer it on <PC>.": a secret question is shown. */
     ANSWER_ON_PC,
+
+    /** "Sends when <PC> is back": the PC can't be reached; a message waits on this phone. */
+    OFFLINE,
 }
 
 /** The model control in the reply box (reconcile file: settings apply between turns). */
@@ -118,6 +121,8 @@ data class ComposerInput(
     val uploading: Boolean = false,
     /** The agent takes images from the phone with the chosen model. */
     val imagesAllowed: Boolean = false,
+    /** The PC can't be reached: a message waits on this phone until it's back (contract §U8.3). */
+    val offline: Boolean = false,
 )
 
 /** The pure rules of the reply box and the dock (contract §P8, reconcile file "Approvals dock"). */
@@ -135,6 +140,22 @@ object AgentDock {
         val queue = input.queue
         val allowPrimary = !hasText
         val question = input.question
+        if (input.offline) {
+            // Words wait on this phone and go once, in order, when the PC is back; pictures can't wait,
+            // nothing can be answered or stopped from here meanwhile (contract §U9.3 "Offline").
+            val enabled = input.hasThread && !input.sending
+            return ComposerView(
+                enabled = enabled,
+                hint = ComposerHint.OFFLINE,
+                action = ComposerAction.SEND,
+                actionEnabled = enabled && AgentsModel.fits(input.draft) && input.images == 0,
+                showStop = false,
+                allowPrimary = true,
+                codexNote = false,
+                attach = false,
+                settings = SettingsAccess.INERT,
+            )
+        }
         if (question != null) {
             // No Send while a question waits: the dock's Next or Send answers is the only way, Stop beside it.
             return ComposerView(

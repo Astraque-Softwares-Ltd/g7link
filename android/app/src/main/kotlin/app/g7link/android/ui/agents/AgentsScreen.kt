@@ -2,6 +2,7 @@
 package app.g7link.android.ui.agents
 
 import android.text.format.DateUtils
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -17,12 +18,13 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.border
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -63,51 +65,36 @@ import app.g7link.android.core.Core
 import app.g7link.android.core.Device
 import app.g7link.android.ui.Preferences
 import app.g7link.android.ui.theme.G7Header
+import app.g7link.android.ui.theme.G7IconButton
 import app.g7link.android.ui.theme.G7Icons
 import app.g7link.android.ui.theme.G7PrimaryButton
 import app.g7link.android.ui.theme.G7RaisedButton
 import app.g7link.android.ui.theme.G7Row
-import app.g7link.android.ui.theme.G7RowAction
 import app.g7link.android.ui.theme.G7SectionLabel
-import app.g7link.android.ui.theme.G7StatusDot
-import app.g7link.android.ui.theme.G7Tabs
-import app.g7link.android.ui.theme.LocalAppFonts
 import app.g7link.android.ui.theme.g7Tints
-import app.g7link.android.ui.theme.mono
-import app.g7link.core.AgentAsk
 import app.g7link.core.AgentCatalog
 import app.g7link.core.AgentInfo
 import app.g7link.core.AgentSession
 import app.g7link.core.AgentSessionSource
 import app.g7link.core.AgentSessionState
 import app.g7link.core.AgentThread
-import app.g7link.core.AgentThreadState
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /** How far the thread list got. */
 private enum class ListLoad { LOADING, READY, NOT_ALLOWED, UNAVAILABLE, UNREACHABLE, FAILED }
 
-/** The list's filters (the reconcile file): Recent holds done, stopped, paused and failed threads. */
-private enum class ThreadFilter {
-    ALL,
-    NEEDS_YOU,
-    WORKING,
-    RECENT,
-    ;
-
-    fun matches(thread: AgentThread): Boolean = when (this) {
-        ALL -> true
-        NEEDS_YOU -> AgentsModel.needsYou(thread)
-        WORKING -> thread.state == AgentThreadState.WORKING && !AgentsModel.needsYou(thread)
-        RECENT -> !AgentsModel.running(thread)
-    }
-}
+/** What fills the Agents screen: the list, or a screen opened from its top bar. */
+private enum class AgentsPage { LIST, SEARCH, IMPORT }
 
 /**
- * A PC's agent threads: requests waiting first, then the newest, with the
- * states the phone can be in before any thread shows (not allowed yet, the PC
- * out of reach, nothing signed in, no folders).
+ * A PC's agent threads (board 16): the sections, the filters with the
+ * Archived and Snoozed shelves, a swipe to archive or pin and a long-press
+ * sheet for the rest; search and import from the top bar. What this phone
+ * saved shows at once, and is all there is while the PC can't be reached
+ * (contract §U9.3 "Offline"); before any thread shows, the states the phone
+ * can be in (not allowed yet, the PC out of reach, nothing signed in, no
+ * folders).
  */
 @Composable
 fun AgentsScreen(
@@ -118,16 +105,26 @@ fun AgentsScreen(
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val resources = LocalResources.current
     val all by core.agents.collectAsStateWithLifecycle()
     val agents = all[device.id] ?: AgentsState()
     val catalog = agents.catalog
     var load by remember(device.id) { mutableStateOf(ListLoad.LOADING) }
     var attempt by remember(device.id) { mutableIntStateOf(0) }
     var filter by rememberSaveable { mutableStateOf(ThreadFilter.ALL) }
+    var page by rememberSaveable { mutableStateOf(AgentsPage.LIST) }
     var newThread by rememberSaveable { mutableStateOf(false) }
+    var settings by rememberSaveable { mutableStateOf(false) }
+    var menuFor by rememberSaveable { mutableStateOf<String?>(null) }
+    var snoozeFor by rememberSaveable { mutableStateOf<String?>(null) }
+    var renameFor by rememberSaveable { mutableStateOf<String?>(null) }
     val hasCatalog = catalog != null
     val sessionsAllowed by rememberUpdatedState(agents.sessionsAllowed)
+    val scope = rememberCoroutineScope()
+    val offline = !device.online
 
+    // What this phone saved, at once: shown until the PC answers, and all there is while it can't.
+    LaunchedEffect(device.id) { core.agentSaved(device.id) }
     // Again when the PC allows this phone (its catalog arrives) or comes back.
     LaunchedEffect(device.id, device.online, hasCatalog, attempt) {
         if (!device.online) {
@@ -147,6 +144,10 @@ fun AgentsScreen(
         // Sessions started on the PC, only when asking can't make the PC prompt unasked (it listed them before, or the user asked).
         if (load == ListLoad.READY && sessionsAllowed != false) core.agentSessionsIfAllowed(device.id)
     }
+    // A shelf is read from the PC when it's shown.
+    LaunchedEffect(device.id, device.online, filter, load) {
+        if (device.online && load == ListLoad.READY && filter.shelf != Shelf.MAIN) core.agentShelf(device.id, filter.shelf)
+    }
     // The user asked on the PC: ask now (the PC may show its prompt), then look again now and then while this is on screen.
     var askedSessions by remember(device.id) { mutableStateOf(false) }
     val sessionsListed = agents.sessionsAllowed == true
@@ -159,8 +160,68 @@ fun AgentsScreen(
         }
     }
 
-    val canStart = catalog != null && agents.readyAgents.isNotEmpty() && catalog.folders.isNotEmpty()
+    BackHandler(enabled = page != AgentsPage.LIST) { page = AgentsPage.LIST }
+    when (page) {
+        AgentsPage.SEARCH -> {
+            AgentSearchScreen(
+                device = device,
+                core = core,
+                agents = agents,
+                onOpenThread = onOpenThread,
+                onImport = { page = AgentsPage.IMPORT },
+                onBack = { page = AgentsPage.LIST },
+                modifier = modifier,
+            )
+            return
+        }
+        AgentsPage.IMPORT -> {
+            AgentImportScreen(
+                device = device,
+                core = core,
+                agents = agents,
+                onOpenThread = onOpenThread,
+                onBack = { page = AgentsPage.LIST },
+                modifier = modifier,
+            )
+            return
+        }
+        AgentsPage.LIST -> Unit
+    }
+
+    val canStart = !offline && catalog != null && agents.readyAgents.isNotEmpty() && catalog.folders.isNotEmpty()
     val retry: () -> Unit = { attempt++ }
+    // The saved list stands in while the PC can't be reached or hasn't answered yet.
+    val savedShown = load != ListLoad.READY && agents.savedMs != null && agents.threads.isNotEmpty() &&
+        (load == ListLoad.LOADING || load == ListLoad.UNREACHABLE)
+    val listShown = (load == ListLoad.READY && catalog != null) || savedShown
+    val failedSay: (AgentFailure) -> String = { failure ->
+        when (failure) {
+            AgentFailure.DENIED -> resources.getString(R.string.agents_access_title, device.name)
+            AgentFailure.UNSUPPORTED -> resources.getString(R.string.agents_unavailable, device.name)
+            AgentFailure.NOT_FOUND -> resources.getString(R.string.agents_thread_gone)
+            AgentFailure.OFFLINE, AgentFailure.TIMEOUT -> resources.getString(R.string.agents_unreachable_title, device.name)
+            // The PC's BUSY: archiving one that works or waits.
+            AgentFailure.OTHER -> resources.getString(R.string.agents_wait_until_finishes)
+        }
+    }
+    val mark: (AgentThread, MarkChange) -> Unit = { thread, change ->
+        if (offline) {
+            core.say(resources.getString(R.string.agents_needs_pc, device.name))
+        } else {
+            scope.launch {
+                val result = core.agentMark(device.id, listOf(thread.id), change)
+                if (result is AgentCall.Failed) core.say(failedSay(result.failure))
+            }
+        }
+    }
+    val rowActions = remember(device.id, offline) {
+        ThreadRowActions(
+            open = onOpenThread,
+            menu = { id -> menuFor = id },
+            archive = { thread -> mark(thread, MarkChange.Archive(!thread.archived)) },
+            pin = { thread -> mark(thread, MarkChange.Pin(!thread.pinned)) },
+        )
+    }
     val drawer = rememberAgentsDrawer()
     AgentsDrawer(
         device = device,
@@ -179,61 +240,65 @@ fun AgentsScreen(
                 noteColor = if (device.online) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error,
             ) {
                 AgentsDrawerButton(drawer)
-                if (load == ListLoad.READY && canStart) {
-                    G7RowAction(
-                        label = stringResource(R.string.agents_new_thread),
-                        accent = true,
-                        onClick = { newThread = true },
-                    )
-                }
+                G7IconButton(
+                    icon = G7Icons.search,
+                    contentDescription = stringResource(R.string.agents_search),
+                    onClick = { page = AgentsPage.SEARCH },
+                    enabled = !offline && listShown,
+                )
+                G7IconButton(
+                    icon = G7Icons.plus,
+                    contentDescription = stringResource(R.string.agents_new_thread),
+                    onClick = { newThread = true },
+                    enabled = canStart && load == ListLoad.READY,
+                    tint = if (canStart && load == ListLoad.READY) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                ListMenu(
+                    canImport = !offline && load == ListLoad.READY,
+                    onImport = { page = AgentsPage.IMPORT },
+                    onSettings = { settings = true },
+                )
             }
-            when (load) {
-                ListLoad.LOADING -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            if (offline && listShown) OfflineBar(device.name, agents.savedMs ?: agents.listedMs, rememberNow())
+            when {
+                listShown -> ThreadList(
+                    pcName = device.name,
+                    agents = agents,
+                    catalog = catalog,
+                    filter = filter,
+                    onFilter = { filter = it },
+                    canStart = canStart,
+                    onNewThread = { newThread = true },
+                    rowActions = rowActions,
+                    onOpenSession = onOpenSession,
+                    askedSessions = askedSessions,
+                    onAskSessions = { askedSessions = true },
+                )
+                load == ListLoad.LOADING -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     CircularProgressIndicator(Modifier.size(28.dp), strokeWidth = 2.dp)
                 }
-                ListLoad.UNREACHABLE -> AgentsEmptyState(
+                load == ListLoad.UNREACHABLE -> AgentsEmptyState(
                     title = stringResource(R.string.agents_unreachable_title, device.name),
                     body = stringResource(R.string.agents_unreachable_body),
                     action = stringResource(R.string.agents_try_again),
                     onAction = retry,
                 )
-                ListLoad.NOT_ALLOWED -> AgentsEmptyState(
+                load == ListLoad.NOT_ALLOWED -> AgentsEmptyState(
                     title = stringResource(R.string.agents_access_title, device.name),
                     body = stringResource(R.string.agents_access_body),
                     action = stringResource(R.string.agents_try_again),
                     onAction = retry,
                 )
-                ListLoad.UNAVAILABLE -> AgentsEmptyState(
+                load == ListLoad.UNAVAILABLE || load == ListLoad.READY -> AgentsEmptyState(
                     title = stringResource(R.string.agents_unavailable, device.name),
                     action = stringResource(R.string.agents_try_again),
                     onAction = retry,
                 )
-                ListLoad.FAILED -> AgentsEmptyState(
+                else -> AgentsEmptyState(
                     title = stringResource(R.string.agents_failed_generic),
                     action = stringResource(R.string.agents_try_again),
                     onAction = retry,
                 )
-                ListLoad.READY -> if (catalog == null) {
-                    AgentsEmptyState(
-                        title = stringResource(R.string.agents_unavailable, device.name),
-                        action = stringResource(R.string.agents_try_again),
-                        onAction = retry,
-                    )
-                } else {
-                    ThreadList(
-                        pcName = device.name,
-                        agents = agents,
-                        catalog = catalog,
-                        filter = filter,
-                        onFilter = { filter = it },
-                        canStart = canStart,
-                        onNewThread = { newThread = true },
-                        onOpenThread = onOpenThread,
-                        onOpenSession = onOpenSession,
-                        askedSessions = askedSessions,
-                        onAskSessions = { askedSessions = true },
-                    )
-                }
             }
         }
     }
@@ -251,40 +316,111 @@ fun AgentsScreen(
             onDismiss = { newThread = false },
         )
     }
+    if (settings) AgentCacheSheet(core = core, pcName = device.name, onDismiss = { settings = false })
+    menuFor?.let { id -> agents.thread(id) }?.let { thread ->
+        ThreadActionsSheet(
+            thread = thread,
+            place = listOf(agents.agentName(thread.agent), thread.folder).filter { it.isNotBlank() }.joinToString(" · "),
+            pcName = device.name,
+            offline = offline,
+            onAction = { action ->
+                menuFor = null
+                when (action) {
+                    ThreadAction.SNOOZE -> snoozeFor = thread.id
+                    ThreadAction.RENAME -> renameFor = thread.id
+                    else -> AgentMarks.change(action)?.let { mark(thread, it) }
+                }
+            },
+            onDismiss = { menuFor = null },
+        )
+    }
+    snoozeFor?.let { id -> agents.thread(id) }?.let { thread ->
+        val now = System.currentTimeMillis()
+        SnoozeSheet(
+            thread = thread,
+            agentName = agents.agentName(thread.agent),
+            limitResetsMs = AgentMarks.limitResets(agents.abilities(thread.agent).limits, now),
+            nowMs = now,
+            onPick = { at ->
+                snoozeFor = null
+                mark(thread, MarkChange.Snooze(at))
+            },
+            onDismiss = { snoozeFor = null },
+        )
+    }
+    renameFor?.let { id -> agents.thread(id) }?.let { thread ->
+        RenameSheet(
+            thread = thread,
+            onRename = { title ->
+                renameFor = null
+                scope.launch {
+                    val result = core.agentRename(device.id, thread.id, title)
+                    if (result is AgentCall.Failed) core.say(failedSay(result.failure))
+                }
+            },
+            onDismiss = { renameFor = null },
+        )
+    }
+}
+
+/** The list's More: bring in earlier sessions, and the agents' settings on this phone. */
+@Composable
+private fun ListMenu(canImport: Boolean, onImport: () -> Unit, onSettings: () -> Unit) {
+    var open by remember { mutableStateOf(false) }
+    Box {
+        G7IconButton(icon = AgentGlyphs.more, contentDescription = stringResource(R.string.agents_more), onClick = { open = true })
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            DropdownMenuItem(
+                text = { Text(stringResource(R.string.agents_import_title)) },
+                enabled = canImport,
+                onClick = {
+                    open = false
+                    onImport()
+                },
+            )
+            DropdownMenuItem(
+                text = { Text(stringResource(R.string.agents_phone_settings)) },
+                onClick = {
+                    open = false
+                    onSettings()
+                },
+            )
+        }
+    }
 }
 
 @Composable
 private fun ThreadList(
     pcName: String,
     agents: AgentsState,
-    catalog: AgentCatalog,
+    catalog: AgentCatalog?,
     filter: ThreadFilter,
     onFilter: (ThreadFilter) -> Unit,
     canStart: Boolean,
     onNewThread: () -> Unit,
-    onOpenThread: (String) -> Unit,
+    rowActions: ThreadRowActions,
     onOpenSession: (String) -> Unit,
     askedSessions: Boolean,
     onAskSessions: () -> Unit,
 ) {
     val now = rememberNow()
-    val shown = remember(agents.threads, filter) { agents.threads.filter { filter.matches(it) } }
+    val listed = agents.listed
     // The chips count threads only: sessions have their own section.
-    val needsYou = remember(agents.threads) { agents.threads.count { ThreadFilter.NEEDS_YOU.matches(it) } }
-    val working = remember(agents.threads) { agents.threads.count { ThreadFilter.WORKING.matches(it) } }
+    val needsYou = remember(listed) { listed.count { ThreadFilter.NEEDS_YOU.matches(it) } }
+    val working = remember(listed) { listed.count { ThreadFilter.WORKING.matches(it) } }
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(start = 12.dp, end = 12.dp, bottom = 16.dp),
         verticalArrangement = Arrangement.spacedBy(2.dp),
     ) {
-        if (agents.readyAgents.isEmpty()) {
+        if (catalog != null && agents.readyAgents.isEmpty()) {
             item(key = "none_ready", contentType = "setup") {
                 Column(Modifier.padding(bottom = 8.dp)) {
                     SetupNote(stringResource(R.string.agents_none_ready, pcName))
                     AgentRows(catalog.agents, selected = null, onSelect = {})
                 }
             }
-        } else if (catalog.folders.isEmpty()) {
+        } else if (catalog != null && catalog.folders.isEmpty()) {
             item(key = "no_folders", contentType = "setup") {
                 SetupNote(stringResource(R.string.agents_no_folders, pcName))
             }
@@ -307,31 +443,12 @@ private fun ThreadList(
             }
         } else {
             item(key = "filters", contentType = "filters") {
-                G7Tabs(
-                    options = listOf(
-                        ThreadFilter.ALL to stringResource(R.string.agents_filter_all),
-                        ThreadFilter.NEEDS_YOU to counted(stringResource(R.string.agents_state_waiting), needsYou),
-                        ThreadFilter.WORKING to counted(stringResource(R.string.agents_state_working), working),
-                        ThreadFilter.RECENT to stringResource(R.string.agents_filter_recent),
-                    ),
-                    selected = filter,
-                    onSelect = onFilter,
-                    modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
-                )
+                ShelfChips(selected = filter, needsYou = needsYou, working = working, onSelect = onFilter)
             }
-            items(shown, key = { it.id }, contentType = { "thread" }) { thread ->
-                ThreadRow(
-                    thread = thread,
-                    agentName = agents.agentName(thread.agent),
-                    ask = agents.asksFor(thread.id).firstOrNull(),
-                    questions = maxOf(agents.questionsFor(thread.id).size, thread.asking.toInt()),
-                    now = now,
-                    onOpen = { onOpenThread(thread.id) },
-                )
-            }
+            threadRows(agents, filter, now, rowActions)
         }
         // Sessions started on the PC outside G7: listed once the PC allows it, else a way to ask (never asked unprompted).
-        if (!agents.sessionsUnsupported) {
+        if (!agents.sessionsUnsupported && filter.shelf == Shelf.MAIN) {
             item(key = "sessions_label", contentType = "label") {
                 G7SectionLabel(stringResource(R.string.agents_session_section, pcName), Modifier.padding(top = 8.dp))
             }
@@ -356,17 +473,12 @@ private fun ThreadList(
     }
 }
 
-/** A chip's word and how many it holds, when any. */
-@Composable
-private fun counted(word: String, count: Int): String =
-    if (count > 0) stringResource(R.string.agents_filter_count, word, count) else word
-
 /**
  * The PC hasn't let this phone see the sessions started on it: what they
  * are, and a way to ask (the PC then shows its user a prompt).
  */
 @Composable
-private fun SessionsOff(pcName: String, asked: Boolean, onAsk: () -> Unit) {
+internal fun SessionsOff(pcName: String, asked: Boolean, onAsk: () -> Unit) {
     val scheme = MaterialTheme.colorScheme
     Column(
         modifier = Modifier
@@ -454,25 +566,24 @@ internal fun mayWait(session: AgentSession, agentName: String, pcName: String): 
 @Composable
 internal fun SessionStatusLine(session: AgentSession, now: Long, trailing: String?, modifier: Modifier = Modifier) {
     val scheme = MaterialTheme.colorScheme
-    val tints = g7Tints()
     Row(
         modifier = modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
+        val p = agentPalette()
         val (word, color) = when {
-            AgentsModel.needsYouExactly(session) -> stringResource(R.string.agents_state_waiting) to tints.amber
-            AgentsModel.mayNeedYou(session) -> stringResource(R.string.agents_session_state_may_need_you) to tints.amber
-            session.state == AgentSessionState.WORKING -> workingFor(session.sinceMs, now) to scheme.onSurfaceVariant
+            AgentsModel.needsYouExactly(session) -> stringResource(R.string.agents_state_waiting) to p.statusNeedsYou
+            AgentsModel.mayNeedYou(session) -> stringResource(R.string.agents_session_state_may_need_you) to p.statusMayNeedYou
+            session.state == AgentSessionState.WORKING -> workingFor(session.sinceMs, now) to p.statusWorking
             session.state == AgentSessionState.IDLE -> stringResource(R.string.agents_session_state_idle) to scheme.onSurfaceVariant
             else -> stringResource(R.string.agents_session_state_ended) to scheme.onSurfaceVariant
         }
-        when {
-            AgentsModel.mayNeedYou(session) -> Box(Modifier.size(6.dp).border(1.dp, tints.amber, CircleShape))
-            AgentsModel.needsYouExactly(session) -> G7StatusDot(tints.amber)
-            session.state == AgentSessionState.WORKING -> G7StatusDot(tints.blue)
-            else -> G7StatusDot(scheme.outline)
-        }
+        SessionStatusMark(
+            needsYou = AgentsModel.needsYouExactly(session),
+            mayNeedYou = AgentsModel.mayNeedYou(session),
+            working = session.state == AgentSessionState.WORKING,
+        )
         Text(word, style = MaterialTheme.typography.labelMedium, color = color, maxLines = 1)
         if (!trailing.isNullOrBlank()) {
             Text(
@@ -533,81 +644,6 @@ internal fun ElapsedText(sinceMs: Long, style: TextStyle, color: Color, modifier
         }
     }
     Text(AgentsModel.elapsed(now - sinceMs), style = style, color = color, maxLines = 1, modifier = modifier)
-}
-
-@Composable
-private fun ThreadRow(thread: AgentThread, agentName: String, ask: AgentAsk?, questions: Int, now: Long, onOpen: () -> Unit) {
-    val scheme = MaterialTheme.colorScheme
-    val status = AgentsModel.status(thread)
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(8.dp))
-            .background(scheme.surfaceContainer)
-            .clickable(role = Role.Button, onClick = onOpen)
-            .padding(horizontal = 14.dp, vertical = 12.dp),
-        verticalArrangement = Arrangement.spacedBy(4.dp),
-    ) {
-        StatusLine(
-            status = status,
-            trailing = relativeTime(thread.updatedMs, now),
-            word = if (status is ThreadStatus.Working) workingFor(thread.sinceMs, now) else null,
-        )
-        Text(
-            thread.title,
-            style = MaterialTheme.typography.bodyLarge,
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis,
-        )
-        Text(
-            "$agentName · ${thread.folder}",
-            style = MaterialTheme.typography.bodySmall,
-            color = scheme.onSurfaceVariant,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
-        if (status is ThreadStatus.NeedsYou) {
-            // A glance at what it asks; the whole of it is read in the thread before it can be allowed.
-            val preview = ask?.let { AgentsModel.askBody(it) ?: it.title }?.lineSequence()?.firstOrNull()
-            if (ask == null && questions > 0) {
-                Text(
-                    pluralStringResource(R.plurals.agents_question_asks_you, questions, questions),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = scheme.onSurfaceVariant,
-                    maxLines = 1,
-                )
-            } else if (!preview.isNullOrBlank()) {
-                Text(
-                    preview,
-                    style = MaterialTheme.typography.bodySmall.mono(LocalAppFonts.current),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 4.dp)
-                        .clip(RoundedCornerShape(8.dp))
-                        .background(scheme.surface)
-                        .padding(horizontal = 10.dp, vertical = 8.dp),
-                )
-            }
-            Row(Modifier.fillMaxWidth().padding(top = 4.dp), horizontalArrangement = Arrangement.End) {
-                G7RowAction(label = stringResource(R.string.agents_review), accent = true, onClick = onOpen)
-            }
-        } else if (status is ThreadStatus.Working) {
-            NowLine(step = thread.step, sinceMs = thread.sinceMs)
-        } else {
-            val line = statusDetail(status) ?: thread.summary
-            if (!line.isNullOrBlank()) {
-                Text(
-                    line,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = scheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-        }
-    }
 }
 
 /** The new-thread sheet: the task, the agent (when there's a choice), the folder. Always asks before each change. */
@@ -833,23 +869,23 @@ internal fun AgentsEmptyState(title: String, body: String? = null, action: Strin
 @Composable
 internal fun StatusLine(status: ThreadStatus, trailing: String?, modifier: Modifier = Modifier, word: String? = null) {
     val scheme = MaterialTheme.colorScheme
-    val tints = g7Tints()
-    val (dot, stateWord, wordColor) = when (status) {
-        ThreadStatus.NeedsYou -> Triple(tints.amber, stringResource(R.string.agents_state_waiting), tints.amber)
-        ThreadStatus.Working -> Triple(tints.blue, stringResource(R.string.agents_state_working), scheme.onSurfaceVariant)
-        ThreadStatus.Done -> Triple(tints.teal, stringResource(R.string.agents_state_done), scheme.onSurfaceVariant)
-        ThreadStatus.PlanReady -> Triple(tints.teal, stringResource(R.string.agents_state_plan_ready), scheme.onSurfaceVariant)
-        ThreadStatus.Stopped -> Triple(scheme.outline, stringResource(R.string.agents_state_interrupted), scheme.onSurfaceVariant)
-        is ThreadStatus.Paused -> Triple(scheme.outline, stringResource(R.string.agents_state_paused), scheme.onSurfaceVariant)
-        is ThreadStatus.Failed -> Triple(tints.red, stringResource(R.string.agents_state_failed), scheme.error)
+    val stateWord = when (status) {
+        ThreadStatus.NeedsYou -> stringResource(R.string.agents_state_waiting)
+        ThreadStatus.Working -> stringResource(R.string.agents_state_working)
+        ThreadStatus.Done -> stringResource(R.string.agents_state_done)
+        ThreadStatus.PlanReady -> stringResource(R.string.agents_state_plan_ready)
+        ThreadStatus.Stopped -> stringResource(R.string.agents_state_interrupted)
+        is ThreadStatus.Paused -> stringResource(R.string.agents_state_paused)
+        is ThreadStatus.Failed -> stringResource(R.string.agents_state_failed)
     }
     Row(
         modifier = modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        G7StatusDot(dot)
-        Text(word ?: stateWord, style = MaterialTheme.typography.labelMedium, color = wordColor, maxLines = 1)
+        // A mark of its own shape and the word in its colour (§2.9): never a bare dot.
+        ThreadStatusMark(status)
+        StatusWord(status, word ?: stateWord)
         if (!trailing.isNullOrBlank()) {
             Text(
                 trailing,

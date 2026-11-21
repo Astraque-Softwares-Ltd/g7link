@@ -14,11 +14,11 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.withLink
 import androidx.compose.ui.text.withStyle
-import app.g7link.android.ui.theme.G7Tints
 import app.g7link.android.ui.theme.MONO_FEATURES
 import app.g7link.core.AgentCodeLine
 import app.g7link.core.AgentLink
 import app.g7link.core.AgentSpan
+import app.g7link.core.AgentTok
 import app.g7link.core.AgentTokClass
 
 /**
@@ -98,11 +98,18 @@ internal object AgentText {
         return out
     }
 
-    /** The colours and font of agent text. */
+    /**
+     * The colours and font of agent text: links, and inline code on its chip in
+     * [inlineCode] (coral, §2.8); an inline span naming a file the turn changed
+     * is a path, its folder in [pathDir] and its name in [pathFile].
+     */
     data class Look(
         val mono: FontFamily,
         val link: Color,
         val codeBackground: Color,
+        val inlineCode: Color = Color.Unspecified,
+        val pathDir: Color = Color.Unspecified,
+        val pathFile: Color = Color.Unspecified,
     )
 
     /**
@@ -133,6 +140,15 @@ internal object AgentText {
                     styles = TextLinkStyles(SpanStyle(color = look.link, textDecoration = TextDecoration.Underline)),
                 ) { tapped(span) }
                 withLink(link) { withStyle(spanStyle) { append(part) } }
+            } else if (style.code && style.path) {
+                // A file the turn changed: its folder muted, its name in ink.
+                val (dir, name) = splitPath(part)
+                withStyle(spanStyle) {
+                    if (dir.isNotEmpty()) withStyle(SpanStyle(color = look.pathDir)) { append(dir) }
+                    withStyle(SpanStyle(color = look.pathFile)) { append(name) }
+                }
+            } else if (style.code) {
+                withStyle(spanStyle.copy(color = look.inlineCode)) { append(part) }
             } else {
                 withStyle(spanStyle) { append(part) }
             }
@@ -141,35 +157,46 @@ internal object AgentText {
         if (at < text.length) append(text, at, text.length)
     }
 
-    /** A token class's colour: the glyph tints, never the diff's green and red, the amber or the lavender. */
-    fun tokColor(cls: AgentTokClass, tints: G7Tints, plain: Color, muted: Color): Color = when (cls) {
-        AgentTokClass.COMMENT -> muted
-        AgentTokClass.KEYWORD, AgentTokClass.TAG -> tints.pink
-        AgentTokClass.STRING -> tints.teal
-        AgentTokClass.NUMBER, AgentTokClass.CONSTANT -> tints.coral
-        AgentTokClass.TYPE, AgentTokClass.ATTRIBUTE -> tints.blue
-        AgentTokClass.PLAIN,
-        AgentTokClass.FUNCTION,
-        AgentTokClass.VARIABLE,
-        AgentTokClass.OPERATOR,
-        AgentTokClass.PUNCTUATION,
-        AgentTokClass.INSERTED,
-        AgentTokClass.DELETED,
-        -> plain
+    /**
+     * A code line styled by its tokens (`AgentColours.tokStyle`); what the
+     * tokens don't cover, and plain runs, take the text's own colour.
+     */
+    fun codeLine(line: AgentCodeLine, style: (AgentTokClass) -> SpanStyle): AnnotatedString =
+        runs(line.text, line.toks, style)
+
+    /** Code lines one under another, each styled by its tokens. */
+    fun codeLines(lines: List<AgentCodeLine>, style: (AgentTokClass) -> SpanStyle): AnnotatedString = buildAnnotatedString {
+        lines.forEachIndexed { index, line ->
+            if (index > 0) append('\n')
+            append(codeLine(line, style))
+        }
     }
 
-    /** A code line coloured by its tokens; what the tokens don't cover stays plain. */
-    fun codeLine(line: AgentCodeLine, color: (AgentTokClass) -> Color): AnnotatedString = buildAnnotatedString {
-        val text = line.text
+    /**
+     * Output's last [max] lines, its marked runs styled when [lines] spell the
+     * same text (else plain), and whether any lines were left out.
+     */
+    fun markedTail(text: String, lines: List<AgentCodeLine>, max: Int, style: (AgentTokClass) -> SpanStyle): Pair<AnnotatedString, Boolean> {
+        val trimmed = text.trimEnd('\n')
+        val (tail, cut) = lastLines(trimmed, max)
+        if (lines.isEmpty()) return AnnotatedString(tail) to cut
+        val full = codeLines(lines, style)
+        val end = full.text.trimEnd('\n').length
+        if (full.text.substring(0, end) != trimmed) return AnnotatedString(tail) to cut
+        return full.subSequence(end - tail.length, end) to cut
+    }
+
+    /** [text] with [toks] over it in order, as `codeLine` does; for a tool line's target. */
+    fun runs(text: String, toks: List<AgentTok>, style: (AgentTokClass) -> SpanStyle): AnnotatedString = buildAnnotatedString {
         var at = 0
-        for (tok in line.toks) {
+        for (tok in toks) {
             if (at >= text.length) break
             val end = (at.toLong() + tok.len.toLong()).coerceAtMost(text.length.toLong()).toInt()
             if (end <= at) continue
             if (tok.tokClass == AgentTokClass.PLAIN) {
                 append(text, at, end)
             } else {
-                withStyle(SpanStyle(color = color(tok.tokClass))) { append(text, at, end) }
+                withStyle(style(tok.tokClass)) { append(text, at, end) }
             }
             at = end
         }

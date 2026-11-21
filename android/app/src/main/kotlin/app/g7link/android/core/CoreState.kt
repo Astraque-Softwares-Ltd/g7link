@@ -607,6 +607,8 @@ data class CoreState(
         is Event.PcMirrorConfig,
         is Event.PcMirrorFrame,
         is Event.PcMirrorEnded,
+        // The Screen tab shows it (Core.pcMirrorSignals).
+        is Event.PcMirrorNotice,
         // Screenshots and recordings of a PC: kept by Core.pcCapture.
         is Event.PcCapturePrompt,
         is Event.PcCaptureRecordEnded,
@@ -626,6 +628,10 @@ data class CoreState(
         is Event.AgentQuestion,
         is Event.AgentQuestioned,
         is Event.AgentDraftChanged,
+        is Event.AgentTurn,
+        is Event.AgentCut,
+        is Event.AgentImport,
+        is Event.AgentOutbox,
         -> this
     }
 
@@ -713,6 +719,7 @@ internal fun Event.affectsCoreState(): Boolean = when (this) {
     is Event.PcMirrorConfig,
     is Event.PcMirrorFrame,
     is Event.PcMirrorEnded,
+    is Event.PcMirrorNotice,
     is Event.PcCapturePrompt,
     is Event.PcCaptureRecordEnded,
     is Event.AgentCatalog,
@@ -729,6 +736,10 @@ internal fun Event.affectsCoreState(): Boolean = when (this) {
     is Event.AgentQuestion,
     is Event.AgentQuestioned,
     is Event.AgentDraftChanged,
+    is Event.AgentTurn,
+    is Event.AgentCut,
+    is Event.AgentImport,
+    is Event.AgentOutbox,
     -> false
     else -> true
 }
