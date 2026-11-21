@@ -1,0 +1,9 @@
+{
+  "quote": {
+    "path": "src/main.rs",
+    "first": 12,
+    "last": 14,
+    "text": "fn main() {\n    run();\n}"
+  },
+  "text": "src/main.rs:12–14\n```\nfn main() {\n    run();\n}\n```"
+}

@@ -1,0 +1,4 @@
+[
+  {"number": 214, "title": "An older one", "state": "OPEN", "isDraft": false, "url": "https://github.com/fictional/repo/pull/214", "reviewDecision": "", "mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN", "baseRefName": "main", "headRefName": "main", "headRefOid": "3333333333333333333333333333333333333333", "updatedAt": "2026-11-21T12:00:00Z", "statusCheckRollup": []},
+  {"number": 215, "title": "The new one", "state": "OPEN", "isDraft": true, "url": "https://github.com/fictional/repo/pull/215", "reviewDecision": "REVIEW_REQUIRED", "mergeable": "UNKNOWN", "mergeStateStatus": "UNKNOWN", "baseRefName": "main", "headRefName": "main", "headRefOid": "4444444444444444444444444444444444444444", "updatedAt": "2026-11-21T11:00:00Z", "statusCheckRollup": []}
+]

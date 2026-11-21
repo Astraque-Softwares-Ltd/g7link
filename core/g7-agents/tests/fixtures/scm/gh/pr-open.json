@@ -1,0 +1,23 @@
+[
+  {
+    "number": 212,
+    "title": "Fix the reconnect retry",
+    "state": "OPEN",
+    "isDraft": false,
+    "url": "https://github.com/fictional/repo/pull/212",
+    "reviewDecision": "",
+    "mergeable": "MERGEABLE",
+    "mergeStateStatus": "CLEAN",
+    "baseRefName": "main",
+    "headRefName": "main",
+    "headRefOid": "0123456789abcdef0123456789abcdef01234567",
+    "updatedAt": "2026-11-21T10:00:00Z",
+    "statusCheckRollup": [
+      {"__typename": "CheckRun", "name": "build", "status": "COMPLETED", "conclusion": "SUCCESS", "workflowName": "CI", "detailsUrl": "https://github.com/fictional/repo/actions/runs/1/job/1", "startedAt": "2026-11-21T09:00:00Z", "completedAt": "2026-11-21T09:05:00Z"},
+      {"__typename": "CheckRun", "name": "test", "status": "COMPLETED", "conclusion": "FAILURE", "workflowName": "CI", "detailsUrl": "https://github.com/fictional/repo/actions/runs/1/job/2", "startedAt": "2026-11-21T09:00:00Z", "completedAt": "2026-11-21T09:06:00Z"},
+      {"__typename": "CheckRun", "name": "lint", "status": "COMPLETED", "conclusion": "SKIPPED", "workflowName": "CI", "detailsUrl": "https://github.com/fictional/repo/actions/runs/1/job/3", "startedAt": "2026-11-21T09:00:00Z", "completedAt": "2026-11-21T09:00:01Z"},
+      {"__typename": "CheckRun", "name": "docs", "status": "COMPLETED", "conclusion": "CANCELLED", "workflowName": "Docs", "detailsUrl": "https://github.com/fictional/repo/actions/runs/2/job/1", "startedAt": "2026-11-21T09:00:00Z", "completedAt": "2026-11-21T09:02:00Z"},
+      {"__typename": "CheckRun", "name": "deploy", "status": "IN_PROGRESS", "conclusion": "", "workflowName": "Deploy", "detailsUrl": "https://elsewhere.example.test/run/9", "startedAt": "2026-11-21T09:00:00Z", "completedAt": "0001-01-01T00:00:00Z"}
+    ]
+  }
+]

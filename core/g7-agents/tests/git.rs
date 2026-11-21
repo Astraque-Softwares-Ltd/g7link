@@ -1287,3 +1287,42 @@ async fn a_file_that_changes_type_while_it_is_hashed_is_left_and_the_rest_still_
     assert!(!repo.join("a.txt").exists() && !repo.join("c.txt").exists());
     assert_eq!(read(&repo, "tracked.txt").as_deref(), Some("a\n"));
 }
+
+// ---- A thread in a linked worktree (phase 4 §SC3.8, §SC12.1 row 7) ----
+
+#[tokio::test]
+async fn a_restore_point_is_captured_and_restored_inside_a_linked_worktree() {
+    let Some(lab) = Lab::new() else { return };
+    let repo = lab.repo("u");
+    let tree = lab.root.join("wt");
+    lab.git(&repo, &["worktree", "add", "-q", "-b", "g7/wt", tree.to_str().unwrap()]);
+    assert!(tree.join(".git").is_file(), "a linked worktree's .git is a file");
+    write(&tree, "tracked.txt", "before\n");
+    let place = lab.place(&tree);
+    let (pre, post) = (pre_ref(THREAD, 1).unwrap(), post_ref(THREAD, 1).unwrap());
+    ready(git::capture(&place, &pre, PRE_BUDGET).await);
+    write(&tree, "tracked.txt", "agent\n");
+    write(&tree, "made.txt", "new\n");
+    ready(git::capture(&place, &post, PRE_BUDGET).await);
+
+    let main_state = user_state(&lab, &repo);
+    let tree_index =
+        PathBuf::from(lab.git(&tree, &["rev-parse", "--path-format=absolute", "--git-path", "index"]));
+    assert!(tree_index.starts_with(repo.join(".git/worktrees")));
+    let tree_index_bytes = fs::read(&tree_index).unwrap();
+    let plan = plan_restore(&place, THREAD, &pre, Some(&post), &[]).await.unwrap();
+    assert_eq!(
+        actions(&plan),
+        BTreeMap::from([
+            ("made.txt".to_owned(), (RewindAction::Delete, false)),
+            ("tracked.txt".to_owned(), (RewindAction::Restore, false)),
+        ])
+    );
+    assert!(apply_restore(&place, &plan, false).await.unwrap().is_empty());
+    assert_eq!(read(&tree, "tracked.txt").as_deref(), Some("before\n"));
+    assert!(!tree.join("made.txt").exists());
+    assert_eq!(fs::read(&tree_index).unwrap(), tree_index_bytes, "the worktree's index is untouched");
+    assert_eq!(lab.git(&tree, &["symbolic-ref", "--short", "HEAD"]), "g7/wt");
+    assert_eq!(user_state(&lab, &repo), main_state, "the main work tree is untouched");
+    assert_eq!(read(&repo, "tracked.txt").as_deref(), Some("a\n"));
+}

@@ -1,0 +1,9 @@
+{
+  "quote": {
+    "path": "README.md",
+    "first": 3,
+    "last": 3,
+    "text": "G7 Link"
+  },
+  "text": "README.md:3–3\n```\nG7 Link\n```"
+}

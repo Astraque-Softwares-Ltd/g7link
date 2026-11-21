@@ -1,0 +1,9 @@
+{
+  "quote": {
+    "path": "docs/guide.md",
+    "first": 40,
+    "last": 44,
+    "text": "Run it:\n```sh\ncargo test\n```"
+  },
+  "text": "docs/guide.md:40–44\n````\nRun it:\n```sh\ncargo test\n```\n````"
+}

@@ -1,0 +1,4 @@
+[
+  {"number": 3, "title": "Add the export", "repository": {"name": "repo", "nameWithOwner": "fictional/repo"}, "state": "open", "isDraft": false, "updatedAt": "2026-11-19T08:00:00Z", "url": "https://github.com/fictional/repo/pull/3"},
+  {"number": 4, "title": "Elsewhere", "repository": {"name": "other", "nameWithOwner": "fictional/other"}, "state": "open", "isDraft": true, "updatedAt": "2026-11-18T08:00:00Z", "url": "https://github.com/fictional/other/pull/4"}
+]

@@ -101,6 +101,37 @@ const CONFIG: &[&str] = &[
     "commit.gpgSign=false",
 ];
 
+/// How a source-control call (`host/scm`, phase 4 §SC3.1) runs; restore
+/// points never use it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Profile {
+    /// A read: [`READ_CONFIG`], no optional locks, the C locale, literal
+    /// pathspecs; no hook, monitor or maintenance program runs.
+    Read,
+    /// A person's request: no `-c` option and the user's own locale, so the
+    /// user's hooks, signing and credential helper run as in a terminal.
+    Act,
+}
+
+/// `-c` options of a [`Profile::Read`] call.
+const READ_CONFIG: &[&str] = &[
+    "core.fsmonitor=false",
+    "core.untrackedCache=false",
+    "core.quotePath=false",
+    "core.hooksPath=/dev/null",
+    "gc.auto=0",
+    "maintenance.auto=false",
+];
+
+/// What [`ADD`] sets that a [`Profile::Act`] call goes without.
+const ACT_UNSET: &[&str] = &["GIT_OPTIONAL_LOCKS", "GIT_ADVICE", "LC_ALL"];
+
+/// Bytes of one output line handed on before the rest of that line is dropped.
+const SPAWN_LINE: usize = 4096;
+
+/// Where [`Git::spawn`] hands each line of output.
+pub(crate) type LineSink<'a> = &'a mut (dyn FnMut(&[u8]) + Send);
+
 /// Why a git operation didn't happen. The text is for the host's log; a
 /// client gets a reason word chosen by the caller.
 #[derive(Debug, thiserror::Error)]
@@ -262,6 +293,189 @@ impl Git {
         };
         Ok(Out { code: status.code(), stdout, over, stderr: String::from_utf8_lossy(&stderr).into_owned() })
     }
+
+    /// Runs one source-control command under `profile` (phase 4 §SC3.1).
+    /// A [`Profile::Read`] call takes one of the host's process slots, as
+    /// [`Git::run`] does; a [`Profile::Act`] call is a person's job that may
+    /// wait minutes on their hooks and takes none, so it never holds up
+    /// restore points or reads. Each line either stream prints is handed to
+    /// `on_line` as it arrives (at most [`SPAWN_LINE`] bytes of it). When
+    /// `stop` finishes first the process group is killed and the result has
+    /// no exit code; past the call's limit or `deadline` it is
+    /// [`GitError::Slow`], also after a kill. A non-zero exit is not an error.
+    pub(crate) async fn spawn(
+        &self,
+        profile: Profile,
+        call: Call,
+        deadline: Instant,
+        mut on_line: Option<LineSink<'_>>,
+        stop: impl Future<Output = ()>,
+    ) -> Result<Out, GitError> {
+        let now = Instant::now();
+        let limit = call.limit.min(deadline.saturating_duration_since(now));
+        if limit.is_zero() {
+            return Err(GitError::Slow);
+        }
+        let until = tokio::time::Instant::from_std(now + limit);
+        let _slot = match profile {
+            Profile::Read => Some(
+                tokio::time::timeout_at(until, self.slots.acquire())
+                    .await
+                    .map_err(|_| GitError::Slow)?
+                    .map_err(|_| GitError::Slow)?,
+            ),
+            Profile::Act => None,
+        };
+
+        let mut cmd = Command::new(&self.bin);
+        let mut env: Vec<(&OsString, &OsString)> = self.env.iter().map(|(k, v)| (k, v)).collect();
+        if profile == Profile::Read {
+            for config in READ_CONFIG {
+                cmd.arg("-c").arg(config);
+            }
+        } else {
+            env.retain(|(k, _)| !ACT_UNSET.iter().any(|u| k == u));
+        }
+        cmd.args(&call.args).env_clear().envs(env);
+        if profile == Profile::Read {
+            cmd.env("GIT_LITERAL_PATHSPECS", "1");
+        }
+        cmd.envs(call.env.iter().map(|(k, v)| (k, v)))
+            .current_dir(&call.cwd)
+            .stdin(if call.input.is_some() { Stdio::piped() } else { Stdio::null() })
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .process_group(0)
+            .kill_on_drop(true);
+        let mut child = cmd.spawn()?;
+        let pid = child.id();
+        let stdin = child.stdin.take();
+        let stdout = child.stdout.take();
+        let stderr = child.stderr.take();
+        let input = call.input;
+        let cap = call.cap;
+        let kill_over = (profile == Profile::Read).then_some(pid);
+        let streaming = on_line.is_some();
+
+        enum End {
+            Done((Vec<u8>, bool), (Vec<u8>, bool), io::Result<std::process::ExitStatus>),
+            Late,
+            Stopped,
+        }
+        let stop = std::pin::pin!(stop);
+        let end = {
+            let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<u8>>(64);
+            let out_tx = streaming.then(|| tx.clone());
+            let err_tx = streaming.then(|| tx.clone());
+            drop(tx);
+            let feed = async move {
+                if let (Some(mut w), Some(bytes)) = (stdin, input) {
+                    // A child that exits without reading it all closes the pipe: not an error.
+                    let _ = w.write_all(&bytes).await;
+                    let _ = w.shutdown().await;
+                }
+            };
+            let deliver = async {
+                while let Some(line) = rx.recv().await {
+                    if let Some(f) = on_line.as_mut() {
+                        f(&line);
+                    }
+                }
+            };
+            let work = async {
+                let (_, out, err, ()) = tokio::join!(
+                    feed,
+                    read_lines(stdout, cap, kill_over, out_tx),
+                    read_lines(stderr, MAX_ERR, None, err_tx),
+                    deliver
+                );
+                (out, err, child.wait().await)
+            };
+            tokio::select! {
+                biased;
+                done = tokio::time::timeout_at(until, work) => match done {
+                    Ok((out, err, status)) => End::Done(out, err, status),
+                    Err(_) => End::Late,
+                },
+                () = stop => End::Stopped,
+            }
+        };
+        // `work` was still waiting whenever it lost the race, so the child
+        // is not reaped yet and its id (the group's) can't have been reused.
+        match end {
+            End::Done((stdout, over), (stderr, _), status) => {
+                let status = status?;
+                Ok(Out {
+                    code: status.code(),
+                    stdout,
+                    over,
+                    stderr: String::from_utf8_lossy(&stderr).into_owned(),
+                })
+            }
+            End::Late => {
+                kill_group(pid);
+                reap(&mut child).await;
+                Err(GitError::Slow)
+            }
+            End::Stopped => {
+                kill_group(pid);
+                reap(&mut child).await;
+                Ok(Out { code: None, stdout: Vec::new(), over: false, stderr: String::new() })
+            }
+        }
+    }
+}
+
+/// [`read_capped`], and with `lines`, every line as it arrives (the end of
+/// one past [`SPAWN_LINE`] bytes is dropped; a last line without a newline
+/// is sent at the end).
+async fn read_lines(
+    from: Option<impl AsyncRead + Unpin>,
+    cap: usize,
+    kill: Option<Option<u32>>,
+    lines: Option<tokio::sync::mpsc::Sender<Vec<u8>>>,
+) -> (Vec<u8>, bool) {
+    let Some(lines) = lines else { return read_capped(from, cap, kill).await };
+    let Some(mut from) = from else { return (Vec::new(), false) };
+    let mut kept = Vec::new();
+    let mut over = false;
+    let mut chunk = vec![0u8; 64 << 10];
+    let mut line = Vec::new();
+    let mut skipping = false;
+    loop {
+        let n = match from.read(&mut chunk).await {
+            Ok(0) | Err(_) => break,
+            Ok(n) => n,
+        };
+        let room = cap - kept.len();
+        kept.extend_from_slice(&chunk[..n.min(room)]);
+        if n > room && !over {
+            over = true;
+            if let Some(pid) = kill {
+                kill_group(pid);
+                break;
+            }
+        }
+        for &b in &chunk[..n] {
+            if b == b'\n' {
+                if !skipping {
+                    let _ = lines.send(std::mem::take(&mut line)).await;
+                }
+                line.clear();
+                skipping = false;
+            } else if !skipping {
+                line.push(b);
+                if line.len() >= SPAWN_LINE {
+                    let _ = lines.send(std::mem::take(&mut line)).await;
+                    skipping = true;
+                }
+            }
+        }
+    }
+    if !line.is_empty() && !skipping {
+        let _ = lines.send(line).await;
+    }
+    (kept, over)
 }
 
 fn is_executable(path: &Path) -> bool {

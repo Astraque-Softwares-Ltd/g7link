@@ -1,0 +1,9 @@
+{
+  "quote": {
+    "path": "notes.md",
+    "first": 1,
+    "last": 2,
+    "text": "inline ``x`` code\nand ````` five"
+  },
+  "text": "notes.md:1–2\n``````\ninline ``x`` code\nand ````` five\n``````"
+}

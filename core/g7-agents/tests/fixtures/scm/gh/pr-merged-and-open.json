@@ -1,0 +1,37 @@
+[
+  {
+    "number": 7,
+    "title": "Earlier change",
+    "state": "MERGED",
+    "isDraft": false,
+    "url": "https://github.com/fictional/repo/pull/7",
+    "reviewDecision": "",
+    "mergeable": "UNKNOWN",
+    "mergeStateStatus": "UNKNOWN",
+    "baseRefName": "main",
+    "headRefName": "main",
+    "headRefOid": "1111111111111111111111111111111111111111",
+    "updatedAt": "2026-11-21T12:00:00Z",
+    "statusCheckRollup": null
+  },
+  {
+    "number": 9,
+    "title": "Draft \u001b[31mwith\u0007 colour",
+    "state": "OPEN",
+    "isDraft": true,
+    "url": "https://github.com/fictional/repo/pull/9",
+    "reviewDecision": "CHANGES_REQUESTED",
+    "mergeable": "CONFLICTING",
+    "mergeStateStatus": "BLOCKED",
+    "baseRefName": "main",
+    "headRefName": "main",
+    "headRefOid": "2222222222222222222222222222222222222222",
+    "updatedAt": "2026-11-20T12:00:00Z",
+    "statusCheckRollup": [
+      {"__typename": "StatusContext", "context": "ci/legacy", "state": "PENDING", "targetUrl": "https://github.com/fictional/repo/status/1"},
+      {"__typename": "StatusContext", "context": "ci/old", "state": "ERROR", "targetUrl": "http://github.com/insecure"},
+      {"__typename": "CheckRun", "name": "queued", "status": "QUEUED", "conclusion": null, "workflowName": "", "detailsUrl": ""},
+      {"__typename": "SomethingNew", "name": "future"}
+    ]
+  }
+]

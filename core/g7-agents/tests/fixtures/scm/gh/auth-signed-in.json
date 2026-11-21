@@ -1,0 +1,36 @@
+{
+  "hosts": {
+    "github.com": [
+      {
+        "active": true,
+        "gitProtocol": "https",
+        "host": "github.com",
+        "login": "fictional-login-zq",
+        "scopes": "gist, read:org, repo",
+        "state": "success",
+        "tokenSource": "keyring",
+        "token": "gho_FICTIONAL0000000000000000000000000000"
+      },
+      {
+        "active": false,
+        "gitProtocol": "ssh",
+        "host": "github.com",
+        "login": "fictional-second-zq",
+        "scopes": "repo",
+        "state": "error",
+        "tokenSource": "keyring"
+      }
+    ],
+    "ghe.example.test": [
+      {
+        "active": true,
+        "gitProtocol": "https",
+        "host": "ghe.example.test",
+        "login": "fictional-login-zq",
+        "scopes": "repo",
+        "state": "timeout",
+        "tokenSource": "keyring"
+      }
+    ]
+  }
+}
