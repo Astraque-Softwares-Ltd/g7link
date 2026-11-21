@@ -55,6 +55,7 @@ import app.g7link.core.AgentSession
 import app.g7link.core.AgentSessionPage
 import app.g7link.core.AgentSessionState
 import app.g7link.core.AgentThread
+import app.g7link.core.AwayReach
 import app.g7link.core.BleUseState
 import app.g7link.core.FfiQueueStatus
 import app.g7link.core.Event
@@ -67,6 +68,7 @@ import app.g7link.core.G7LinkNode
 import app.g7link.core.NodeOptions
 import app.g7link.core.Notification
 import app.g7link.core.PairingFailure
+import app.g7link.core.PeerAddressResult
 import app.g7link.core.PowerLevel
 import app.g7link.core.RecordingMarker
 import app.g7link.core.RelayEdit
@@ -362,7 +364,7 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
         val hasWifi = snapshot.wifiBars != null
         lastSignal = snapshot
         pushBatteryAndSignal()
-        if (hadWifi != hasWifi && (hasWifi || _state.value.awayMode)) {
+        if (hadWifi != hasWifi && (hasWifi || _state.value.awayMode || Tailnet.isUp(this.context))) {
             node?.let { scope.launch { runCatching { it.networkChanged() } } }
         }
     }
@@ -376,7 +378,7 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
         networkChange?.cancel()
         networkChange = scope.launch {
             delay(150)
-            if (lastSignal.wifiBars != null || _state.value.awayMode) {
+            if (lastSignal.wifiBars != null || _state.value.awayMode || Tailnet.isUp(this@Core.context)) {
                 node?.networkChanged()
             }
             // A new Wi-Fi network turns wireless debugging off; Elevated turns it back on
@@ -1741,6 +1743,28 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
     } catch (e: IllegalStateException) {
         // The node can be closed while the settings dialog is open.
         emptyList()
+    }
+
+    // ---- A PC's address (Tailscale) ----
+
+    /**
+     * Saves where [pcId] can be reached ("" clears it); null if it couldn't be saved.
+     * A name is looked up before this returns (a few seconds at most); leaving the
+     * screen meanwhile doesn't cut the save short.
+     */
+    suspend fun setPeerAddress(pcId: String, text: String): PeerAddressResult? =
+        withContext(Dispatchers.IO + NonCancellable) {
+            runCatching { node?.setPeerAddress(pcId, text) }.getOrNull()
+        }
+
+    /** The address saved for [pcId], or null when none is (or it can't be read). */
+    suspend fun peerAddress(pcId: String): String? = withContext(Dispatchers.IO) {
+        runCatching { node?.peerAddress(pcId) }.getOrNull()
+    }
+
+    /** How [pcId] is reached away from home, from what the phone knows. */
+    suspend fun awayReach(pcId: String): AwayReach? = withContext(Dispatchers.IO) {
+        runCatching { node?.awayReach(pcId, Tailnet.isUp(context)) }.getOrNull()
     }
 
     fun setLocalSendEnabled(enabled: Boolean) {

@@ -1088,6 +1088,7 @@ private fun App(
                                         onPairNew = { pairing = true },
                                         onAccessChanged = core::refreshNotificationAccess,
                                         updater = (context.applicationContext as G7LinkApplication).updater,
+                                        core = core,
                                         onSetStorageEnabled = core::setStorageEnabled,
                                         onSetMicEnabled = core::setMicEnabled,
                                         onSetBtMedia = core::setBtMedia,

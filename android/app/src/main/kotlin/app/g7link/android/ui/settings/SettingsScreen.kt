@@ -74,6 +74,7 @@ import app.g7link.android.companion.PcBeaconScan
 import app.g7link.android.companion.PcCompanion
 import app.g7link.android.contacts.PhoneContacts
 import app.g7link.android.core.BackgroundAccess
+import app.g7link.android.core.Core
 import app.g7link.android.core.CoreState
 import app.g7link.android.core.Device
 import app.g7link.android.elevated.Elevated
@@ -132,6 +133,7 @@ fun SettingsScreen(
     onPairNew: () -> Unit,
     onAccessChanged: () -> Unit,
     updater: AppUpdater,
+    core: Core,
     onSetStorageEnabled: (pcId: String, enabled: Boolean) -> Unit = { _, _ -> },
     onSetMicEnabled: (pcId: String, enabled: Boolean) -> Unit = { _, _ -> },
     onSetBtMedia: (pcId: String, on: Boolean) -> Unit = { _, _ -> },
@@ -295,6 +297,7 @@ fun SettingsScreen(
                                     checked = device.id in startWithoutAsking,
                                     onCheckedChange = { on -> onSetStartWithoutAsking(device.id, on) },
                                 )
+                                PcAddressRow(core = core, device = device)
                             }
                             G7Row(
                                 label = stringResource(R.string.action_unpair),
