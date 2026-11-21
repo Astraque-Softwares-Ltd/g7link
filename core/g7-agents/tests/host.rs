@@ -786,7 +786,9 @@ async fn hello_says_what_the_host_offers() {
             cap::UNDO,
             cap::PRESENCE,
             cap::GIT,
-            cap::PLACE
+            cap::PLACE,
+            cap::HANDOFF,
+            cap::PHOTO
         ]
     );
     let too_many = HelloParams::new(ClientKind::Test, &["x"; MAX_CAPS + 1]);
@@ -1881,6 +1883,243 @@ async fn presence_is_g7_links_to_say_and_reaches_those_that_asked() {
     assert!(!now.locked && !now.at_pc);
     assert_eq!(now.viewing, [thread.id], "the launcher still shows it");
     drop(link_events);
+    host.stop().await;
+}
+
+// ---- Hand-off and the phone's camera (phase 5, wave 2, §V8.4, §V8.5) ----
+
+/// What G7 Link's page connection says: it takes hand-offs and photos.
+const LINK_CAPS: [&str; 5] = [cap::ITEMS2, cap::ITEMS3, cap::PRESENCE, cap::HANDOFF, cap::PHOTO];
+
+/// The events that came before a reply to a request sent now.
+async fn heard_so_far(client: &Client, events: &mut Events) -> Vec<Event> {
+    client.folders_list().await.unwrap();
+    std::iter::from_fn(|| events.try_recv()).collect()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_thread_is_handed_to_a_phone_through_g7_link_after_its_draft() {
+    let host = TestHost::start(Options::default()).await;
+    let (client, mut events) = host.subscribed().await;
+    let folder = host.folder(&client).await;
+    let thread = client.thread_start(start(AgentId::Claude, &folder, "List the files here.")).await.unwrap();
+    until_done(&mut events, &thread.id).await;
+    let connect =
+        |kind: ClientKind, caps: &[&str]| Client::connect(&host.socket, HelloParams::new(kind, caps));
+    let (launcher, mut launcher_events) = connect(ClientKind::Launcher, &[cap::PRESENCE]).await.unwrap();
+    let to = |device_id: Option<&str>, seq: Option<u64>| UiHandoffParams {
+        thread_id: thread.id.clone(),
+        device_id: device_id.map(str::to_owned),
+        seq,
+        by: Origin::launcher(),
+    };
+    assert_eq!(launcher.ui_handoff(to(Some("7"), Some(2))).await.unwrap(), 0, "G7 Link isn't open");
+
+    let (link, mut link_events) = connect(ClientKind::Link, &LINK_CAPS).await.unwrap();
+    let (watch, mut watch_events) = connect(ClientKind::Link, &[cap::ITEMS2, cap::ITEMS3]).await.unwrap();
+    // The sender saves its draft first; the phone reads it from the host.
+    let draft = DraftSetParams {
+        key: thread.id.clone(),
+        text: "And the tests too.".into(),
+        images: Vec::new(),
+        rev: 0,
+        by: None,
+    };
+    launcher.draft_set(draft).await.unwrap();
+    assert_eq!(launcher.ui_handoff(to(Some("7"), Some(2))).await.unwrap(), 1);
+    let handed = next(&mut link_events, "ui.handoff", |e| matches!(e, Event::UiHandoff(_))).await;
+    let expected = HandoffEvent { thread_id: thread.id.clone(), device_id: Some("7".into()), seq: Some(2) };
+    assert_eq!(handed, Event::UiHandoff(expected));
+    let saved = link.draft_get(thread.id.clone()).await.unwrap().expect("the draft");
+    assert_eq!(saved.text, "And the tests too.");
+
+    // The PC app may hand over through the host too: it hears its own.
+    assert_eq!(link.ui_handoff(to(None, None)).await.unwrap(), 1);
+    let handed = next(&mut link_events, "its own ui.handoff", |e| matches!(e, Event::UiHandoff(_))).await;
+    let expected = HandoffEvent { thread_id: thread.id.clone(), device_id: None, seq: None };
+    assert_eq!(handed, Event::UiHandoff(expected));
+
+    let err = client.ui_handoff(to(None, None)).await.unwrap_err();
+    assert_eq!(err.code(), Some(ErrorCode::Denied), "neither the launcher nor G7 Link");
+    let unknown = UiHandoffParams { thread_id: "f".repeat(32), ..to(None, None) };
+    assert_eq!(launcher.ui_handoff(unknown).await.unwrap_err().code(), Some(ErrorCode::NotFound));
+    for bad in [String::new(), "d".repeat(MAX_DEVICE_ID + 1)] {
+        let err = launcher.ui_handoff(to(Some(&bad), None)).await.unwrap_err();
+        assert_eq!(err.code(), Some(ErrorCode::BadRequest), "{bad:?}");
+    }
+
+    // Only the connections that said `handoff` heard it, and the thread didn't move.
+    for (who, events) in
+        [(&watch, &mut watch_events), (&launcher, &mut launcher_events), (&client, &mut events)]
+    {
+        for event in heard_so_far(who, events).await {
+            assert!(!matches!(event, Event::UiHandoff(_)), "{event:?}");
+        }
+    }
+    let listed = client.threads_list(None, None).await.unwrap();
+    assert!(listed.iter().any(|t| t.id == thread.id && t.state == State::Done), "nothing was sent");
+    host.stop().await;
+}
+
+/// A small picture in `dir`, as a phone's photo arrives on this PC.
+fn picture(dir: &Path) -> String {
+    let path = dir.join("photo.png");
+    let mut png = Vec::new();
+    image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(4, 3, image::Rgb([200, 120, 40])))
+        .write_with_encoder(image::codecs::png::PngEncoder::new(&mut png))
+        .unwrap();
+    std::fs::write(&path, png).unwrap();
+    path.to_string_lossy().into_owned()
+}
+
+async fn photo_asked(events: &mut Events) -> String {
+    match next(events, "ui.photo", |e| matches!(e, Event::UiPhoto(_))).await {
+        Event::UiPhoto(e) => e.request,
+        _ => unreachable!(),
+    }
+}
+
+fn ask_photo(launcher: &Client) -> tokio::task::JoinHandle<Result<UiPhotoResult, ClientError>> {
+    let launcher = launcher.clone();
+    tokio::spawn(async move { launcher.ui_photo(Origin::launcher()).await })
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_phone_photo_comes_back_as_the_launchers_own_image() {
+    let host = TestHost::start(Options::default()).await;
+    let connect =
+        |kind: ClientKind, caps: &[&str]| Client::connect(&host.socket, HelloParams::new(kind, caps));
+    let (launcher, _launcher_events) = connect(ClientKind::Launcher, &[]).await.unwrap();
+    let folder = host.folder(&launcher).await;
+    let err = launcher.ui_photo(Origin::launcher()).await.unwrap_err();
+    assert_eq!(err.code(), Some(ErrorCode::Unavailable), "no G7 Link");
+    let (link, mut link_events) = connect(ClientKind::Link, &LINK_CAPS).await.unwrap();
+    let (watch, mut watch_events) = connect(ClientKind::Link, &[cap::ITEMS2, cap::ITEMS3]).await.unwrap();
+
+    let asked = ask_photo(&launcher);
+    let request = photo_asked(&mut link_events).await;
+    assert!(is_valid_photo_request(&request));
+    let err = launcher.ui_photo(Origin::launcher()).await.unwrap_err();
+    assert_eq!(err.code(), Some(ErrorCode::Busy), "one at a time");
+    assert_eq!(link.ui_photo(Origin::launcher()).await.unwrap_err().code(), Some(ErrorCode::Denied));
+
+    // G7 Link adds the picture as any image is added (decoded, encoded again), then answers.
+    let file = picture(&host.work);
+    let added = link.image_add_path(file.clone()).await.unwrap();
+    let done = |image: Option<&str>, error: Option<PhotoError>| UiPhotoDoneParams {
+        request: request.clone(),
+        image: image.map(str::to_owned),
+        error,
+    };
+    let refused = [
+        (&launcher, done(Some(&added.id), None), ErrorCode::Denied, "only G7 Link answers"),
+        (&watch, done(Some(&added.id), None), ErrorCode::NotFound, "not the connection asked"),
+        (&link, done(Some(&added.id), Some(PhotoError::Cancelled)), ErrorCode::BadRequest, "both"),
+        (&link, done(None, None), ErrorCode::BadRequest, "neither"),
+        (
+            &link,
+            UiPhotoDoneParams { request: "0".repeat(16), ..done(Some(&added.id), None) },
+            ErrorCode::NotFound,
+            "not the request",
+        ),
+    ];
+    for (who, params, code, why) in refused {
+        assert_eq!(who.ui_photo_done(params).await.unwrap_err().code(), Some(code), "{why}");
+    }
+    let launchers = launcher.image_add_path(file).await.unwrap();
+    let err = link.ui_photo_done(done(Some(&launchers.id), None)).await.unwrap_err();
+    assert_eq!(err.code(), Some(ErrorCode::NotFound), "not an image G7 Link added");
+
+    link.ui_photo_done(done(Some(&added.id), None)).await.unwrap();
+    let got = asked.await.unwrap().unwrap();
+    let image = got.image.clone().expect("the photo");
+    assert_eq!(got, UiPhotoResult { image: Some(added.clone()), error: None });
+    assert_eq!((image.w, image.h), (4, 3));
+    let err = link.ui_photo_done(done(None, Some(PhotoError::Cancelled))).await.unwrap_err();
+    assert_eq!(err.code(), Some(ErrorCode::NotFound), "answered already");
+
+    // It is the launcher's now: it goes into the launcher's draft; G7 Link can't use it any more.
+    assert_eq!(link.image_drop(image.id.clone()).await.unwrap_err().code(), Some(ErrorCode::NotFound));
+    let key = format!("new:{}", folder.id);
+    let draft = DraftSetParams {
+        key: key.clone(),
+        text: String::new(),
+        images: vec![image.id.clone()],
+        rev: 0,
+        by: None,
+    };
+    launcher.draft_set(draft).await.unwrap();
+    assert_eq!(launcher.draft_get(key).await.unwrap().expect("the draft").images, [image]);
+    launcher.image_drop(launchers.id).await.unwrap();
+
+    // Cancelled on the phone.
+    let asked = ask_photo(&launcher);
+    let request = photo_asked(&mut link_events).await;
+    let cancelled = UiPhotoDoneParams { request, image: None, error: Some(PhotoError::Cancelled) };
+    link.ui_photo_done(cancelled).await.unwrap();
+    let got = asked.await.unwrap().unwrap();
+    assert_eq!(got, UiPhotoResult { image: None, error: Some(PhotoError::Cancelled) });
+
+    // The launcher goes while it waits: G7 Link is told to stop, and the next isn't busy.
+    let (quitter, quitter_events) = connect(ClientKind::Launcher, &[]).await.unwrap();
+    let waiting = ask_photo(&quitter);
+    let request = photo_asked(&mut link_events).await;
+    waiting.abort();
+    let _ = waiting.await;
+    drop((quitter, quitter_events));
+    let stop = next(&mut link_events, "ui.photo.cancel", |e| matches!(e, Event::UiPhotoCancel(_))).await;
+    assert_eq!(stop, Event::UiPhotoCancel(PhotoEvent { request: request.clone() }));
+    let late = UiPhotoDoneParams { request, image: None, error: Some(PhotoError::Timeout) };
+    assert_eq!(link.ui_photo_done(late).await.unwrap_err().code(), Some(ErrorCode::NotFound));
+
+    // G7 Link goes while the launcher waits.
+    let asked = ask_photo(&launcher);
+    photo_asked(&mut link_events).await;
+    drop(link);
+    let err = asked.await.unwrap().unwrap_err();
+    assert_eq!(err.code(), Some(ErrorCode::Unavailable), "G7 Link went");
+    let err = launcher.ui_photo(Origin::launcher()).await.unwrap_err();
+    assert_eq!(err.code(), Some(ErrorCode::Unavailable), "the connection left doesn't take photos");
+
+    for event in heard_so_far(&watch, &mut watch_events).await {
+        assert!(!matches!(event, Event::UiPhoto(_) | Event::UiPhotoCancel(_)), "{event:?}");
+    }
+    drop(link_events);
+    host.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_launcher_that_asked_stops_its_photo_and_g7_link_stops_waiting() {
+    let host = TestHost::start(Options::default()).await;
+    let connect =
+        |kind: ClientKind, caps: &[&str]| Client::connect(&host.socket, HelloParams::new(kind, caps));
+    let (launcher, _launcher_events) = connect(ClientKind::Launcher, &[]).await.unwrap();
+    let (other, _other_events) = connect(ClientKind::Launcher, &[]).await.unwrap();
+    let (link, mut link_events) = connect(ClientKind::Link, &LINK_CAPS).await.unwrap();
+    launcher.ui_photo_stop().await.unwrap();
+
+    let asked = ask_photo(&launcher);
+    let request = photo_asked(&mut link_events).await;
+    let err = other.ui_photo_stop().await.unwrap_err();
+    assert_eq!(err.code(), Some(ErrorCode::Denied), "another launcher's photo");
+    assert_eq!(link.ui_photo_stop().await.unwrap_err().code(), Some(ErrorCode::Denied), "G7 Link");
+    launcher.ui_photo_stop().await.unwrap();
+    let got = asked.await.unwrap().unwrap();
+    assert_eq!(got, UiPhotoResult { image: None, error: Some(PhotoError::Cancelled) });
+    let stop = next(&mut link_events, "ui.photo.cancel", |e| matches!(e, Event::UiPhotoCancel(_))).await;
+    assert_eq!(stop, Event::UiPhotoCancel(PhotoEvent { request: request.clone() }));
+    launcher.ui_photo_stop().await.unwrap();
+    other.ui_photo_stop().await.unwrap();
+    let late = UiPhotoDoneParams { request, image: None, error: Some(PhotoError::Cancelled) };
+    assert_eq!(link.ui_photo_done(late).await.unwrap_err().code(), Some(ErrorCode::NotFound));
+
+    // The next one isn't busy, and anyone may ask for it.
+    let asked = ask_photo(&other);
+    let request = photo_asked(&mut link_events).await;
+    let done = UiPhotoDoneParams { request, image: None, error: Some(PhotoError::NoPhone) };
+    link.ui_photo_done(done).await.unwrap();
+    let got = asked.await.unwrap().unwrap();
+    assert_eq!(got, UiPhotoResult { image: None, error: Some(PhotoError::NoPhone) });
     host.stop().await;
 }
 

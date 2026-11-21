@@ -1040,6 +1040,32 @@ impl ImageStore {
         self.blocking(None, move |inner| inner.claim(&ids, owner.as_deref(), &thread_id)).await
     }
 
+    /// Makes a pending image of `from` one of `to` (a phone's photo G7 Link
+    /// took for the launcher). `NotFound` unless it is pending for `from`.
+    pub async fn give(&self, id: &str, from: &str, to: &str) -> Result<ImageInfo, ImageError> {
+        if !is_valid_image_id(id) {
+            return Err(ImageError::NotFound);
+        }
+        if !valid_owner(to) {
+            return Err(ImageError::BadRequest("Bad owner."));
+        }
+        let (id, from, to) = (id.to_owned(), from.to_owned(), to.to_owned());
+        self.blocking(None, move |inner| {
+            let mut state = inner.state();
+            let held = state
+                .images
+                .get_mut(&id)
+                .filter(|h| h.dir == PENDING && h.meta.owner.as_deref() == Some(from.as_str()))
+                .ok_or(ImageError::NotFound)?;
+            let meta = Meta { owner: Some(to), ..held.meta.clone() };
+            let json = serde_json::to_vec(&meta).map_err(|_| ImageError::Internal)?;
+            atomic_write(&inner.sidecar(PENDING, &id), &json).map_err(|_| ImageError::Internal)?;
+            held.meta = meta;
+            Ok(info_of(&id, held))
+        })
+        .await
+    }
+
     /// `image.drop`: removes a pending image of `owner` (any owner when `None`).
     pub async fn drop_pending(&self, id: &str, owner: Option<&str>) -> Result<(), ImageError> {
         if !is_valid_image_id(id) {
@@ -1216,5 +1242,34 @@ mod tests {
         assert!(short.finish().is_err());
         let mut bad = Upload::begin("x", 10).unwrap();
         assert!(bad.chunk(0, "not base64!").is_err());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_pending_image_is_given_to_another_owner_and_stays_given() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("images");
+        let store = ImageStore::open(root.clone(), Vec::new()).unwrap();
+        let mut png = Vec::new();
+        DynamicImage::ImageRgb8(RgbImage::from_pixel(3, 2, Rgb([9, 99, 199])))
+            .write_with_encoder(PngEncoder::new(&mut png))
+            .unwrap();
+        let photo = store.add_bytes("photo.png", png, "link").await.unwrap();
+        assert_eq!(store.give(&photo.id, "launcher", "test").await, Err(ImageError::NotFound), "not its");
+        assert_eq!(store.give(&"0".repeat(32), "link", "launcher").await, Err(ImageError::NotFound));
+        let given = store.give(&photo.id, "link", "launcher").await.unwrap();
+        assert_eq!(given.place, Place::Pending { owner: "launcher".into() });
+        assert_eq!((given.name.as_str(), given.bytes), ("photo.png", photo.bytes));
+        assert_eq!(store.give(&photo.id, "link", "launcher").await, Err(ImageError::NotFound), "once");
+
+        let again = ImageStore::open(root, Vec::new()).unwrap();
+        assert_eq!(again.info(&photo.id).unwrap().place, Place::Pending { owner: "launcher".into() });
+        let thread = "a".repeat(32);
+        assert_eq!(
+            again.claim(std::slice::from_ref(&photo.id), Some("link"), &thread).await,
+            Err(ImageError::NotFound)
+        );
+        let claimed = again.claim(std::slice::from_ref(&photo.id), Some("launcher"), &thread).await.unwrap();
+        assert_eq!(claimed[0].place, Place::Thread(thread.clone()));
+        assert_eq!(again.give(&photo.id, "launcher", "link").await, Err(ImageError::NotFound), "sent: kept");
     }
 }

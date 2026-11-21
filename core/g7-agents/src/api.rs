@@ -316,6 +316,15 @@ pub const LIMIT_ALARM_AHEAD_MS: u64 = 691_200_000;
 /// A followed session's limit reset time is kept only this far ahead (31 days).
 pub const SESSION_LIMIT_AHEAD_MS: u64 = 2_678_400_000;
 
+// ---- Hand-off and the phone's camera (phase 5, wave 2) ----
+
+/// `ui.photo`: how long the host waits for G7 Link's `ui.photo.done`.
+pub const PHOTO_WAIT_MS: u64 = 120_000;
+/// `ui.photo`: how long a client waits for the reply, a little longer than the host.
+pub const PHOTO_CALL_MS: u64 = PHOTO_WAIT_MS + 10_000;
+/// A `ui.photo` request, as the host issues it: lowercase hex digits.
+pub const PHOTO_REQUEST_LEN: usize = 16;
+
 // ---- Source control (phase 4, §SC7.4) ----
 
 /// Files a status lists; the rest are counted (`GitStatus.more`, `total`).
@@ -477,6 +486,16 @@ pub mod method {
     pub const PR_LIST: &str = "pr.list";
     // Reply on the PC (0.1.21): only to a host that offers `cap::PLACE`.
     pub const SESSION_PLACE: &str = "session.place";
+    /// A launcher or G7 Link asks G7 Link to continue a thread on a phone
+    /// (phase 5); only to a host that offers `cap::HANDOFF`.
+    pub const UI_HANDOFF: &str = "ui.handoff";
+    /// The launcher asks G7 Link for one photo from a phone's camera, and
+    /// G7 Link answers with `ui.photo.done`; only to a host that offers `cap::PHOTO`.
+    pub const UI_PHOTO: &str = "ui.photo";
+    pub const UI_PHOTO_DONE: &str = "ui.photo.done";
+    /// The launcher that asked no longer wants the photo (`{}`): its
+    /// `ui.photo` answers `cancelled` and G7 Link gets `ui.photo.cancel`.
+    pub const UI_PHOTO_STOP: &str = "ui.photo.stop";
 }
 
 /// What a client says it understands (`HelloParams.caps`) and what a host
@@ -511,8 +530,15 @@ pub mod cap {
     /// The host has `session.place` (reply on the PC, 0.1.21): where a
     /// followed session runs, for G7 Link to find its window.
     pub const PLACE: &str = "place";
+    /// Host: it has `ui.handoff`. Client (G7 Link): it takes the `ui.handoff`
+    /// event and sends the thread to the phone.
+    pub const HANDOFF: &str = "handoff";
+    /// Host: it has `ui.photo` and `ui.photo.done`. Client (G7 Link): it
+    /// takes the `ui.photo` and `ui.photo.cancel` events.
+    pub const PHOTO: &str = "photo";
     /// What this host offers.
-    pub const HOST: [&str; 8] = [ITEMS2, DENY_MESSAGE, CONTROL, HISTORY, UNDO, PRESENCE, GIT, PLACE];
+    pub const HOST: [&str; 10] =
+        [ITEMS2, DENY_MESSAGE, CONTROL, HISTORY, UNDO, PRESENCE, GIT, PLACE, HANDOFF, PHOTO];
 }
 
 pub mod event {
@@ -540,6 +566,9 @@ pub mod event {
     pub const UI_PRESENCE: &str = "ui.presence";
     pub const GIT_CHANGED: &str = "git.changed";
     pub const GIT_PROGRESS: &str = "git.progress";
+    pub const UI_HANDOFF: &str = "ui.handoff";
+    pub const UI_PHOTO: &str = "ui.photo";
+    pub const UI_PHOTO_CANCEL: &str = "ui.photo.cancel";
 }
 
 // ---- Error codes ----
@@ -3432,6 +3461,91 @@ pub struct PresenceEvent {
     pub remote: Vec<RemoteView>,
 }
 
+/// `ui.handoff` (a launcher or G7 Link): continue a thread on a phone.
+/// The sender saves its composer's draft (`draft.set`) first; the phone loads it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UiHandoffParams {
+    pub thread_id: String,
+    /// The phone, as [`RemoteView::device_id`] names it: 1 to
+    /// [`MAX_DEVICE_ID`] bytes. Absent: G7 Link chooses.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_id: Option<String>,
+    /// The first item on the sender's screen: the phone opens the thread there.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seq: Option<u64>,
+    pub by: By,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UiHandoffResult {
+    /// G7 Link connections it went to; 0 when G7 Link isn't open.
+    pub sent: u32,
+}
+
+/// The `ui.handoff` event, to G7 Link connections that said
+/// [`cap::HANDOFF`]: send the thread to the phone.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HandoffEvent {
+    pub thread_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seq: Option<u64>,
+}
+
+/// `ui.photo` (the launcher only): one photo from a phone's camera, through
+/// G7 Link. The reply waits up to [`PHOTO_WAIT_MS`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UiPhotoParams {
+    pub by: By,
+}
+
+/// Why no photo came.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PhotoError {
+    /// Someone cancelled it, on the phone or on this PC.
+    Cancelled,
+    /// No phone that can take one is reachable.
+    NoPhone,
+    /// None came in time.
+    Timeout,
+    /// A word a newer G7 Link sends.
+    #[serde(other)]
+    Unknown,
+}
+
+/// What `ui.photo` brought: the photo, or why none came (exactly one of them).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UiPhotoResult {
+    /// A pending image of the asker's own, decoded and encoded again as every
+    /// image is: use it as one it added itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<ImageRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<PhotoError>,
+}
+
+/// The `ui.photo` event, to one G7 Link connection that said [`cap::PHOTO`]:
+/// take a photo with a phone. `ui.photo.cancel`, the same: stop waiting for it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PhotoEvent {
+    /// [`PHOTO_REQUEST_LEN`] lowercase hex digits, issued by the host.
+    pub request: String,
+}
+
+/// `ui.photo.done` (G7 Link, on the connection the request went to):
+/// exactly one of `image` and `error`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UiPhotoDoneParams {
+    pub request: String,
+    /// A pending image G7 Link added (`image.add_path`); it becomes the asker's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<PhotoError>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionsListParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -4533,6 +4647,12 @@ pub enum Event {
     GitChanged(GitChangedEvent),
     #[serde(rename = "git.progress")]
     GitProgress(GitProgressEvent),
+    #[serde(rename = "ui.handoff")]
+    UiHandoff(HandoffEvent),
+    #[serde(rename = "ui.photo")]
+    UiPhoto(PhotoEvent),
+    #[serde(rename = "ui.photo.cancel")]
+    UiPhotoCancel(PhotoEvent),
 }
 
 impl Event {
@@ -4570,6 +4690,9 @@ impl Event {
             Self::UiPresence(_) => event::UI_PRESENCE,
             Self::GitChanged(_) => event::GIT_CHANGED,
             Self::GitProgress(_) => event::GIT_PROGRESS,
+            Self::UiHandoff(_) => event::UI_HANDOFF,
+            Self::UiPhoto(_) => event::UI_PHOTO,
+            Self::UiPhotoCancel(_) => event::UI_PHOTO_CANCEL,
         }
     }
 
@@ -4590,6 +4713,7 @@ impl Event {
             Self::ThreadCut(e) => Some(&e.thread_id),
             Self::GitChanged(e) => Some(&e.thread_id),
             Self::GitProgress(e) => Some(&e.job.thread_id),
+            Self::UiHandoff(e) => Some(&e.thread_id),
             Self::AgentsChanged(_)
             | Self::DraftChanged(_)
             | Self::FoldersChanged(_)
@@ -4599,7 +4723,9 @@ impl Event {
             | Self::SettingsChanged(_)
             | Self::ImportProgress(_)
             | Self::SessionsScanned(_)
-            | Self::UiPresence(_) => None,
+            | Self::UiPresence(_)
+            | Self::UiPhoto(_)
+            | Self::UiPhotoCancel(_) => None,
         }
     }
 
@@ -4780,6 +4906,11 @@ pub fn is_valid_job_id(id: &str) -> bool {
 /// A worktree's id: [`WORKTREE_ID_LEN`] lowercase hex digits.
 pub fn is_valid_worktree_id(id: &str) -> bool {
     id.len() == WORKTREE_ID_LEN && is_valid_id(id)
+}
+
+/// A `ui.photo` request: [`PHOTO_REQUEST_LEN`] lowercase hex digits.
+pub fn is_valid_photo_request(request: &str) -> bool {
+    request.len() == PHOTO_REQUEST_LEN && is_valid_id(request)
 }
 
 /// A draft key: a thread id, or `new:` and a folder id.
@@ -5931,6 +6062,71 @@ mod tests {
         assert!(plain.get("tty").is_none());
         let debug = format!("{:?}", SessionPlaceResult::Place(place));
         assert!(!debug.contains("Thebuild") && debug.contains("marks: 1"), "{debug}");
+    }
+
+    #[test]
+    fn hand_off_and_photo_are_named_on_the_wire() {
+        assert!(cap::HOST.contains(&cap::HANDOFF) && cap::HOST.contains(&cap::PHOTO));
+        assert_eq!((cap::HANDOFF, cap::PHOTO), ("handoff", "photo"));
+        assert_eq!(
+            (method::UI_HANDOFF, method::UI_PHOTO, method::UI_PHOTO_DONE, method::UI_PHOTO_STOP),
+            ("ui.handoff", "ui.photo", "ui.photo.done", "ui.photo.stop")
+        );
+        let thread_id = "a".repeat(32);
+        let params = UiHandoffParams {
+            thread_id: thread_id.clone(),
+            device_id: Some("dev1".into()),
+            seq: Some(41),
+            by: Origin::launcher(),
+        };
+        round_trip(&params);
+        assert_eq!(
+            serde_json::to_value(&params).unwrap(),
+            json!({"thread_id": thread_id, "device_id": "dev1", "seq": 41, "by": {"kind": "launcher"}})
+        );
+        let bare: UiHandoffParams =
+            serde_json::from_value(json!({"thread_id": thread_id, "by": {"kind": "launcher"}})).unwrap();
+        assert_eq!((bare.device_id, bare.seq), (None, None));
+        assert!(serde_json::from_value::<UiHandoffParams>(json!({"thread_id": thread_id})).is_err(), "by");
+        round_trip(&UiHandoffResult { sent: 1 });
+
+        let request = "0123456789abcdef".to_owned();
+        assert!(is_valid_photo_request(&request) && !is_valid_photo_request("0123456789ABCDEF"));
+        for ev in [
+            Event::UiHandoff(HandoffEvent { thread_id: thread_id.clone(), device_id: None, seq: Some(3) }),
+            Event::UiPhoto(PhotoEvent { request: request.clone() }),
+            Event::UiPhotoCancel(PhotoEvent { request: request.clone() }),
+        ] {
+            let line = ev.to_line();
+            let ServerLine::Event(parsed) = ServerLine::parse(&line).unwrap() else { panic!("not an event") };
+            assert_eq!(parsed.event, ev.name());
+            assert_eq!(Event::from_line(&parsed), Some(ev));
+        }
+        assert_eq!(
+            (event::UI_HANDOFF, event::UI_PHOTO, event::UI_PHOTO_CANCEL),
+            ("ui.handoff", "ui.photo", "ui.photo.cancel")
+        );
+        let handed =
+            Event::UiHandoff(HandoffEvent { thread_id: thread_id.clone(), device_id: None, seq: None });
+        assert_eq!(handed.thread_id(), Some(thread_id.as_str()));
+        assert_eq!(
+            serde_json::to_value(&handed).unwrap(),
+            json!({"event": "ui.handoff", "params": {"thread_id": thread_id}})
+        );
+
+        round_trip(&UiPhotoParams { by: Origin::launcher() });
+        let image = ImageRef { id: "b".repeat(32), name: "photo.jpg".into(), bytes: 9, w: 4, h: 3 };
+        let got = UiPhotoResult { image: Some(image), error: None };
+        round_trip(&got);
+        assert!(serde_json::to_value(&got).unwrap().get("error").is_none());
+        let none = UiPhotoResult { image: None, error: Some(PhotoError::NoPhone) };
+        assert_eq!(serde_json::to_value(&none).unwrap(), json!({"error": "no_phone"}));
+        let done = UiPhotoDoneParams { request, image: None, error: Some(PhotoError::Cancelled) };
+        round_trip(&done);
+        assert_eq!(serde_json::to_value(&done).unwrap()["error"], json!("cancelled"));
+        let later: PhotoError = serde_json::from_value(json!("later")).unwrap();
+        assert_eq!(later, PhotoError::Unknown, "a newer word");
+        assert_eq!(serde_json::to_value(PhotoError::Timeout).unwrap(), json!("timeout"));
     }
 
     #[test]

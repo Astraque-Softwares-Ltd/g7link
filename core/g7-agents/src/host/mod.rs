@@ -21,6 +21,7 @@ pub mod fork;
 pub mod git;
 pub mod marks;
 pub mod notify;
+pub mod phone;
 pub mod plan;
 pub mod presence;
 pub mod questions;
@@ -289,6 +290,10 @@ struct ClientSlot {
     session_since: u64,
     /// It said `presence`: it gets the `ui.presence` event (a launcher or G7 Link).
     presence: bool,
+    /// G7 Link that said `handoff`: it gets the `ui.handoff` event.
+    handoff: bool,
+    /// G7 Link that said `photo`: it may get the `ui.photo` event.
+    photo: bool,
     /// The one session whose items this connection gets.
     watching: Option<String>,
     /// It called `sessions.scan`: it gets `sessions.scanned`.
@@ -308,6 +313,8 @@ impl ClientSlot {
             viewing_since: 0,
             session_since: 0,
             presence: false,
+            handoff: false,
+            photo: false,
             watching: None,
             scans: false,
         }
@@ -436,6 +443,30 @@ impl Hub {
         sent
     }
 
+    /// Sends `ui.handoff` to G7 Link's connections that said `handoff`; how many got it.
+    pub(crate) fn send_handoff(&self, event: &HandoffEvent) -> usize {
+        let line = Event::UiHandoff(event.clone()).to_line();
+        let mut sent = 0;
+        for slot in self.lock().values().filter(|s| s.handoff) {
+            slot.outbox.push(line.clone(), false);
+            sent += 1;
+        }
+        sent
+    }
+
+    /// The G7 Link connection a photo request goes to: the newest that said `photo`.
+    pub(crate) fn photo_link(&self) -> Option<u64> {
+        self.lock().iter().filter(|(_, s)| s.photo).map(|(id, _)| *id).max()
+    }
+
+    /// Sends `event` to connection `client` alone; whether it is still connected.
+    pub(crate) fn send_to(&self, client: u64, event: &Event) -> bool {
+        let clients = self.lock();
+        let Some(slot) = clients.get(&client) else { return false };
+        slot.outbox.push(event.to_line(), false);
+        true
+    }
+
     /// A launcher or G7 Link says its window shows this thread to the user
     /// right now (`ui.viewing`), or a phone does (a fresh `ui.presence`).
     pub fn viewed(&self, thread_id: &str) -> bool {
@@ -519,6 +550,24 @@ impl Hub {
             Some(Subscription { threads: ThreadSelection::All, deltas: true, sessions: false });
         clients.insert(id, slot);
         id
+    }
+
+    /// A G7 Link connection that said `handoff` and/or `photo`; its id.
+    #[cfg(test)]
+    pub(crate) fn test_link(&self, handoff: bool, photo: bool) -> u64 {
+        let mut clients = self.lock();
+        let id = clients.keys().max().map_or(1, |n| n + 1);
+        let mut slot = ClientSlot::new(ClientKind::Link, Caps::default(), Arc::new(Outbox::new()));
+        slot.handoff = handoff;
+        slot.photo = photo;
+        clients.insert(id, slot);
+        id
+    }
+
+    /// A test connection goes.
+    #[cfg(test)]
+    pub(crate) fn test_close(&self, client: u64) {
+        self.lock().remove(&client);
     }
 
     /// The lines a test connection was sent, oldest first.
@@ -642,6 +691,8 @@ pub struct Host {
     keep_awake: std::sync::atomic::AtomicBool,
     /// `settings.limit_alarm`.
     limit_alarm: std::sync::atomic::AtomicBool,
+    /// The phone photo on its way (`ui.photo`).
+    pub(crate) photos: Mutex<phone::Photos>,
     pub awake: awake::Awake,
     pub usage: Mutex<usage::Usage>,
     pub drafts: Mutex<drafts::Drafts>,
@@ -774,6 +825,7 @@ pub async fn serve(config: Config, stop: impl std::future::Future<Output = ()>) 
         sessions: sessions::Sessions::new(&config),
         keep_awake: std::sync::atomic::AtomicBool::new(settings.keep_awake),
         limit_alarm: std::sync::atomic::AtomicBool::new(settings.limit_alarm),
+        photos: Mutex::new(phone::Photos::default()),
         awake: awake::Awake::spawn(awake_source, settings.keep_awake, awake::release_delay()),
         usage: Mutex::new(usage::Usage::new(Duration::from_millis(LIMITS_EVENT_MS))),
         drafts: Mutex::new(drafts),
@@ -1097,6 +1149,7 @@ impl Host {
         }
         outbox.close();
         self.hub.lock().remove(&client_id);
+        self.photo_closed(client_id);
         // What it said of presence goes with it, and what it viewed.
         self.hub.lock_presence().closed(client_id);
         self.presence_changed();
@@ -1166,6 +1219,8 @@ impl Host {
         };
         let mut slot = ClientSlot::new(kind, caps, outbox.clone());
         slot.presence = matches!(role, Role::Client(..)) && params.has(cap::PRESENCE);
+        slot.handoff = kind == ClientKind::Link && params.has(cap::HANDOFF);
+        slot.photo = kind == ClientKind::Link && params.has(cap::PHOTO);
         let presence = slot.presence && slot.shows_threads();
         self.hub.lock().insert(client_id, slot);
         let result = HelloResult {
@@ -1516,6 +1571,24 @@ impl Host {
             method::SESSION_PLACE => {
                 let p: SessionPlaceParams = parse(params)?;
                 to_value(&self.session_place(&p.session_id).await?)
+            }
+            // Hand-off and the phone's camera (phase 5, wave 2).
+            method::UI_HANDOFF => {
+                let p: UiHandoffParams = parse(params)?;
+                to_value(&self.ui_handoff(kind, p)?)
+            }
+            method::UI_PHOTO => {
+                let p: UiPhotoParams = parse(params)?;
+                to_value(&self.ui_photo(kind, client_id, p).await?)
+            }
+            method::UI_PHOTO_DONE => {
+                let p: UiPhotoDoneParams = parse(params)?;
+                self.ui_photo_done(kind, client_id, p).await?;
+                Ok(json!({}))
+            }
+            method::UI_PHOTO_STOP => {
+                self.ui_photo_stop(kind, client_id)?;
+                Ok(json!({}))
             }
             m if source::METHODS.contains(&m) => self.git_call(kind, m, params).await,
             method::HELLO => Err(RpcError::new(ErrorCode::BadRequest, "already said hello")),
@@ -1985,6 +2058,7 @@ fn test_host_with(
         sessions: sessions::Sessions::new(&config),
         keep_awake: std::sync::atomic::AtomicBool::new(true),
         limit_alarm: std::sync::atomic::AtomicBool::new(true),
+        photos: Mutex::new(phone::Photos::default()),
         awake: awake::Awake::spawn(awake::Source::Off, true, awake::release_delay()),
         usage: Mutex::new(usage::Usage::new(Duration::from_millis(LIMITS_EVENT_MS))),
         drafts: Mutex::new(drafts::Drafts::default()),

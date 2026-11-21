@@ -884,6 +884,38 @@ pub mod calls {
     pub fn session_place(session_id: String) -> Call<SessionPlaceResult> {
         Call::new(method::SESSION_PLACE, &SessionPlaceParams { session_id }, parse_as)
     }
+
+    // ---- Hand-off and the phone's camera (phase 5, wave 2) ----
+
+    /// Asks G7 Link to continue a thread on a phone (a launcher or G7 Link;
+    /// `DENIED` to anyone else); how many G7 Link connections it went to.
+    /// Only to a host that offers `cap::HANDOFF`.
+    pub fn ui_handoff(params: UiHandoffParams) -> Call<u32> {
+        Call::new(method::UI_HANDOFF, &params, |v| parse_as::<UiHandoffResult>(v).map(|r| r.sent))
+    }
+
+    /// One photo from a phone's camera, through G7 Link (the launcher only;
+    /// `UNAVAILABLE` without G7 Link, `BUSY` while another is on its way).
+    /// Waits [`PHOTO_CALL_MS`]. Only to a host that offers `cap::PHOTO`.
+    pub fn ui_photo(by: By) -> Call<UiPhotoResult> {
+        Call {
+            timeout: Duration::from_millis(PHOTO_CALL_MS),
+            ..Call::new(method::UI_PHOTO, &UiPhotoParams { by }, parse_as)
+        }
+    }
+
+    /// G7 Link answers a `ui.photo` event (G7 Link only, on the connection
+    /// that got it).
+    pub fn ui_photo_done(params: UiPhotoDoneParams) -> Call<()> {
+        Call::new(method::UI_PHOTO_DONE, &params, unit)
+    }
+
+    /// The launcher stops the photo it asked for (on the connection that
+    /// asked): its `ui.photo` answers `cancelled`. Nothing waiting: a no-op.
+    /// `DENIED` to anyone else.
+    pub fn ui_photo_stop() -> Call<()> {
+        Call::new(method::UI_PHOTO_STOP, &Empty {}, unit)
+    }
 }
 
 /// Generates one typed method per call builder, async or blocking.
@@ -977,6 +1009,10 @@ macro_rules! with_calls {
             pr_methods(thread_id: String) -> PrMethodsResult;
             pr_list(params: PrListParams) -> PrListResult;
             session_place(session_id: String) -> SessionPlaceResult;
+            ui_handoff(params: UiHandoffParams) -> u32;
+            ui_photo(by: By) -> UiPhotoResult;
+            ui_photo_done(params: UiPhotoDoneParams) -> ();
+            ui_photo_stop() -> ();
         }
     };
 }
