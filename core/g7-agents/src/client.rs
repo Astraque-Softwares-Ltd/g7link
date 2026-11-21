@@ -37,6 +37,9 @@ pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long a request that runs git or forks an agent's session waits
 /// (`rewind.*`, `turn.files`, `turn.patch`).
 pub const SLOW_REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
+/// How long a `thread.start` that makes a worktree waits: the worktree's
+/// own time limit and the repository's lock.
+pub const WORKTREE_REQUEST_TIMEOUT: Duration = Duration::from_secs(180);
 /// After spawning the host, how long connecting is retried, and how often.
 pub const SPAWN_WAIT: Duration = Duration::from_secs(3);
 pub const SPAWN_RETRY: Duration = Duration::from_millis(50);
@@ -667,7 +670,7 @@ pub mod calls {
 
     /// A folder's MCP switch (PC clients only).
     pub fn folders_set(id: String, mcp: bool) -> Call<Folder> {
-        folders_set_with(FoldersSetParams { id, mcp: Some(mcp), checkpoints: None })
+        folders_set_with(FoldersSetParams { id, mcp: Some(mcp), ..FoldersSetParams::default() })
     }
 
     /// `folders.set` with every field (PC clients only); `checkpoints` only
@@ -683,9 +686,12 @@ pub mod calls {
 
     // ---- History (phase 3): only to a host that offers `cap::HISTORY` ----
 
-    /// `thread.start` with its whole result: whether its `key` was taken already.
+    /// `thread.start` with its whole result: whether its `key` was taken
+    /// already, and the job of a new worktree.
     pub fn thread_start_with(params: ThreadStartParams) -> Call<ThreadStartResult> {
-        Call::new(method::THREAD_START, &params, parse_as)
+        let worktree = params.worktree.is_some();
+        let call = Call::new(method::THREAD_START, &params, parse_as);
+        if worktree { Call { timeout: WORKTREE_REQUEST_TIMEOUT, ..call } } else { call }
     }
 
     /// The threads as they are now, and those left unarchived because they run.
@@ -773,6 +779,103 @@ pub mod calls {
     pub fn thread_fork(params: ThreadForkParams) -> Call<ThreadInfo> {
         Call::new(method::THREAD_FORK, &params, |v| parse_as::<ThreadResult>(v).map(|r| r.thread))
     }
+
+    // ---- Source control (phase 4): only to a host that offers `cap::GIT` ----
+
+    /// Read now; never an error for a folder that isn't a repository.
+    pub fn git_status(params: GitStatusParams) -> Call<GitStatus> {
+        Call::new(method::GIT_STATUS, &params, |v| parse_as::<GitStatusResult>(v).map(|r| r.status)).slow()
+    }
+
+    pub fn git_patch(params: GitPatchParams) -> Call<GitPatchResult> {
+        Call::new(method::GIT_PATCH, &params, parse_as).slow()
+    }
+
+    pub fn git_review(params: GitReviewParams) -> Call<GitReviewResult> {
+        Call::new(method::GIT_REVIEW, &params, parse_as).slow()
+    }
+
+    /// The job, running; `git.progress` follows it.
+    pub fn git_commit(params: GitCommitParams) -> Call<Job> {
+        Call::new(method::GIT_COMMIT, &params, |v| parse_as::<GitJobResult>(v).map(|r| r.job)).slow()
+    }
+
+    pub fn git_push(params: GitPushParams) -> Call<Job> {
+        Call::new(method::GIT_PUSH, &params, |v| parse_as::<GitJobResult>(v).map(|r| r.job)).slow()
+    }
+
+    pub fn git_fetch(params: GitFetchParams) -> Call<Job> {
+        Call::new(method::GIT_FETCH, &params, |v| parse_as::<GitJobResult>(v).map(|r| r.job)).slow()
+    }
+
+    pub fn git_branches(params: GitBranchesParams) -> Call<GitBranchesResult> {
+        Call::new(method::GIT_BRANCHES, &params, parse_as).slow()
+    }
+
+    pub fn git_switch(params: GitSwitchParams) -> Call<Job> {
+        Call::new(method::GIT_SWITCH, &params, |v| parse_as::<GitJobResult>(v).map(|r| r.job)).slow()
+    }
+
+    /// The job with every line kept; `NOT_FOUND` once forgotten.
+    pub fn git_job(job: String) -> Call<Job> {
+        Call::new(method::GIT_JOB, &GitJobParams { job, by: None }, |v| {
+            parse_as::<GitJobResult>(v).map(|r| r.job)
+        })
+    }
+
+    /// Stops a running commit or push; the job as it is.
+    pub fn git_stop(params: GitJobParams) -> Call<Job> {
+        Call::new(method::GIT_STOP, &params, |v| parse_as::<GitJobResult>(v).map(|r| r.job))
+    }
+
+    /// `thread.delete` with "Also remove its worktree".
+    pub fn thread_delete_with(params: ThreadDeleteParams) -> Call<ThreadDeleteResult> {
+        Call::new(method::THREAD_DELETE, &params, parse_as).slow()
+    }
+
+    /// G7's worktrees (PC clients only).
+    pub fn worktree_list(folder_id: Option<String>) -> Call<Vec<Worktree>> {
+        Call::new(method::WORKTREE_LIST, &WorktreeListParams { folder_id }, |v| {
+            parse_as::<WorktreeListResult>(v).map(|r| r.worktrees)
+        })
+        .slow()
+    }
+
+    /// G7 Link on this PC only.
+    pub fn worktree_remove(params: WorktreeRemoveParams) -> Call<WorktreeRemoveResult> {
+        Call::new(method::WORKTREE_REMOVE, &params, parse_as).slow()
+    }
+
+    pub fn gh_status(refresh: bool) -> Call<GhState> {
+        Call::new(method::GH_STATUS, &GhStatusParams { refresh }, parse_as).slow()
+    }
+
+    pub fn pr_view(params: PrViewParams) -> Call<PrViewResult> {
+        Call::new(method::PR_VIEW, &params, parse_as).slow()
+    }
+
+    pub fn pr_create(params: PrCreateParams) -> Call<Job> {
+        Call::new(method::PR_CREATE, &params, |v| parse_as::<GitJobResult>(v).map(|r| r.job)).slow()
+    }
+
+    /// G7 Link on this PC only.
+    pub fn pr_merge(params: PrMergeParams) -> Call<Job> {
+        Call::new(method::PR_MERGE, &params, |v| parse_as::<GitJobResult>(v).map(|r| r.job)).slow()
+    }
+
+    /// G7 Link on this PC only; the pull request read again.
+    pub fn pr_ready(params: PrReadyParams) -> Call<Option<PrInfo>> {
+        Call::new(method::PR_READY, &params, |v| parse_as::<PrReadyResult>(v).map(|r| r.pr)).slow()
+    }
+
+    /// G7 Link on this PC only.
+    pub fn pr_methods(thread_id: String) -> Call<PrMethodsResult> {
+        Call::new(method::PR_METHODS, &ThreadIdParams { thread_id }, parse_as).slow()
+    }
+
+    pub fn pr_list(params: PrListParams) -> Call<PrListResult> {
+        Call::new(method::PR_LIST, &params, parse_as).slow()
+    }
 }
 
 /// Generates one typed method per call builder, async or blocking.
@@ -845,6 +948,26 @@ macro_rules! with_calls {
             rewind_apply(params: RewindApplyParams) -> RewindApplyResult;
             rewind_undo(thread_id: String, by: By) -> ThreadInfo;
             thread_fork(params: ThreadForkParams) -> ThreadInfo;
+            git_status(params: GitStatusParams) -> GitStatus;
+            git_patch(params: GitPatchParams) -> GitPatchResult;
+            git_review(params: GitReviewParams) -> GitReviewResult;
+            git_commit(params: GitCommitParams) -> Job;
+            git_push(params: GitPushParams) -> Job;
+            git_fetch(params: GitFetchParams) -> Job;
+            git_branches(params: GitBranchesParams) -> GitBranchesResult;
+            git_switch(params: GitSwitchParams) -> Job;
+            git_job(job: String) -> Job;
+            git_stop(params: GitJobParams) -> Job;
+            thread_delete_with(params: ThreadDeleteParams) -> ThreadDeleteResult;
+            worktree_list(folder_id: Option<String>) -> Vec<Worktree>;
+            worktree_remove(params: WorktreeRemoveParams) -> WorktreeRemoveResult;
+            gh_status(refresh: bool) -> GhState;
+            pr_view(params: PrViewParams) -> PrViewResult;
+            pr_create(params: PrCreateParams) -> Job;
+            pr_merge(params: PrMergeParams) -> Job;
+            pr_ready(params: PrReadyParams) -> Option<PrInfo>;
+            pr_methods(thread_id: String) -> PrMethodsResult;
+            pr_list(params: PrListParams) -> PrListResult;
         }
     };
 }

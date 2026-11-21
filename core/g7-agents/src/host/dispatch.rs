@@ -17,7 +17,7 @@ use serde_json::Value;
 use crate::api::*;
 use crate::host::agents::{SessionCmd, UserInput};
 use crate::host::catalog;
-use crate::host::threads::{CODEX_AUTO_EDIT, Registry, emit_item, emit_state, err, random_hex, thread_dir};
+use crate::host::threads::{CODEX_AUTO_EDIT, Registry, emit_item, emit_state, err, random_hex};
 use crate::host::{Host, sessions};
 
 /// A thread's settings as a start, send or configure asks to change them:
@@ -356,6 +356,9 @@ impl Host {
             (entry.info.agent, entry.info.state.is_running(), entry.info.model.clone())
         };
         if running {
+            if p.purpose.is_some() {
+                return Err(crate::host::source::refusal(ErrorCode::Busy, crate::host::source::THREAD_BUSY));
+            }
             if p.model.is_some() || p.effort.is_some() || p.mode.is_some() {
                 return Err(err(
                     ErrorCode::BadRequest,
@@ -455,11 +458,7 @@ impl Host {
                     format!("You can reply when {} stops.", agent.display_name()),
                 ));
             }
-            reg.folders
-                .iter()
-                .find(|f| f.id == entry.info.folder_id)
-                .and_then(|f| thread_dir(Path::new(&f.path), entry.info.subdir.as_deref()))
-                .filter(|path| path.is_dir())
+            reg.work_dir(entry).filter(|path| path.is_dir())
         };
         if let Some(message) = self.busy_message(agent, total, &per) {
             return Err(err(ErrorCode::Busy, message));
@@ -487,8 +486,16 @@ impl Host {
         entry.cwd = Some(cwd);
         let message = Message { text: p.text.clone(), origin: p.origin.clone(), via: None, images, blocks };
         self.begin_turn(reg, &p.thread_id, message, probe.bin.as_deref())?;
+        // "Ask <agent> to write it": this turn's answer fills the field (§SC5.4).
+        if let Some(purpose) = p.purpose
+            && let Some(entry) = reg.threads.get_mut(&p.thread_id)
+        {
+            entry.asked = Some((purpose, entry.turn_no()));
+        }
         drop(guard);
-        self.remember_prompt(&p.text, &p.origin);
+        if p.purpose.is_none() {
+            self.remember_prompt(&p.text, &p.origin);
+        }
         self.draft_sent(&p.thread_id, &p.origin);
         Ok(ThreadSendResult::default())
     }
@@ -579,11 +586,7 @@ impl Host {
             {
                 return;
             }
-            reg.folders
-                .iter()
-                .find(|f| f.id == entry.info.folder_id)
-                .and_then(|f| thread_dir(Path::new(&f.path), entry.info.subdir.as_deref()))
-                .filter(|p| p.is_dir())
+            reg.work_dir(entry).filter(|p| p.is_dir())
         };
         let (total, per) = reg.running();
         let busy = self.busy_message(agent, total, &per).is_some();
@@ -681,12 +684,7 @@ impl Host {
             if !entry.info.queued.iter().any(|q| q.id == p.id) {
                 return Err(err(ErrorCode::NotFound, "That message was already sent."));
             }
-            let cwd = reg
-                .folders
-                .iter()
-                .find(|f| f.id == entry.info.folder_id)
-                .and_then(|f| thread_dir(Path::new(&f.path), entry.info.subdir.as_deref()))
-                .filter(|p| p.is_dir());
+            let cwd = reg.work_dir(entry).filter(|p| p.is_dir());
             (entry.info.state, cwd)
         };
         match state {
@@ -833,11 +831,7 @@ impl Host {
                     format!("Implement it when {} stops.", agent.display_name()),
                 ));
             }
-            reg.folders
-                .iter()
-                .find(|f| f.id == entry.info.folder_id)
-                .and_then(|f| thread_dir(Path::new(&f.path), entry.info.subdir.as_deref()))
-                .filter(|p| p.is_dir())
+            reg.work_dir(entry).filter(|p| p.is_dir())
         };
         if let Some(message) = busy {
             return Err(err(ErrorCode::Busy, message));
@@ -1579,7 +1573,8 @@ mod flow {
             [FolderMcp { agent: AgentId::Claude, names: vec!["github".into(), "linear".into()] }]
         );
         // The switch: stored, and used from the next process.
-        let off = host.folders_set("f000000000001", Some(false), None).await.unwrap();
+        let set = FoldersSetParams { id: "f000000000001".into(), mcp: Some(false), ..Default::default() };
+        let off = host.folders_set(&set).await.unwrap();
         assert!(!off.mcp);
         assert_eq!(off.mcp_seen.len(), 1, "what threads reported stays");
     }

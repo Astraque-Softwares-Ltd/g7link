@@ -142,6 +142,11 @@ pub struct Entry {
     /// Held while a restore point of this thread is being taken: the next
     /// turn's waits for the last one's.
     pub(crate) captures: Arc<tokio::sync::Mutex<()>>,
+    /// A worktree thread's working directory root (its worktree, and the
+    /// agent folder's sub-folder of the repository); `None` for the rest.
+    pub(crate) worktree_dir: Option<PathBuf>,
+    /// "Ask <agent> to write it" waits for this turn's answer (§SC5.4).
+    pub(crate) asked: Option<(Purpose, u32)>,
 }
 
 /// A thread's stored columns the registry only carries.
@@ -166,6 +171,8 @@ impl Entry {
             kept: Kept::default(),
             row: None,
             captures: Arc::new(tokio::sync::Mutex::new(())),
+            worktree_dir: None,
+            asked: None,
             info,
             next_seq: next_seq.max(1),
             cwd,
@@ -303,6 +310,16 @@ impl Entry {
     }
 }
 
+/// A new worktree a `thread.start` works in (§SC3.8).
+#[derive(Debug, Clone)]
+pub(crate) struct Prepared {
+    /// The thread's id, chosen before the worktree was made.
+    pub id: String,
+    /// Its working directory.
+    pub dir: PathBuf,
+    pub worktree: WorktreeTag,
+}
+
 /// What `session.continue` hands the registry.
 #[derive(Debug)]
 pub(crate) struct Continued {
@@ -424,7 +441,7 @@ pub(crate) fn tool_item(seq: u64, key: &str, spec: &ToolSpec) -> Item {
     }
 }
 
-fn title_of(prompt: &str) -> String {
+pub(crate) fn title_of(prompt: &str) -> String {
     let line = prompt.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or_default();
     clean_cut(line, MAX_TITLE).0
 }
@@ -579,9 +596,11 @@ impl Registry {
         if info.snoozed_until_ms.is_some_and(|until| until <= now_ms()) {
             info.snoozed_until_ms = None;
         }
+        // A worktree thread's comes from its record (`Host::attach_worktrees`).
         let cwd = folders
             .iter()
             .find(|f| f.id == info.folder_id)
+            .filter(|_| info.worktree.is_none())
             .and_then(|f| thread_dir(Path::new(&f.path), info.subdir.as_deref()));
         let mut entry = Entry::new(info, cols.next_seq, cwd);
         // Turns go on from the next number, which counts rewound ones too.
@@ -596,6 +615,19 @@ impl Registry {
         entry.kept =
             Kept { cwd: cols.cwd, archived_ms: cols.archived_ms, found_id: cols.found_id, prior_native_id };
         entry
+    }
+
+    /// Where the thread's files are: its worktree for a worktree thread
+    /// (none when that is gone), else its folder and sub-folder.
+    pub(crate) fn work_dir(&self, entry: &Entry) -> Option<PathBuf> {
+        if entry.info.worktree.is_some() {
+            let dir = entry.worktree_dir.as_deref()?;
+            return thread_dir(dir, entry.info.subdir.as_deref());
+        }
+        self.folders
+            .iter()
+            .find(|f| f.id == entry.info.folder_id)
+            .and_then(|f| thread_dir(Path::new(&f.path), entry.info.subdir.as_deref()))
     }
 
     /// The thread a `thread.start` with `key` started within [`SEND_KEY_MS`].
@@ -829,6 +861,7 @@ impl Host {
                 mcp: true,
                 mcp_seen: Vec::new(),
                 checkpoints: true,
+                follow_remote: false,
             };
             let mut list = reg.folders.clone();
             list.push(folder.clone());
@@ -902,19 +935,18 @@ impl Host {
     /// `folders.set`: the folder's MCP switch, used from each thread's next
     /// process, and its restore points switch, from the next turn. What is
     /// `None` is unchanged.
-    pub async fn folders_set(
-        &self,
-        id: &str,
-        mcp: Option<bool>,
-        checkpoints: Option<bool>,
-    ) -> Result<Folder, RpcError> {
+    pub async fn folders_set(&self, p: &FoldersSetParams) -> Result<Folder, RpcError> {
         let _serial = self.folders_lock.lock().await;
+        let id = p.id.as_str();
         let set = |folder: &mut Folder| {
-            if let Some(mcp) = mcp {
+            if let Some(mcp) = p.mcp {
                 folder.mcp = mcp;
             }
-            if let Some(checkpoints) = checkpoints {
+            if let Some(checkpoints) = p.checkpoints {
                 folder.checkpoints = checkpoints;
+            }
+            if let Some(follow) = p.follow_remote {
+                folder.follow_remote = follow;
             }
         };
         let list = {
@@ -992,6 +1024,16 @@ impl Host {
         p: ThreadStartParams,
         owner: &str,
     ) -> Result<ThreadInfo, RpcError> {
+        self.thread_start_as(p, owner, None).await
+    }
+
+    /// `thread.start`, in a worktree made for it when `prepared` says so.
+    pub(crate) async fn thread_start_as(
+        self: &Arc<Self>,
+        p: ThreadStartParams,
+        owner: &str,
+        prepared: Option<Prepared>,
+    ) -> Result<ThreadInfo, RpcError> {
         if p.prompt.is_empty() || p.prompt.len() > MAX_PROMPT {
             return Err(err(ErrorCode::BadRequest, "The prompt must be 1 to 16384 bytes."));
         }
@@ -1045,11 +1087,19 @@ impl Host {
         // The id first: the images move into the thread before it exists.
         let id = {
             let reg = self.lock_reg();
-            let mut id = random_hex(16);
-            while reg.threads.contains_key(&id) {
-                id = random_hex(16);
+            match &prepared {
+                Some(prepared) if reg.threads.contains_key(&prepared.id) => {
+                    return Err(err(ErrorCode::Internal, "Try again."));
+                }
+                Some(prepared) => prepared.id.clone(),
+                None => {
+                    let mut id = random_hex(16);
+                    while reg.threads.contains_key(&id) {
+                        id = random_hex(16);
+                    }
+                    id
+                }
             }
-            id
         };
         let images = self.claim_images(&p.images, owner, &id).await?;
         let blocks = self.agent_images(p.agent, &id, &images).await?;
@@ -1060,7 +1110,7 @@ impl Host {
         let Some(folder) = reg.folders.iter().find(|f| f.id == p.folder_id).cloned() else {
             return Err(err(ErrorCode::NotFound, "No such folder."));
         };
-        let cwd = PathBuf::from(&folder.path);
+        let cwd = prepared.as_ref().map_or_else(|| PathBuf::from(&folder.path), |w| w.dir.clone());
         if !cwd.is_dir() {
             return Err(err(ErrorCode::Denied, "The folder is gone."));
         }
@@ -1110,8 +1160,13 @@ impl Host {
             found: false,
             readonly: None,
             undo: None,
+            branch: None,
+            worktree: prepared.as_ref().map(|w| w.worktree.clone()),
+            changed: None,
+            wrote: None,
         };
         let mut entry = Entry::new(info, 1, Some(cwd));
+        entry.worktree_dir = prepared.map(|w| w.dir);
         entry.advance_turn();
         let user = entry.message_item(&p.prompt, &p.origin, None, images);
         emit_state(self, &mut entry);
@@ -1412,6 +1467,9 @@ impl Host {
             }
             self.hub.broadcast(&Event::ThreadRemoved(ThreadRemovedEvent { thread_id: thread_id.to_owned() }));
             notify(self, Note::Removed { thread_id: thread_id.to_owned() });
+            if self.source.forget_thread(thread_id) {
+                self.source.save_later();
+            }
         }
     }
 
@@ -1435,12 +1493,10 @@ impl Host {
         let Some(native) = entry.info.native_id.clone() else {
             return Err(err(ErrorCode::Unavailable, "The agent hasn't started this thread yet."));
         };
+        let worktree = entry.info.worktree.is_some();
         let cwd = reg
-            .folders
-            .iter()
-            .find(|f| f.id == entry.info.folder_id)
-            .and_then(|f| thread_dir(Path::new(&f.path), entry.info.subdir.as_deref()))
-            .or_else(|| entry.cwd.clone())
+            .work_dir(entry)
+            .or_else(|| entry.cwd.clone().filter(|_| !worktree))
             .map(|c| c.to_string_lossy().into_owned())
             .ok_or_else(|| err(ErrorCode::Unavailable, "The folder was removed."))?;
         let argv = match entry.info.agent {
@@ -1528,6 +1584,10 @@ impl Host {
             found: false,
             readonly: None,
             undo: None,
+            branch: None,
+            worktree: None,
+            changed: None,
+            wrote: None,
         };
         let mut entry = Entry::new(info, notice_seq + 1, Some(cwd));
         entry.users_before = u32::try_from(users).unwrap_or(u32::MAX);
@@ -2024,6 +2084,17 @@ impl Host {
         entry.info.pending = 0;
         entry.info.updated_ms = now_ms();
         entry.info.error = end.error.as_ref().filter(|_| end.outcome == Outcome::Failed).map(clean_error);
+        // "Ask <agent> to write it": the answer, when this was that turn and it ended done.
+        if let Some((purpose, asked_turn)) = entry.asked.take()
+            && end.outcome == Outcome::Done
+            && asked_turn == entry.turn_no
+        {
+            let answer = turn.final_text.as_deref().or(turn.last_text.as_deref()).unwrap_or_default();
+            let text = crate::host::source::wrote_text(answer);
+            if !text.is_empty() {
+                entry.info.wrote = Some(Wrote { purpose, turn: asked_turn, text, at_ms: now_ms() });
+            }
+        }
         if end.outcome == Outcome::Done && !summary.is_empty() {
             entry.info.summary = Some(summary.clone());
         }
@@ -2055,12 +2126,19 @@ impl Host {
         let turn_no = entry.turn_no;
         let steering = !entry.steering.is_empty();
         let folder_id = entry.info.folder_id.clone();
+        let worktree_dir = entry.worktree_dir.clone();
         self.schedule_idle_close(thread_id, turn_no);
         // Its row closes before a queued message can begin the next turn.
         self.close_turn(reg, thread_id, outcome);
-        if let Some(folder) = reg.folders.iter().find(|f| f.id == folder_id) {
-            self.files.turn_ended(Path::new(&folder.path));
+        match worktree_dir {
+            Some(dir) => self.files.turn_ended(&dir),
+            None => {
+                if let Some(folder) = reg.folders.iter().find(|f| f.id == folder_id) {
+                    self.files.turn_ended(Path::new(&folder.path));
+                }
+            }
         }
+        self.git_turn_ended(thread_id);
         if dispatch && steering {
             self.schedule_steer_check(thread_id, turn_no);
         } else if dispatch {
@@ -3159,6 +3237,10 @@ pub(crate) fn test_info(agent: AgentId) -> ThreadInfo {
         found: false,
         readonly: None,
         undo: None,
+        branch: None,
+        worktree: None,
+        changed: None,
+        wrote: None,
     }
 }
 
@@ -3216,6 +3298,10 @@ impl Host {
             found: false,
             readonly: None,
             undo: None,
+            branch: None,
+            worktree: None,
+            changed: None,
+            wrote: None,
         };
         let (tx, rx) = mpsc::unbounded_channel();
         let mut entry = Entry::new(info, 1, Some(PathBuf::from("/tmp")));
@@ -3270,6 +3356,7 @@ impl Host {
             mcp: true,
             mcp_seen: Vec::new(),
             checkpoints: true,
+            follow_remote: false,
         });
     }
 
@@ -3474,6 +3561,7 @@ mod tests {
                 Note::LimitReset { agent, thread } => {
                     format!("limit {} {}", agent.as_str(), thread.map(|t| t.id).unwrap_or_default())
                 }
+                Note::PhoneGit { device, .. } => format!("git {device}"),
             });
         }
         seen

@@ -555,6 +555,16 @@ pub fn parse_claude_auth(success: bool, stdout: &str) -> ClaudeAuth {
     }
 }
 
+/// The plan's own name from `claude auth status --text`: the "Login method: Claude Ultra account"
+/// line gives "Ultra". The JSON only has `subscriptionType` ("max" for several plans). Every other
+/// line (email, organization) is ignored.
+pub fn claude_plan_label(text: &str) -> Option<String> {
+    let line = text.lines().map(str::trim).find_map(|l| l.strip_prefix("Login method:"))?;
+    let label = line.trim().strip_suffix(" account")?.trim();
+    let label = label.strip_prefix("Claude ").unwrap_or(label).trim();
+    plan_text(Some(label))
+}
+
 /// What Codex `account/read` says, reduced to what we keep.
 pub fn parse_codex_account(result: &Value) -> ClaudeAuth {
     let account = result.get("account").filter(|a| !a.is_null());
@@ -609,6 +619,13 @@ pub async fn probe_claude(overridden: Option<&Path>, host_env: &[(OsString, OsSt
     info.signed_in = auth.signed_in;
     info.auth = auth.auth;
     info.plan = auth.plan;
+    if auth.auth == Some(AuthKind::Subscription)
+        && let Some((true, text)) =
+            run_capture(&bin, &["auth", "status", "--text"], &child_env, PROBE_COMMAND_TIMEOUT).await
+        && let Some(label) = claude_plan_label(&text)
+    {
+        info.plan = Some(label);
+    }
     if env::lookup(&child_env, "ANTHROPIC_API_KEY").is_some_and(|k| !k.is_empty()) {
         // `claude -p` bills the key when it is set.
         info.signed_in = true;
@@ -1059,6 +1076,20 @@ mod tests {
         assert!(parse_version("2.1.206").unwrap() < CLAUDE_MIN_VERSION);
         assert!(parse_version("2.1.207").unwrap() >= CLAUDE_MIN_VERSION);
         assert_eq!(parse_version("nothing"), None);
+    }
+
+    #[test]
+    fn the_plan_takes_the_clis_own_name() {
+        let text =
+            "Login method: Claude Ultra account\nOrganization: Example Org\nEmail: someone@example.invalid\n";
+        assert_eq!(claude_plan_label(text).as_deref(), Some("Ultra"));
+        assert_eq!(claude_plan_label("  Login method: Claude Max account").as_deref(), Some("Max"));
+        assert_eq!(claude_plan_label("Login method: Team Plus account").as_deref(), Some("Team Plus"));
+        assert_eq!(claude_plan_label("Email: someone@example.invalid"), None, "no login line, no label");
+        assert_eq!(claude_plan_label("Login method: Claude Ultra"), None, "not the expected shape");
+        assert_eq!(claude_plan_label("Login method:  account"), None, "empty");
+        let long = format!("Login method: {} account", "x".repeat(200));
+        assert!(claude_plan_label(&long).is_some_and(|l| l.len() <= api::MAX_PLAN));
     }
 
     #[test]

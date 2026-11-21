@@ -305,6 +305,74 @@ pub const LIMIT_ALARM_AHEAD_MS: u64 = 691_200_000;
 /// A followed session's limit reset time is kept only this far ahead (31 days).
 pub const SESSION_LIMIT_AHEAD_MS: u64 = 2_678_400_000;
 
+// ---- Source control (phase 4, §SC7.4) ----
+
+/// Files a status lists; the rest are counted (`GitStatus.more`, `total`).
+pub const MAX_GIT_FILES: usize = 2000;
+/// Paths a commit or review names.
+pub const MAX_COMMIT_PATHS: usize = 2000;
+/// A commit message, in bytes after trimming.
+pub const MAX_COMMIT_MESSAGE: usize = 8192;
+/// A changed file's path as clients get it.
+pub const MAX_GIT_PATH: usize = 512;
+/// A branch name.
+pub const MAX_BRANCH_NAME: usize = 255;
+/// `git.branches`' `query`.
+pub const MAX_BRANCH_QUERY: usize = 100;
+/// Branches `git.branches` lists.
+pub const MAX_BRANCHES: usize = 200;
+/// Remotes a status lists.
+pub const MAX_REMOTES: usize = 8;
+pub const MAX_REMOTE_NAME: usize = 64;
+/// A pull request's title and body.
+pub const MAX_PR_TITLE: usize = 256;
+pub const MAX_PR_BODY: usize = 32_768;
+/// Checks kept of a pull request.
+pub const MAX_CHECKS: usize = 100;
+/// Rows of the Pull Requests list.
+pub const MAX_PR_ROWS: usize = 50;
+/// A job's id: lowercase hex digits.
+pub const GIT_JOB_LEN: usize = 16;
+/// Lines a job keeps, oldest dropped first, and their bytes.
+pub const MAX_JOB_LINES: usize = 400;
+pub const MAX_JOB_BYTES: usize = 65_536;
+/// Characters of one job line.
+pub const MAX_JOB_LINE: usize = 512;
+/// A job is kept this long after it ends (`git.job` reads it).
+pub const JOB_KEPT_MS: u64 = 600_000;
+/// Jobs running in the host at once; one per work tree.
+pub const MAX_JOBS_RUNNING: usize = 4;
+/// `git.progress` events a job sends at most, a second.
+pub const JOB_EVENTS_PER_SECOND: u32 = 4;
+/// `git.changed` at most this often per thread.
+pub const GIT_CHANGED_MS: u64 = 1000;
+/// A worktree's id: lowercase hex digits.
+pub const WORKTREE_ID_LEN: usize = 12;
+/// G7 worktrees of one folder, and in all.
+pub const MAX_WORKTREES_PER_FOLDER: usize = 32;
+pub const MAX_WORKTREES: usize = 64;
+/// An agent's message kept for the commit or pull-request field (`ThreadInfo.wrote`).
+pub const MAX_WROTE: usize = 8192;
+/// `ThreadInfo.wrote` is dropped this long after it was written.
+pub const WROTE_MS: u64 = 86_400_000;
+/// Caches: the GitHub CLI's state, a branch's pull request, the Pull Requests list.
+pub const GH_STATE_MS: u64 = 300_000;
+pub const PR_CACHE_MS: u64 = 60_000;
+pub const PR_LIST_MS: u64 = 30_000;
+/// "Keep in step with the remote": a fetch this often, pending checks read
+/// this often for at most `FOLLOW_CHECKS_FOR_MS`, only for threads a client shows.
+pub const FOLLOW_FETCH_MS: u64 = 300_000;
+pub const FOLLOW_CHECKS_MS: u64 = 30_000;
+pub const FOLLOW_CHECKS_FOR_MS: u64 = 1_200_000;
+
+/// "Ask <agent> to write it" for a commit (§SC5.4): sent as the user's message.
+pub const ASK_COMMIT_TEXT: &str = "Write a commit message for the changes in this folder that aren't committed yet. Reply with only the message: a subject line of at most 72 characters, then a blank line and a short body if it needs one. Don't commit anything.";
+/// "Ask <agent> to write it" for a pull request: `%1` the branch, `%2` the
+/// base or [`ASK_PR_DEFAULT_BASE`].
+pub const ASK_PR_TEXT: &str = "Write a title and description for a pull request from %1 into %2. Reply with only that: the title on the first line, a blank line, then the description in Markdown. Don't open the pull request.";
+/// `%2` of [`ASK_PR_TEXT`] when no base is named.
+pub const ASK_PR_DEFAULT_BASE: &str = "the default branch";
+
 // ---- Method and event names ----
 
 pub mod method {
@@ -376,6 +444,26 @@ pub mod method {
     /// G7 Link says who is at this PC and what its phones show (phase 5);
     /// only to a host that offers `cap::PRESENCE`.
     pub const UI_PRESENCE: &str = "ui.presence";
+    // Source control (phase 4): only to a host that offers `cap::GIT`.
+    pub const GIT_STATUS: &str = "git.status";
+    pub const GIT_PATCH: &str = "git.patch";
+    pub const GIT_REVIEW: &str = "git.review";
+    pub const GIT_COMMIT: &str = "git.commit";
+    pub const GIT_PUSH: &str = "git.push";
+    pub const GIT_FETCH: &str = "git.fetch";
+    pub const GIT_BRANCHES: &str = "git.branches";
+    pub const GIT_SWITCH: &str = "git.switch";
+    pub const GIT_JOB: &str = "git.job";
+    pub const GIT_STOP: &str = "git.stop";
+    pub const WORKTREE_LIST: &str = "worktree.list";
+    pub const WORKTREE_REMOVE: &str = "worktree.remove";
+    pub const GH_STATUS: &str = "gh.status";
+    pub const PR_VIEW: &str = "pr.view";
+    pub const PR_CREATE: &str = "pr.create";
+    pub const PR_MERGE: &str = "pr.merge";
+    pub const PR_READY: &str = "pr.ready";
+    pub const PR_METHODS: &str = "pr.methods";
+    pub const PR_LIST: &str = "pr.list";
 }
 
 /// What a client says it understands (`HelloParams.caps`) and what a host
@@ -403,8 +491,12 @@ pub mod cap {
     /// Host: it takes `ui.presence` from G7 Link and keeps `HostSettings.limit_alarm`.
     /// Client: it gets the `ui.presence` event (a launcher or G7 Link only).
     pub const PRESENCE: &str = "presence";
+    /// The host has source control (phase 4): the `git.*`, `worktree.*`,
+    /// `gh.status` and `pr.*` methods, the `git.changed` and `git.progress`
+    /// events, and the fields that go with them.
+    pub const GIT: &str = "git";
     /// What this host offers.
-    pub const HOST: [&str; 6] = [ITEMS2, DENY_MESSAGE, CONTROL, HISTORY, UNDO, PRESENCE];
+    pub const HOST: [&str; 7] = [ITEMS2, DENY_MESSAGE, CONTROL, HISTORY, UNDO, PRESENCE, GIT];
 }
 
 pub mod event {
@@ -430,6 +522,8 @@ pub mod event {
     pub const IMPORT_PROGRESS: &str = "import.progress";
     pub const SESSIONS_SCANNED: &str = "sessions.scanned";
     pub const UI_PRESENCE: &str = "ui.presence";
+    pub const GIT_CHANGED: &str = "git.changed";
+    pub const GIT_PROGRESS: &str = "git.progress";
 }
 
 // ---- Error codes ----
@@ -1060,6 +1154,16 @@ pub enum NoticeKind {
     FilesRestored,
     /// "Forked from here. …", written after the items a fork copied.
     Forked,
+    /// "Committed 4 files: …" (source control; never sent to the agent).
+    Committed,
+    /// "Pushed feat/x to origin".
+    Pushed,
+    /// "Switched to …" or "Created …".
+    Switched,
+    /// "Opened pull request #212".
+    PrOpened,
+    /// "Merged pull request #212".
+    PrMerged,
 }
 
 /// Which sessions `sessions.scan` lists.
@@ -1414,6 +1518,10 @@ pub struct Folder {
     /// A restore point is kept for each turn here (from the next turn).
     #[serde(default = "yes")]
     pub checkpoints: bool,
+    /// "Keep in step with the remote" (phase 4, off): a fetch every few
+    /// minutes while a client shows one of its threads.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub follow_remote: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1547,6 +1655,19 @@ pub struct ThreadInfo {
     /// The last rewind can be undone until then.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub undo: Option<UndoInfo>,
+    /// Its folder's branch as last read (phase 4); absent: not a
+    /// repository, detached, or never read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    /// It works in a G7 worktree of its folder.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree: Option<WorktreeTag>,
+    /// Files with uncommitted changes in its folder, as last read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub changed: Option<u32>,
+    /// The agent's answer to "Ask <agent> to write it" (§SC5.4).
+    #[serde(default, deserialize_with = "lenient", skip_serializing_if = "Option::is_none")]
+    pub wrote: Option<Wrote>,
 }
 
 /// Where a fork came from (`ThreadInfo.forked_from`).
@@ -2073,6 +2194,543 @@ pub struct StoreInfo {
     pub checkpoint_bytes: u64,
 }
 
+// ---- Source control records (phase 4, §SC7.1): only from a host that offers `cap::GIT` ----
+
+/// Whether the folder is a repository G7 works in.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RepoState {
+    #[default]
+    Ok,
+    /// Not a repository.
+    None,
+    /// Git says the folder isn't safe, or it lands outside the folders G7 works in.
+    Refused,
+    /// No `git` on this PC.
+    NoGit,
+}
+
+/// What git is in the middle of in the folder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Doing {
+    Merge,
+    Rebase,
+    CherryPick,
+    Revert,
+    Bisect,
+}
+
+/// A changed file's state, between `HEAD` and the file on disk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GitChange {
+    Added,
+    Modified,
+    Deleted,
+    Renamed,
+    Type,
+    Untracked,
+    Conflict,
+}
+
+/// How much of a file's change the user staged already.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Staged {
+    All,
+    Part,
+    None,
+}
+
+/// One changed file, relative to the thread's folder.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitFile {
+    /// At most [`MAX_GIT_PATH`] bytes; an untracked folder ends in `/`.
+    pub path: String,
+    /// A rename's old path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
+    pub status: GitChange,
+    pub staged: Staged,
+    /// An untracked folder, one row; ticking it commits what is inside.
+    #[serde(default)]
+    pub folder: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub adds: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dels: Option<u32>,
+    #[serde(default)]
+    pub binary: bool,
+}
+
+/// A remote, named for people: host and path, never a URL, a user or a secret.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Remote {
+    /// At most [`MAX_REMOTE_NAME`] bytes.
+    pub name: String,
+    /// At most 140 characters.
+    pub label: String,
+    /// A folder on this PC: a phone says "a folder on this PC" instead of the label.
+    #[serde(default)]
+    pub local: bool,
+}
+
+/// The last commit on the branch.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LastCommit {
+    pub oid7: String,
+    /// At most 200 characters.
+    pub subject: String,
+    pub ms: u64,
+}
+
+/// A thread's G7 worktree, as its thread and status show it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorktreeTag {
+    /// [`WORKTREE_ID_LEN`] lowercase hex digits.
+    pub id: String,
+    pub branch: String,
+    /// At most 64 characters.
+    pub label: String,
+    /// Its folder is gone.
+    #[serde(default)]
+    pub missing: bool,
+}
+
+/// A folder on GitHub: `owner/name` and the host.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitHub {
+    pub repo: String,
+    pub host: String,
+}
+
+/// The status of a thread's folder (§SC3.2).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitStatus {
+    pub repo: RepoState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    /// `HEAD`'s first 7 hex digits when it is detached.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detached: Option<String>,
+    /// No commit yet.
+    #[serde(default)]
+    pub unborn: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upstream: Option<String>,
+    /// From what was last fetched.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ahead: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub behind: Option<u32>,
+    /// The remote a push goes to; absent: none, or the client must pick one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote: Option<String>,
+    /// At most [`MAX_REMOTES`].
+    #[serde(default)]
+    pub remotes: Vec<Remote>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_branch: Option<String>,
+    #[serde(default)]
+    pub on_default: bool,
+    #[serde(default, deserialize_with = "lenient", skip_serializing_if = "Option::is_none")]
+    pub doing: Option<Doing>,
+    /// `index.lock` is there: another git command is at work.
+    #[serde(default)]
+    pub locked: bool,
+    /// At most [`MAX_GIT_FILES`].
+    #[serde(default)]
+    pub files: Vec<GitFile>,
+    #[serde(default)]
+    pub more: bool,
+    /// Files with changes, listed or not.
+    #[serde(default)]
+    pub total: u32,
+    #[serde(default)]
+    pub adds: u32,
+    #[serde(default)]
+    pub dels: u32,
+    #[serde(default)]
+    pub conflicts: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last: Option<LastCommit>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree: Option<WorktreeTag>,
+    /// When the remote was last fetched (`FETCH_HEAD`'s time).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fetched_ms: Option<u64>,
+    #[serde(default)]
+    pub checked_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub github: Option<GitHub>,
+    /// 16 hex digits; changes when anything a client was shown changes.
+    #[serde(default)]
+    pub fingerprint: String,
+}
+
+/// A branch, local or on a remote (§SC3.7).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Branch {
+    /// `main`, or `origin/feat` for one only on a remote.
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote: Option<String>,
+    #[serde(default)]
+    pub current: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upstream: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ahead: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub behind: Option<u32>,
+    /// Checked out in another work tree: its folder's name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree: Option<String>,
+    #[serde(default)]
+    pub last_ms: u64,
+}
+
+/// A pull request's state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PrState {
+    Open,
+    Merged,
+    Closed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewState {
+    Approved,
+    ChangesRequested,
+    ReviewRequired,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Mergeable {
+    Yes,
+    Conflicts,
+    Unknown,
+}
+
+/// One check's state (§SC4.1). Failing sorts first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CheckState {
+    Fail,
+    Pending,
+    Pass,
+    Skipped,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Check {
+    /// At most 120 characters.
+    pub name: String,
+    pub state: CheckState,
+    /// `https` on a host the GitHub CLI is signed in to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+}
+
+/// The branch's pull request (§SC7.1).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PrInfo {
+    pub number: u32,
+    pub title: String,
+    pub state: PrState,
+    pub draft: bool,
+    pub url: String,
+    pub base: String,
+    pub head: String,
+    /// 40 hex digits: what a merge is pinned to.
+    pub head_oid: String,
+    #[serde(default, deserialize_with = "lenient", skip_serializing_if = "Option::is_none")]
+    pub review: Option<ReviewState>,
+    #[serde(default, deserialize_with = "lenient", skip_serializing_if = "Option::is_none")]
+    pub mergeable: Option<Mergeable>,
+    #[serde(default)]
+    pub blocked: bool,
+    pub updated_ms: u64,
+    /// At most [`MAX_CHECKS`], failing first.
+    #[serde(default)]
+    pub checks: Vec<Check>,
+    #[serde(default)]
+    pub pass: u32,
+    #[serde(default)]
+    pub fail: u32,
+    #[serde(default)]
+    pub pending: u32,
+    /// When G7 read it from GitHub.
+    pub read_ms: u64,
+}
+
+impl PrInfo {
+    /// What `git.changed` carries of it.
+    pub fn brief(&self) -> PrBrief {
+        PrBrief {
+            number: self.number,
+            state: self.state,
+            draft: self.draft,
+            pass: self.pass,
+            fail: self.fail,
+            pending: self.pending,
+        }
+    }
+}
+
+/// A pull request in a `git.changed` event.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PrBrief {
+    pub number: u32,
+    pub state: PrState,
+    pub draft: bool,
+    pub pass: u32,
+    pub fail: u32,
+    pub pending: u32,
+}
+
+/// Check counts of a pull request row.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CheckCounts {
+    pub pass: u32,
+    pub fail: u32,
+    pub pending: u32,
+}
+
+/// A pull request as the GitHub CLI lists it (§SC4.4).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PrRow {
+    pub number: u32,
+    pub title: String,
+    /// `owner/name`, at most 140 characters.
+    pub repo: String,
+    pub state: PrState,
+    pub draft: bool,
+    pub updated_ms: u64,
+    pub url: String,
+    /// Its head branch, when the list says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checks: Option<CheckCounts>,
+}
+
+/// A row of `pr.list`: the pull request, and the G7 thread working on it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PrListRow {
+    #[serde(flatten)]
+    pub row: PrRow,
+    /// A thread whose folder is on that repository and whose branch is its head.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_id: Option<String>,
+}
+
+/// Whether the GitHub CLI can be used (§SC4.2).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GhUse {
+    Ok,
+    #[default]
+    Missing,
+    SignedOut,
+    Old,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GhState {
+    pub gh: GhUse,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    /// Hosts the CLI is signed in to (at most 8).
+    #[serde(default)]
+    pub hosts: Vec<String>,
+    pub checked_ms: u64,
+}
+
+/// Why `pr.view` has no pull request to show.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PrWhy {
+    /// The push remote isn't on a host the GitHub CLI is signed in to.
+    NotGithub,
+    /// The branch isn't pushed.
+    NoUpstream,
+    Detached,
+    /// GitHub couldn't be reached; `pr` is the last one read, if any.
+    Network,
+    /// The folder isn't a repository G7 works in.
+    NotRepo,
+}
+
+/// How a pull request is merged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MergeMethod {
+    Squash,
+    Merge,
+    Rebase,
+}
+
+/// Which Pull Requests list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PrShow {
+    /// Open ones you opened.
+    Mine,
+    /// Open ones waiting for your review.
+    Review,
+    /// Open ones of a folder's repository.
+    Folder,
+}
+
+/// A G7 worktree (§SC3.8), as `worktree.list` shows it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Worktree {
+    pub id: String,
+    /// The agent folder it was made from.
+    pub folder_id: String,
+    pub label: String,
+    pub branch: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_id: Option<String>,
+    pub created_ms: u64,
+    /// Its folder is gone: it can be forgotten.
+    #[serde(default)]
+    pub missing: bool,
+    /// Its size on disk, counted up to a bound.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bytes: Option<u64>,
+    /// The count stopped at its bound: "over" `bytes`.
+    #[serde(default)]
+    pub bytes_over: bool,
+    /// Its commits on no remote, read when listed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unpushed: Option<u32>,
+    /// Absolute; G7 Link and the launcher only.
+    pub path: String,
+}
+
+/// What "Ask <agent> to write it" is for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Purpose {
+    Commit,
+    Pr,
+}
+
+/// The agent's answer to "Ask <agent> to write it" (`ThreadInfo.wrote`):
+/// cleared by the next commit or pull request, the next ask, or after
+/// [`WROTE_MS`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Wrote {
+    pub purpose: Purpose,
+    /// The turn that answered.
+    pub turn: u32,
+    /// At most [`MAX_WROTE`] bytes: the final answer, fences and a leading
+    /// "Subject:" taken off.
+    pub text: String,
+    pub at_ms: u64,
+}
+
+/// What a source-control job does (§SC5.2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum JobKind {
+    Commit,
+    Push,
+    Fetch,
+    Switch,
+    Worktree,
+    PrCreate,
+    PrMerge,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum JobPhase {
+    Running,
+    Done,
+    Failed,
+    Stopped,
+}
+
+/// What a job that went through made.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JobResult {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oid7: Option<String>,
+    /// At most 200 characters.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subject: Option<String>,
+    /// Files committed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub files: Option<u32>,
+    /// The branch pushed, or switched to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote: Option<String>,
+    /// A push the remote had already: "Already up to date".
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub up_to_date: bool,
+    /// A switch made the branch.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub created: bool,
+    /// The pull request opened.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pr: Option<PrInfo>,
+    /// The pull request merged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub number: Option<u32>,
+}
+
+/// Why a job didn't go through.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JobError {
+    /// A word of §SC3 (`hook`, `behind`, `changed`, …), at most 24 bytes.
+    pub reason: String,
+    /// At most [`MAX_ERROR_MESSAGE`] bytes.
+    pub message: String,
+    /// `pick_remote`: the remotes to choose from.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub names: Vec<String>,
+}
+
+/// A source-control job (§SC5.2): every commit, push, fetch, switch, new
+/// worktree, pull request opened or merged. `git.job` gives every line kept;
+/// a `git.progress` event only those new since the last one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Job {
+    /// [`GIT_JOB_LEN`] lowercase hex digits.
+    pub id: String,
+    pub thread_id: String,
+    pub kind: JobKind,
+    pub phase: JobPhase,
+    pub started_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ended_ms: Option<u64>,
+    /// Who asked.
+    pub by: Origin,
+    /// Cleaned output, oldest first, each at most [`MAX_JOB_LINE`] characters.
+    #[serde(default)]
+    pub lines: Vec<String>,
+    /// The number of `lines[0]`, counting every line the job printed from 0.
+    #[serde(default)]
+    pub from: u64,
+    /// Lines dropped to stay within [`MAX_JOB_LINES`] and [`MAX_JOB_BYTES`].
+    #[serde(default)]
+    pub dropped: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<JobResult>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<JobError>,
+}
+
 // ---- Wire envelope ----
 
 /// A client's request line.
@@ -2257,6 +2915,21 @@ pub struct ThreadStartParams {
     /// start with it is answered `duplicate` and starts nothing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key: Option<String>,
+    /// Work in a new G7 worktree of the folder (G7 Link and the launcher
+    /// only; to a host that offers `cap::GIT`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree: Option<WorktreeWanted>,
+}
+
+/// `thread.start`'s new worktree: a new branch from `base`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorktreeWanted {
+    /// The new branch; absent: `g7/` and a name from the prompt's title.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    /// A branch `git.branches` listed; absent: the folder's `HEAD`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base: Option<String>,
 }
 
 impl ThreadStartParams {
@@ -2273,6 +2946,7 @@ impl ThreadStartParams {
             custom_model: false,
             images: Vec::new(),
             key: None,
+            worktree: None,
         }
     }
 }
@@ -2289,11 +2963,16 @@ pub struct ThreadStartResult {
     /// The key was taken already: nothing was started, `thread` is the one it started.
     #[serde(default, skip_serializing_if = "is_false")]
     pub duplicate: bool,
+    /// The job that made its worktree (a start with `worktree`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub job: Option<Job>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ThreadSendParams {
     pub thread_id: String,
+    /// Empty only with `purpose`.
+    #[serde(default)]
     pub text: String,
     pub origin: Origin,
     /// What to do when the thread works; absent: `auto`, read as `queue`.
@@ -2316,6 +2995,14 @@ pub struct ThreadSendParams {
     /// answered `duplicate` and sends nothing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key: Option<String>,
+    /// "Ask <agent> to write it" (§SC5.4): with no `text`, the host sends
+    /// [`ASK_COMMIT_TEXT`] or [`ASK_PR_TEXT`] as this message, and sets
+    /// `ThreadInfo.wrote` from the answer. To a host that offers `cap::GIT`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub purpose: Option<Purpose>,
+    /// `purpose: pr`: the base named in [`ASK_PR_TEXT`]; absent: the default branch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base: Option<String>,
 }
 
 impl ThreadSendParams {
@@ -2332,7 +3019,14 @@ impl ThreadSendParams {
             mode: None,
             custom_model: false,
             key: None,
+            purpose: None,
+            base: None,
         }
+    }
+
+    /// "Ask <agent> to write it" for `purpose`.
+    pub fn ask(thread_id: String, purpose: Purpose, origin: Origin) -> Self {
+        Self { purpose: Some(purpose), ..Self::new(thread_id, String::new(), origin) }
     }
 }
 
@@ -2545,6 +3239,9 @@ pub struct FoldersSetParams {
     /// Only to a host that offers [`cap::UNDO`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub checkpoints: Option<bool>,
+    /// "Keep in step with the remote". Only to a host that offers [`cap::GIT`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub follow_remote: Option<bool>,
 }
 
 /// `settings.set`: what is absent is unchanged.
@@ -3173,6 +3870,330 @@ pub struct SessionPreviewResult {
     pub items: Vec<Item>,
 }
 
+// ---- Source control (phase 4, §SC7.2): only to a host that offers `cap::GIT` ----
+//
+// A refusal is an error whose `data` is `{"reason": <word>}` (and `"names"`
+// for `pick_remote`), the words of §SC3 plus the host's own: `thread_busy`,
+// `shared_busy`, `jobs` (four run already), `limit` (worktrees). Who may ask
+// is the host's: `DENIED` "That is done from G7 Link on this PC." A job that
+// ran and failed ends with `Job.error` instead.
+
+/// `git.status`: a thread's folder (its worktree for a worktree thread), or a folder's.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitStatusParams {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folder_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitStatusResult {
+    pub status: GitStatus,
+}
+
+/// `git.patch`: one page of a changed file's uncommitted diff.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitPatchParams {
+    pub thread_id: String,
+    /// A path of the thread's last status.
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offset: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitPatchResult {
+    /// At most [`MAX_PATCH_PAGE`] bytes, cut at a line end.
+    pub patch: String,
+    /// Where the next page starts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next: Option<u64>,
+    /// Past [`MAX_PATCH_FILE`]: the rest isn't served.
+    #[serde(default)]
+    pub truncated: bool,
+    #[serde(default)]
+    pub binary: bool,
+    /// An untracked folder: no patch, the first names inside (at most 50).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub names: Vec<String>,
+    /// An untracked folder: names past `names`.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub more_names: u32,
+}
+
+/// `git.review`: pins the picked files as they are now.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitReviewParams {
+    pub thread_id: String,
+    /// 1 to [`MAX_COMMIT_PATHS`] paths of the last status; or `all`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub paths: Vec<String>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub all: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReviewedFile {
+    pub path: String,
+    pub bytes: u64,
+    #[serde(default)]
+    pub folder: bool,
+    /// An untracked folder's entries.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub entries: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitReviewResult {
+    /// 16 hex digits: pass it as `git.commit`'s `review`.
+    pub review: String,
+    /// The status the review was made against.
+    pub fingerprint: String,
+    pub files: Vec<ReviewedFile>,
+    /// A folder past 2,000 entries: only the PC may commit this.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub pc_only: bool,
+}
+
+/// `git.commit`: the picked files, whole, as they are on disk.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitCommitParams {
+    pub thread_id: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub paths: Vec<String>,
+    /// Everything in the folder (offered when the list was cut).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub all: bool,
+    /// 1 to [`MAX_COMMIT_MESSAGE`] bytes after trimming.
+    pub message: String,
+    /// A `git.review` id: refused with `changed` unless the files still are
+    /// what was reviewed. Required when `by` is a phone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review: Option<String>,
+    /// Who asked; absent: this PC.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub by: Option<Origin>,
+}
+
+/// The reply of every method that starts or reads a job.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitJobResult {
+    pub job: Job,
+}
+
+/// `git.push`: the current branch to its remote, never forced.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitPushParams {
+    pub thread_id: String,
+    /// A remote the status listed (after `pick_remote`); absent: the branch's own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub by: Option<Origin>,
+}
+
+/// `git.fetch`: the branch's remote; no prune, no tags.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitFetchParams {
+    pub thread_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub by: Option<Origin>,
+}
+
+/// `git.branches`: of a thread's folder or a folder.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitBranchesParams {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folder_id: Option<String>,
+    /// A case-folded substring, at most [`MAX_BRANCH_QUERY`] bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub query: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitBranchesResult {
+    /// At most [`MAX_BRANCHES`]: local first, then those only on a remote.
+    pub branches: Vec<Branch>,
+    #[serde(default)]
+    pub more: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current: Option<String>,
+}
+
+/// `git.switch`: to a local branch, a remote one (`track`), or a new one (`create`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitSwitchParams {
+    pub thread_id: String,
+    /// A name `git.branches` listed (`origin/feat` with `track`), or the new one's.
+    pub branch: String,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub create: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub track: bool,
+    /// The person agreed that changes go along (G7 Link on this PC only).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub carry: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub by: Option<Origin>,
+}
+
+/// `git.job` and `git.stop`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitJobParams {
+    pub job: String,
+    /// `git.stop`: who asks (the job's device, or G7 Link on this PC).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub by: Option<Origin>,
+}
+
+/// `thread.delete` with phase 4's box.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ThreadDeleteParams {
+    pub thread_id: String,
+    /// "Also remove its worktree" (G7 Link on this PC only).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub remove_worktree: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ThreadDeleteResult {
+    /// The worktree wasn't removed, and why (`dirty`, `thread_busy`, …): it
+    /// stays listed in Setup.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_left: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorktreeListParams {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folder_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorktreeListResult {
+    /// At most [`MAX_WORKTREES`].
+    pub worktrees: Vec<Worktree>,
+}
+
+/// `worktree.remove` (G7 Link on this PC only): deletes its folder; the
+/// branch stays. `forget`: drops a `missing` record.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorktreeRemoveParams {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub forget: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub by: Option<Origin>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorktreeRemoveResult {
+    /// Its branch's commits on no remote; they stay on the branch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unpushed: Option<u32>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GhStatusParams {
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub refresh: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PrViewParams {
+    pub thread_id: String,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub refresh: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PrViewResult {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pr: Option<PrInfo>,
+    pub gh: GhState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub github: Option<GitHub>,
+    #[serde(default, deserialize_with = "lenient", skip_serializing_if = "Option::is_none")]
+    pub why: Option<PrWhy>,
+}
+
+/// `pr.create`: for the pushed branch.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PrCreateParams {
+    pub thread_id: String,
+    /// 1 to [`MAX_PR_TITLE`] bytes, one line.
+    pub title: String,
+    /// At most [`MAX_PR_BODY`] bytes.
+    #[serde(default)]
+    pub body: String,
+    /// A remote branch `git.branches` listed; absent: the repository's default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base: Option<String>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub draft: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub by: Option<Origin>,
+}
+
+/// `pr.merge` (G7 Link on this PC only): pinned to `head`, the commit the
+/// person was shown.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PrMergeParams {
+    pub thread_id: String,
+    pub number: u32,
+    pub method: MergeMethod,
+    /// 40 hex digits: `PrInfo.head_oid` as shown.
+    pub head: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub by: Option<Origin>,
+}
+
+/// `pr.ready` (G7 Link on this PC only).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PrReadyParams {
+    pub thread_id: String,
+    pub number: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub by: Option<Origin>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PrReadyResult {
+    /// The pull request read again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pr: Option<PrInfo>,
+}
+
+/// The merge methods the repository allows (`pr.methods`, G7 Link only).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PrMethodsResult {
+    pub squash: bool,
+    pub merge: bool,
+    pub rebase: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PrListParams {
+    pub show: PrShow,
+    /// The folder, for `show: folder` (needed there).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folder_id: Option<String>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub refresh: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PrListResult {
+    /// At most [`MAX_PR_ROWS`].
+    pub prs: Vec<PrListRow>,
+    #[serde(default)]
+    pub more: bool,
+    pub gh: GhState,
+}
+
 // ---- Events ----
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -3302,6 +4323,31 @@ pub struct SessionsScannedEvent {
     pub partial: bool,
 }
 
+/// `git.changed` (§SC3.2): a thread's summary changed; at most one a
+/// second per thread, to connections subscribed to it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitChangedEvent {
+    pub thread_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    #[serde(default)]
+    pub detached: bool,
+    pub changed: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ahead: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub behind: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pr: Option<PrBrief>,
+}
+
+/// `git.progress`: a job's new lines (at most [`JOB_EVENTS_PER_SECOND`] a
+/// second); the last has the final `phase`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitProgressEvent {
+    pub job: Job,
+}
+
 /// An event from the host, typed. Parse an [`EventLine`] with
 /// [`Event::from_line`]; an unknown event name gives `None`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -3351,6 +4397,10 @@ pub enum Event {
     SessionsScanned(SessionsScannedEvent),
     #[serde(rename = "ui.presence")]
     UiPresence(PresenceEvent),
+    #[serde(rename = "git.changed")]
+    GitChanged(GitChangedEvent),
+    #[serde(rename = "git.progress")]
+    GitProgress(GitProgressEvent),
 }
 
 impl Event {
@@ -3386,6 +4436,8 @@ impl Event {
             Self::ImportProgress(_) => event::IMPORT_PROGRESS,
             Self::SessionsScanned(_) => event::SESSIONS_SCANNED,
             Self::UiPresence(_) => event::UI_PRESENCE,
+            Self::GitChanged(_) => event::GIT_CHANGED,
+            Self::GitProgress(_) => event::GIT_PROGRESS,
         }
     }
 
@@ -3404,6 +4456,8 @@ impl Event {
             Self::QuestionResolved(e) => Some(&e.thread_id),
             Self::ThreadTurn(e) => Some(&e.thread_id),
             Self::ThreadCut(e) => Some(&e.thread_id),
+            Self::GitChanged(e) => Some(&e.thread_id),
+            Self::GitProgress(e) => Some(&e.job.thread_id),
             Self::AgentsChanged(_)
             | Self::DraftChanged(_)
             | Self::FoldersChanged(_)
@@ -3585,9 +4639,15 @@ pub fn is_valid_send_key(key: &str) -> bool {
     key.len() == SEND_KEY_LEN && is_valid_id(key)
 }
 
-/// An import job's id: [`IMPORT_JOB_LEN`] lowercase hex digits.
+/// An import job's id: [`IMPORT_JOB_LEN`] lowercase hex digits; a
+/// source-control job's ([`GIT_JOB_LEN`]) has the same form.
 pub fn is_valid_job_id(id: &str) -> bool {
     id.len() == IMPORT_JOB_LEN && is_valid_id(id)
+}
+
+/// A worktree's id: [`WORKTREE_ID_LEN`] lowercase hex digits.
+pub fn is_valid_worktree_id(id: &str) -> bool {
+    id.len() == WORKTREE_ID_LEN && is_valid_id(id)
 }
 
 /// A draft key: a thread id, or `new:` and a folder id.
@@ -3659,6 +4719,10 @@ mod tests {
             found: false,
             readonly: None,
             undo: None,
+            branch: None,
+            worktree: None,
+            changed: None,
+            wrote: None,
         }
     }
 
@@ -3723,6 +4787,7 @@ mod tests {
             mcp: true,
             mcp_seen: Vec::new(),
             checkpoints: false,
+            follow_remote: false,
         });
         round_trip(&thread());
         round_trip(&Item {
@@ -4072,7 +5137,7 @@ mod tests {
             before_ms: Some(9),
             show: Some(ThreadShow::Snoozed),
         });
-        round_trip(&ThreadStartResult { thread: thread(), duplicate: true });
+        round_trip(&ThreadStartResult { thread: thread(), duplicate: true, job: None });
         round_trip(&ThreadSendResult { queued: None, duplicate: true });
         round_trip(&ThreadSendParams {
             key: Some("0123456789abcdef".into()),
@@ -4137,7 +5202,11 @@ mod tests {
         round_trip(&ImportCancelParams { job: "0123456789abcdef".into() });
         round_trip(&SessionPreviewParams { id: found().id, limit: Some(10) });
         round_trip(&SessionPreviewResult { items: vec![Item::new(1, "u", ItemKind::User, 1)] });
-        round_trip(&FoldersSetParams { id: "f0123456789ab".into(), mcp: None, checkpoints: Some(false) });
+        round_trip(&FoldersSetParams {
+            id: "f0123456789ab".into(),
+            checkpoints: Some(false),
+            ..Default::default()
+        });
         for ev in [
             Event::ThreadTurn(ThreadTurnEvent { thread_id: "a".into(), turn: turn() }),
             Event::ThreadCut(ThreadCutEvent {
@@ -4269,7 +5338,8 @@ mod tests {
         assert_eq!(send.key, None);
         assert_eq!(serde_json::to_value(ThreadSendResult::default()).unwrap(), json!({}));
         assert_eq!(
-            serde_json::to_value(ThreadStartResult { thread: thread(), duplicate: false }).unwrap(),
+            serde_json::to_value(ThreadStartResult { thread: thread(), duplicate: false, job: None })
+                .unwrap(),
             serde_json::to_value(ThreadResult { thread: thread() }).unwrap()
         );
         // The launcher's old call still says `mcp`.
@@ -4566,6 +5636,98 @@ mod tests {
             json!({"keep_awake": true}),
             "the line an older host has always read"
         );
+    }
+
+    #[test]
+    fn source_control_is_additive_and_named_on_the_wire() {
+        assert!(cap::HOST.contains(&cap::GIT));
+        assert_eq!(
+            (method::GIT_COMMIT, method::PR_LIST, event::GIT_PROGRESS),
+            ("git.commit", "pr.list", "git.progress")
+        );
+        // Older lines read as before; the new fields are absent until set.
+        let plain = serde_json::to_value(thread()).unwrap();
+        for key in ["branch", "worktree", "changed", "wrote"] {
+            assert!(plain.get(key).is_none(), "{key}");
+        }
+        let with = ThreadInfo {
+            branch: Some("feat/x".into()),
+            worktree: Some(WorktreeTag {
+                id: "0123456789ab".into(),
+                branch: "g7/x".into(),
+                label: "x".into(),
+                missing: false,
+            }),
+            changed: Some(3),
+            wrote: Some(Wrote { purpose: Purpose::Pr, turn: 2, text: "Title".into(), at_ms: 9 }),
+            ..thread()
+        };
+        round_trip(&with);
+        let mut later = plain.clone();
+        later["wrote"] = json!({"purpose": "later", "turn": 1, "text": "", "at_ms": 0});
+        let later: ThreadInfo = serde_json::from_value(later).unwrap();
+        assert_eq!(later.wrote, None, "a purpose this version doesn't know reads as absent");
+        let folder: Folder =
+            serde_json::from_value(json!({"id": "f0123456789ab", "label": "w", "path": "/w", "added_ms": 0}))
+                .unwrap();
+        assert!(!folder.follow_remote);
+        assert!(serde_json::to_value(&folder).unwrap().get("follow_remote").is_none());
+
+        // A row of `pr.list` is the row and its thread, flat.
+        let row = PrListRow {
+            row: PrRow {
+                number: 7,
+                title: "T".into(),
+                repo: "o/r".into(),
+                state: PrState::Open,
+                draft: false,
+                updated_ms: 1,
+                url: "https://example.test/o/r/pull/7".into(),
+                branch: Some("feat/x".into()),
+                checks: Some(CheckCounts { pass: 1, fail: 0, pending: 2 }),
+            },
+            thread_id: Some("a".repeat(32)),
+        };
+        let value = serde_json::to_value(&row).unwrap();
+        assert_eq!((value["number"].clone(), value["thread_id"].clone()), (json!(7), json!("a".repeat(32))));
+        round_trip(&row);
+
+        let job = Job {
+            id: "0123456789abcdef".into(),
+            thread_id: "a".repeat(32),
+            kind: JobKind::PrCreate,
+            phase: JobPhase::Failed,
+            started_ms: 1,
+            ended_ms: Some(2),
+            by: Origin::phone("d", "Pixel"),
+            lines: vec!["x".into()],
+            from: 3,
+            dropped: 3,
+            result: None,
+            error: Some(JobError {
+                reason: "pick_remote".into(),
+                message: "Choose a remote.".into(),
+                names: vec!["a".into()],
+            }),
+        };
+        round_trip(&GitProgressEvent { job: job.clone() });
+        let line = Event::GitProgress(GitProgressEvent { job }).to_line();
+        let ServerLine::Event(parsed) = ServerLine::parse(&line).unwrap() else { panic!("not an event") };
+        assert_eq!(
+            (parsed.event.as_str(), parsed.params["job"]["kind"].clone()),
+            ("git.progress", json!("pr_create"))
+        );
+        assert_eq!(
+            Event::from_line(&parsed).and_then(|e| e.thread_id().map(str::to_owned)),
+            Some("a".repeat(32))
+        );
+        assert_eq!(serde_json::to_value(NoticeKind::PrMerged).unwrap(), json!("pr_merged"));
+        let ask: ThreadSendParams = serde_json::from_value(
+            json!({"thread_id": "a".repeat(32), "origin": {"kind": "launcher"}, "purpose": "commit"}),
+        )
+        .unwrap();
+        assert_eq!((ask.text.as_str(), ask.purpose), ("", Some(Purpose::Commit)), "no text with a purpose");
+        assert!(is_valid_worktree_id("0123456789ab") && !is_valid_worktree_id("0123456789a"));
     }
 
     #[test]

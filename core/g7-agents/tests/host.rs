@@ -65,6 +65,8 @@ struct Options {
     codex: Option<&'static str>,
     agent_idle: Option<Duration>,
     approval_lifetime_ms: Option<u64>,
+    /// `PATH` holds only `git` (never the user's `gh`), and git reads no system configuration.
+    git: bool,
 }
 
 impl TestHost {
@@ -94,7 +96,20 @@ impl TestHost {
             )),
             bridge_exe: PathBuf::from(env!("CARGO_BIN_EXE_g7-agents")),
             notify: false,
-            env: vec![("HOME".into(), home.into_os_string()), ("PATH".into(), "/usr/bin:/bin".into())],
+            env: if opts.git {
+                let bin = dir.join("bin");
+                std::fs::create_dir_all(&bin).unwrap();
+                if let Some(git) = real_git() {
+                    std::os::unix::fs::symlink(git, bin.join("git")).unwrap();
+                }
+                vec![
+                    ("HOME".into(), home.into_os_string()),
+                    ("PATH".into(), bin.into_os_string()),
+                    ("GIT_CONFIG_NOSYSTEM".into(), "1".into()),
+                ]
+            } else {
+                vec![("HOME".into(), home.into_os_string()), ("PATH".into(), "/usr/bin:/bin".into())]
+            },
             idle_exit: host::IDLE_EXIT,
             agent_idle: opts.agent_idle.unwrap_or(Duration::from_secs(600)),
             approval_lifetime_ms: opts.approval_lifetime_ms.unwrap_or(APPROVAL_LIFETIME_MS),
@@ -763,7 +778,7 @@ async fn hello_says_what_the_host_offers() {
     let (client, _events) = host.client(ClientKind::Test).await;
     assert_eq!(
         client.host().caps,
-        [cap::ITEMS2, cap::DENY_MESSAGE, cap::CONTROL, cap::HISTORY, cap::UNDO, cap::PRESENCE]
+        [cap::ITEMS2, cap::DENY_MESSAGE, cap::CONTROL, cap::HISTORY, cap::UNDO, cap::PRESENCE, cap::GIT]
     );
     let too_many = HelloParams::new(ClientKind::Test, &["x"; MAX_CAPS + 1]);
     let err = Client::connect(&host.socket, too_many).await.unwrap_err();
@@ -1079,22 +1094,36 @@ impl RealHosts {
     fn start(&self, exe: &Path) -> std::io::Result<u32> {
         use std::os::unix::process::CommandExt;
         let codex = self.codex.clone().unwrap_or_else(|| PathBuf::from("/bin/false"));
-        let child = std::process::Command::new(exe)
-            .arg("serve")
-            .env_clear()
-            .env("HOME", self.dir.join("home"))
-            .env("PATH", "/usr/bin:/bin")
-            .env("G7_AGENTS_SOCKET", self.socket())
-            .env("G7_AGENTS_DATA_DIR", self.dir.join("data"))
-            .env("G7_AGENTS_NO_NOTIFY", "1")
-            .env("G7_AGENTS_NO_SESSIONS", "1")
-            .env("G7_AGENTS_CLAUDE_BIN", "/bin/false")
-            .env("G7_AGENTS_CODEX_BIN", codex)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .process_group(0)
-            .spawn()?;
+        let mut tries = 0;
+        let spawn = || {
+            std::process::Command::new(exe)
+                .arg("serve")
+                .env_clear()
+                .env("HOME", self.dir.join("home"))
+                .env("PATH", "/usr/bin:/bin")
+                .env("G7_AGENTS_SOCKET", self.socket())
+                .env("G7_AGENTS_DATA_DIR", self.dir.join("data"))
+                .env("G7_AGENTS_NO_NOTIFY", "1")
+                .env("G7_AGENTS_NO_SESSIONS", "1")
+                .env("G7_AGENTS_CLAUDE_BIN", "/bin/false")
+                .env("G7_AGENTS_CODEX_BIN", &codex)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .process_group(0)
+                .spawn()
+        };
+        // A binary just copied can be busy for a moment: another test's child, forked while
+        // the copy was open for writing, holds it until that child execs.
+        let child = loop {
+            match spawn() {
+                Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy && tries < 100 => {
+                    tries += 1;
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                other => break other?,
+            }
+        };
         let pid = child.id();
         self.started.lock().unwrap().push(child);
         Ok(pid)
@@ -1395,7 +1424,7 @@ async fn the_history_and_undo_methods_are_named_and_the_folder_switch_is_kept() 
     }
 
     // The restore points switch, apart from the MCP one, and stored.
-    let off = FoldersSetParams { id: folder.id.clone(), mcp: None, checkpoints: Some(false) };
+    let off = FoldersSetParams { id: folder.id.clone(), checkpoints: Some(false), ..Default::default() };
     let folder_now = client.folders_set_with(off).await.unwrap();
     assert!(!folder_now.checkpoints && folder_now.mcp);
     let listed = client.folders_list().await.unwrap();
@@ -1843,5 +1872,630 @@ async fn presence_is_g7_links_to_say_and_reaches_those_that_asked() {
     assert!(!now.locked && !now.at_pc);
     assert_eq!(now.viewing, [thread.id], "the launcher still shows it");
     drop(link_events);
+    host.stop().await;
+}
+
+// ---- Source control (phase 4, §SC5) ----
+
+/// The `git` on this process's `PATH`.
+fn real_git() -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path).map(|d| d.join("git")).find(|p| p.is_file())
+}
+
+/// No `git` here: the test skips (CI has one).
+fn no_git() -> bool {
+    if real_git().is_some() {
+        return false;
+    }
+    assert!(std::env::var_os("CI").is_none(), "CI has git");
+    eprintln!("skipped: no git on PATH");
+    true
+}
+
+/// What git prints in `dir`, with a throwaway identity; never the user's configuration.
+fn git_out(dir: &Path, home: &Path, args: &[&str]) -> String {
+    let out = std::process::Command::new("git")
+        .args(["-c", "user.name=t", "-c", "user.email=t@localhost", "-c", "commit.gpgsign=false"])
+        .args(args)
+        .current_dir(dir)
+        .env("HOME", home)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+/// The work folder as a repository on `main` with one commit (`a.txt`),
+/// its own identity and no signing. The home folder git runs with.
+fn repo(host: &TestHost) -> PathBuf {
+    let home = host.dir.path().join("home");
+    git_in(&host.work, &home, &["init", "-q", "-b", "main"]);
+    for (key, value) in [("user.name", "t"), ("user.email", "t@localhost"), ("commit.gpgsign", "false")] {
+        git_in(&host.work, &home, &["config", key, value]);
+    }
+    std::fs::write(host.work.join("a.txt"), "1\n").unwrap();
+    git_in(&host.work, &home, &["add", "-A"]);
+    git_in(&host.work, &home, &["commit", "-qm", "one"]);
+    home
+}
+
+/// A refusal's word.
+fn reason(e: &ClientError) -> Option<String> {
+    match e {
+        ClientError::Remote(r) => r.data.as_ref()?.get("reason")?.as_str().map(str::to_owned),
+        _ => None,
+    }
+}
+
+/// The job's last `git.progress`.
+async fn job_end(events: &mut Events, job_id: &str) -> Job {
+    let ended = next(
+        events,
+        "the job's end",
+        |e| matches!(e, Event::GitProgress(p) if p.job.id == job_id && p.job.phase != JobPhase::Running),
+    )
+    .await;
+    match ended {
+        Event::GitProgress(p) => p.job,
+        _ => unreachable!(),
+    }
+}
+
+/// A copy of `claude-01-list.jsonl` whose answer is `answer`, written in `dir`.
+fn answering(dir: &Path, answer: &str) -> &'static str {
+    let text = std::fs::read_to_string(fixture("claude-01-list.jsonl")).unwrap();
+    let mut out = String::new();
+    let mut first = true;
+    for line in text.lines() {
+        let mut v: serde_json::Value = serde_json::from_str(line).unwrap();
+        if let Some(delta) = v.pointer_mut("/event/delta").filter(|d| d["type"] == "text_delta") {
+            delta["text"] = json!(if first { answer } else { "" });
+            first = false;
+        }
+        if v["type"] == "assistant"
+            && let Some(blocks) = v.pointer_mut("/message/content").and_then(|c| c.as_array_mut())
+        {
+            for block in blocks.iter_mut().filter(|b| b["type"] == "text") {
+                block["text"] = json!(answer);
+            }
+        }
+        if v["type"] == "result" && v.get("result").is_some() {
+            v["result"] = json!(answer);
+        }
+        out.push_str(&v.to_string());
+        out.push('\n');
+    }
+    let path = dir.join("claude-answer.jsonl");
+    std::fs::write(&path, out).unwrap();
+    Box::leak(path.to_string_lossy().into_owned().into_boxed_str())
+}
+
+/// §SC5.1's table, end to end: each method of phase 4, from each kind of
+/// connection, as this PC and as a phone. A refused row is `DENIED` with
+/// the same words; an allowed one goes on (here to "not a repository").
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn source_control_follows_who_may_ask_for_every_method_and_kind() {
+    #[derive(Debug, Clone, Copy)]
+    enum Row {
+        Read,
+        /// A person's Act: G7 Link and the launcher; a phone through G7 Link.
+        Act,
+        /// PC clients, never a phone.
+        Pc,
+        /// G7 Link on this PC only.
+        Link,
+    }
+    let host = TestHost::start(Options { git: true, ..Default::default() }).await;
+    let (client, mut events) = host.subscribed().await;
+    let folder = host.folder(&client).await;
+    let thread = client.thread_start(start(AgentId::Claude, &folder, "List the files here.")).await.unwrap();
+    until_done(&mut events, &thread.id).await;
+    let t = thread.id.clone();
+    let phone = Origin::phone("dev1", "Pixel 8 Pro");
+    let cases: Vec<(&str, serde_json::Value, Row, bool)> = vec![
+        (method::GIT_STATUS, json!({"thread_id": t}), Row::Read, false),
+        (method::GIT_PATCH, json!({"thread_id": t, "path": "a.txt"}), Row::Read, false),
+        (method::GIT_REVIEW, json!({"thread_id": t, "paths": ["a.txt"]}), Row::Read, false),
+        (method::GIT_BRANCHES, json!({"thread_id": t}), Row::Read, false),
+        (method::GIT_JOB, json!({"job": "0123456789abcdef"}), Row::Read, false),
+        (method::GH_STATUS, json!({}), Row::Read, false),
+        (method::PR_VIEW, json!({"thread_id": t}), Row::Read, false),
+        (method::PR_LIST, json!({"show": "mine"}), Row::Read, false),
+        (
+            method::GIT_COMMIT,
+            json!({"thread_id": t, "paths": ["a.txt"], "message": "m", "review": "0123456789abcdef"}),
+            Row::Act,
+            true,
+        ),
+        (method::GIT_PUSH, json!({"thread_id": t}), Row::Act, true),
+        (method::GIT_FETCH, json!({"thread_id": t}), Row::Act, true),
+        (method::GIT_SWITCH, json!({"thread_id": t, "branch": "x", "create": true}), Row::Act, true),
+        (method::PR_CREATE, json!({"thread_id": t, "title": "t"}), Row::Act, true),
+        (method::GIT_SWITCH, json!({"thread_id": t, "branch": "x", "carry": true}), Row::Link, true),
+        (method::WORKTREE_REMOVE, json!({"id": "0123456789ab"}), Row::Link, true),
+        (
+            method::PR_MERGE,
+            json!({"thread_id": t, "number": 1, "method": "squash", "head": "a".repeat(40)}),
+            Row::Link,
+            true,
+        ),
+        (method::PR_READY, json!({"thread_id": t, "number": 1}), Row::Link, true),
+        (method::PR_METHODS, json!({"thread_id": t}), Row::Link, false),
+        (
+            method::THREAD_DELETE,
+            json!({"thread_id": "f".repeat(32), "remove_worktree": true}),
+            Row::Link,
+            false,
+        ),
+        (method::WORKTREE_LIST, json!({}), Row::Pc, false),
+        (method::FOLDERS_SET, json!({"id": folder.id, "follow_remote": false}), Row::Pc, false),
+    ];
+    for kind in [ClientKind::Launcher, ClientKind::Link, ClientKind::Cli, ClientKind::Test] {
+        let pc = matches!(kind, ClientKind::Launcher | ClientKind::Link);
+        let (asker, _asker_events) = host.client(kind).await;
+        for (method_name, params, row, takes_by) in &cases {
+            let bys: Vec<Option<&Origin>> = if *takes_by { vec![None, Some(&phone)] } else { vec![None] };
+            for by in bys {
+                let by_phone = by.is_some();
+                let allowed = match row {
+                    Row::Read => true,
+                    Row::Act => pc && (!by_phone || kind == ClientKind::Link),
+                    Row::Pc => pc && !by_phone,
+                    Row::Link => kind == ClientKind::Link && !by_phone,
+                };
+                let mut params = params.clone();
+                if let Some(by) = by {
+                    params["by"] = serde_json::to_value(by).unwrap();
+                }
+                let got = asker.call_value(method_name, params, None).await;
+                let denied = matches!(&got, Err(ClientError::Remote(e)) if e.code == ErrorCode::Denied);
+                assert_eq!(
+                    !denied, allowed,
+                    "{method_name} {row:?} from {kind:?}, phone {by_phone}: {got:?}"
+                );
+                if let Err(ClientError::Remote(e)) = &got
+                    && denied
+                {
+                    assert_eq!(e.message, "That is done from G7 Link on this PC.");
+                }
+            }
+        }
+        // A thread in a new worktree: its origin is who asks.
+        for origin in [Origin::launcher(), phone.clone()] {
+            let mut p = start(AgentId::Claude, &folder, "Work apart.");
+            p.origin = origin.clone();
+            p.worktree = Some(WorktreeWanted::default());
+            let got = asker.thread_start_with(p).await;
+            let denied = matches!(&got, Err(e) if e.code() == Some(ErrorCode::Denied));
+            let allowed = pc && origin.kind != OriginKind::Phone;
+            assert_eq!(!denied, allowed, "a new worktree from {kind:?} by {origin:?}: {got:?}");
+            assert!(got.is_err(), "the folder isn't a repository");
+        }
+    }
+    host.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_commit_or_switch_waits_for_its_thread_and_for_others_in_the_same_work_tree() {
+    if no_git() {
+        return;
+    }
+    let host = TestHost::start(Options { git: true, ..Default::default() }).await;
+    repo(&host);
+    std::fs::write(host.work.join("a.txt"), "2\n").unwrap();
+    let (client, mut events) = host.subscribed().await;
+    let (link, _link_events) = host.client(ClientKind::Link).await;
+    let folder = host.folder(&client).await;
+    let idle = client.thread_start(start(AgentId::Claude, &folder, "List the files here.")).await.unwrap();
+    until_done(&mut events, &idle.id).await;
+    let working = client.thread_start(start(AgentId::Codex, &folder, "Create hello.txt")).await.unwrap();
+    let asked = approval(&mut events).await;
+    let commit = |thread: &str| GitCommitParams {
+        thread_id: thread.into(),
+        paths: vec!["a.txt".into()],
+        message: "Change a".into(),
+        ..Default::default()
+    };
+    let switch = |thread: &str| GitSwitchParams {
+        thread_id: thread.into(),
+        branch: "feat/x".into(),
+        create: true,
+        carry: true,
+        ..Default::default()
+    };
+    for (who, word) in [(&working.id, "thread_busy"), (&idle.id, "shared_busy")] {
+        let err = link.git_commit(commit(who)).await.unwrap_err();
+        assert_eq!((err.code(), reason(&err).as_deref()), (Some(ErrorCode::Busy), Some(word)), "commit");
+        let err = link.git_switch(switch(who)).await.unwrap_err();
+        assert_eq!((err.code(), reason(&err).as_deref()), (Some(ErrorCode::Busy), Some(word)), "switch");
+    }
+    assert!(!host.work.join(".git/refs/heads/feat/x").exists(), "nothing ran");
+
+    // Once it stops, the commit goes.
+    client.approval_answer(asked.token, Decision::Deny, Origin::launcher()).await.unwrap();
+    until_done(&mut events, &working.id).await;
+    let job = link.git_commit(commit(&idle.id)).await.unwrap();
+    assert_eq!(
+        (job.kind, job.phase, job.by.kind),
+        (JobKind::Commit, JobPhase::Running, OriginKind::Launcher)
+    );
+    let ended = job_end(&mut events, &job.id).await;
+    assert_eq!(ended.phase, JobPhase::Done, "{ended:?}");
+    assert_eq!(ended.result.as_ref().and_then(|r| r.files), Some(1));
+    host.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_phone_commits_what_it_read_and_the_thread_says_who_did() {
+    if no_git() {
+        return;
+    }
+    let host = TestHost::start(Options { git: true, ..Default::default() }).await;
+    let home = repo(&host);
+    std::fs::write(host.work.join("a.txt"), "2\n").unwrap();
+    std::fs::write(host.work.join("b.txt"), "new\n").unwrap();
+    let (client, mut events) = host.subscribed().await;
+    let (link, _link_events) = host.client(ClientKind::Link).await;
+    let folder = host.folder(&client).await;
+    let thread = client.thread_start(start(AgentId::Claude, &folder, "List the files here.")).await.unwrap();
+    until_done(&mut events, &thread.id).await;
+
+    // The turn's end read the folder: the thread carries its summary.
+    next(&mut events, "the thread's summary", |e| {
+        matches!(e, Event::ThreadState(s) if s.thread.id == thread.id
+            && s.thread.branch.as_deref() == Some("main") && s.thread.changed == Some(2))
+    })
+    .await;
+    next(
+        &mut events,
+        "git.changed",
+        |e| matches!(e, Event::GitChanged(c) if c.thread_id == thread.id && c.changed == 2 && !c.detached),
+    )
+    .await;
+    let status = link
+        .git_status(GitStatusParams { thread_id: Some(thread.id.clone()), ..Default::default() })
+        .await
+        .unwrap();
+    assert_eq!((status.repo, status.branch.as_deref(), status.total), (RepoState::Ok, Some("main"), 2));
+    let mut paths: Vec<&str> = status.files.iter().map(|f| f.path.as_str()).collect();
+    paths.sort_unstable();
+    assert_eq!(paths, ["a.txt", "b.txt"]);
+
+    let phone = Origin::phone("dev1", "Pixel 8 Pro");
+    let mut ask = GitCommitParams {
+        thread_id: thread.id.clone(),
+        paths: vec!["a.txt".into()],
+        message: "Fix a".into(),
+        by: Some(phone.clone()),
+        ..Default::default()
+    };
+    let err = link.git_commit(ask.clone()).await.unwrap_err();
+    assert_eq!(err.code(), Some(ErrorCode::Denied), "a phone commits after a review");
+    let read = GitReviewParams { thread_id: thread.id.clone(), paths: vec!["a.txt".into()], all: false };
+    let review = link.git_review(read.clone()).await.unwrap();
+    assert_eq!(review.files.len(), 1);
+
+    // The file changed after it was read: nothing is committed.
+    std::fs::write(host.work.join("a.txt"), "3\n").unwrap();
+    ask.review = Some(review.review);
+    let job = link.git_commit(ask.clone()).await.unwrap();
+    let ended = job_end(&mut events, &job.id).await;
+    assert_eq!(
+        (ended.phase, ended.error.as_ref().map(|e| e.reason.as_str())),
+        (JobPhase::Failed, Some("changed"))
+    );
+
+    // Read again, it goes; the notice names the phone.
+    ask.review = Some(link.git_review(read).await.unwrap().review);
+    let job = link.git_commit(ask).await.unwrap();
+    assert_eq!(job.by, phone);
+    let ended = job_end(&mut events, &job.id).await;
+    assert_eq!(ended.phase, JobPhase::Done, "{ended:?}");
+    assert_eq!(ended.result.as_ref().and_then(|r| r.subject.as_deref()), Some("Fix a"));
+    let notice = next(&mut events, "the notice", |e| {
+        matches!(e, Event::ThreadItem(i) if i.thread_id == thread.id && i.item.notice == Some(NoticeKind::Committed))
+    })
+    .await;
+    let Event::ThreadItem(notice) = notice else { unreachable!() };
+    assert_eq!(notice.item.kind, ItemKind::Notice, "a notice, never a message to the agent");
+    assert_eq!(notice.item.text.as_deref(), Some("Committed 1 file: Fix a · from Pixel 8 Pro"));
+    let last = git_out(&host.work, &home, &["log", "-n", "1", "--format=%s", "--name-only"]);
+    assert_eq!(last.split_whitespace().collect::<Vec<_>>(), ["Fix", "a", "a.txt"]);
+    assert!(
+        git_out(&host.work, &home, &["status", "--porcelain"]).contains("?? b.txt"),
+        "the rest is as it was"
+    );
+    assert_eq!(link.git_job(ended.id.clone()).await.unwrap().phase, JobPhase::Done, "kept to be read again");
+    host.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn asking_the_agent_sends_the_fixed_text_and_keeps_its_answer_until_a_commit() {
+    if no_git() {
+        return;
+    }
+    let scratch = tempfile::tempdir().unwrap();
+    let answer = answering(scratch.path(), "Here it is:\n\n```\nAdd the retry\n\nIt waits now.\n```");
+    let host = TestHost::start(Options {
+        claude_resume: Some(answer),
+        agent_idle: Some(Duration::from_millis(300)),
+        git: true,
+        ..Default::default()
+    })
+    .await;
+    repo(&host);
+    std::fs::write(host.work.join("a.txt"), "2\n").unwrap();
+    let (client, mut events) = host.subscribed().await;
+    let (link, _link_events) = host.client(ClientKind::Link).await;
+    let folder = host.folder(&client).await;
+    let thread = client.thread_start(start(AgentId::Claude, &folder, "List the files here.")).await.unwrap();
+    until_done(&mut events, &thread.id).await;
+    tokio::time::sleep(Duration::from_millis(1200)).await;
+
+    let mut with_text = ThreadSendParams::ask(thread.id.clone(), Purpose::Commit, Origin::launcher());
+    with_text.text = "and this".into();
+    assert_eq!(link.thread_send_with(with_text).await.unwrap_err().code(), Some(ErrorCode::BadRequest));
+    link.thread_send_with(ThreadSendParams::ask(thread.id.clone(), Purpose::Commit, Origin::launcher()))
+        .await
+        .unwrap();
+    let rest = until_done(&mut events, &thread.id).await;
+    let asked: Vec<&Item> = items_of(&rest).into_iter().filter(|i| i.kind == ItemKind::User).collect();
+    assert_eq!(asked.len(), 1);
+    assert_eq!(asked[0].text.as_deref(), Some(ASK_COMMIT_TEXT), "exactly the constant, as the user's");
+    let wrote = client.threads_list(None, None).await.unwrap()[0].wrote.clone().expect("the answer kept");
+    assert_eq!(
+        (wrote.purpose, wrote.turn, wrote.text.as_str()),
+        (Purpose::Commit, 2, "Add the retry\n\nIt waits now.")
+    );
+
+    // The commit made with it clears it.
+    let commit = GitCommitParams {
+        thread_id: thread.id.clone(),
+        paths: vec!["a.txt".into()],
+        message: wrote.text,
+        ..Default::default()
+    };
+    let job = link.git_commit(commit).await.unwrap();
+    assert_eq!(job_end(&mut events, &job.id).await.phase, JobPhase::Done);
+    next(
+        &mut events,
+        "wrote cleared",
+        |e| matches!(e, Event::ThreadState(s) if s.thread.id == thread.id && s.thread.wrote.is_none()),
+    )
+    .await;
+    host.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_thread_in_a_new_worktree_works_there_and_the_worktree_stays_until_removed() {
+    if no_git() {
+        return;
+    }
+    let host = TestHost::start(Options { git: true, ..Default::default() }).await;
+    let home = repo(&host);
+    std::fs::write(host.work.join("u.txt"), "only in the folder\n").unwrap();
+    let (client, mut events) = host.subscribed().await;
+    let (link, _link_events) = host.client(ClientKind::Link).await;
+    let (launcher, _launcher_events) = host.client(ClientKind::Launcher).await;
+    let folder = host.folder(&client).await;
+    let root = host.dir.path().join("data/g7-agents/worktrees").join(&folder.id);
+
+    // A start that fails after the worktree was made removes it again.
+    let mut failing = start(AgentId::Claude, &folder, "Fix the sync retry");
+    failing.worktree = Some(WorktreeWanted::default());
+    failing.images = vec!["0".repeat(32)];
+    assert!(link.thread_start_with(failing).await.is_err());
+    assert!(launcher.worktree_list(None).await.unwrap().is_empty());
+    assert_eq!(std::fs::read_dir(&root).map(|d| d.count()).unwrap_or(0), 0, "its folder went");
+    let listed = git_out(&host.work, &home, &["worktree", "list", "--porcelain"]);
+    assert_eq!(listed.matches("worktree ").count(), 1, "{listed}");
+
+    let mut p = start(AgentId::Claude, &folder, "Fix the sync retry");
+    p.worktree = Some(WorktreeWanted { branch: Some("g7/sync-retry".into()), base: None });
+    let started = link.thread_start_with(p).await.unwrap();
+    let job = started.job.clone().expect("the worktree's job");
+    assert_eq!((job.kind, job.phase), (JobKind::Worktree, JobPhase::Done), "{job:?}");
+    let tag = started.thread.worktree.clone().expect("a worktree thread");
+    assert_eq!((tag.branch.as_str(), tag.missing), ("g7/sync-retry", false));
+    let id = started.thread.id.clone();
+    until_done(&mut events, &id).await;
+    let listed = launcher.worktree_list(None).await.unwrap();
+    assert_eq!(listed.len(), 1);
+    let path = PathBuf::from(&listed[0].path);
+    assert!(path.starts_with(&root) && path.is_dir(), "{path:?}");
+    assert_eq!(listed[0].thread_id.as_deref(), Some(id.as_str()));
+    let real = std::fs::canonicalize(&path).unwrap();
+    assert!(
+        host.log().lines().any(|l| l == format!("cwd {}", real.display())),
+        "the agent ran there: {}",
+        host.log()
+    );
+
+    // Its files, its restore point and its status are the worktree's.
+    let search =
+        |q: &str| FilesSearchParams { thread_id: Some(id.clone()), query: q.into(), ..Default::default() };
+    assert!(client.files_search(search("u.txt")).await.unwrap().files.is_empty(), "not copied");
+    assert!(client.files_search(search("a.txt")).await.unwrap().files.iter().any(|f| f.path == "a.txt"));
+    let turn = settled_turn(&client, &id).await;
+    assert_eq!(turn.checkpoint, Checkpoint::Ready, "{turn:?}");
+    let status =
+        link.git_status(GitStatusParams { thread_id: Some(id.clone()), ..Default::default() }).await.unwrap();
+    assert_eq!(status.branch.as_deref(), Some("g7/sync-retry"));
+    assert_eq!(status.worktree.map(|w| w.id), Some(tag.id.clone()));
+    assert_eq!(status.total, 0, "the folder's untracked file isn't there");
+    let to_main = GitSwitchParams { thread_id: id.clone(), branch: "main".into(), ..Default::default() };
+    assert_eq!(reason(&link.git_switch(to_main).await.unwrap_err()).as_deref(), Some("in_worktree"));
+
+    // Deleting the thread without the box leaves the worktree, no one's.
+    let left =
+        link.thread_delete_with(ThreadDeleteParams { thread_id: id, remove_worktree: false }).await.unwrap();
+    assert_eq!(left.worktree_left, None);
+    let listed = launcher.worktree_list(None).await.unwrap();
+    assert_eq!((listed.len(), listed[0].thread_id.as_deref()), (1, None));
+    assert!(path.is_dir());
+
+    // Removing it is G7 Link's; its folder goes, its branch stays.
+    let remove = WorktreeRemoveParams { id: listed[0].id.clone(), ..Default::default() };
+    assert_eq!(launcher.worktree_remove(remove.clone()).await.unwrap_err().code(), Some(ErrorCode::Denied));
+    link.worktree_remove(remove).await.unwrap();
+    assert!(!path.exists());
+    assert!(launcher.worktree_list(None).await.unwrap().is_empty());
+    assert!(git_out(&host.work, &home, &["branch", "--list", "g7/*"]).contains("g7/sync-retry"));
+    host.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn keeping_in_step_with_the_remote_fetches_only_when_its_switch_is_on() {
+    if no_git() {
+        return;
+    }
+    let host = TestHost::start(Options { git: true, ..Default::default() }).await;
+    let home = repo(&host);
+    let bare = host.dir.path().join("remote.git");
+    let bare_str = bare.to_string_lossy().into_owned();
+    git_in(host.dir.path(), &home, &["init", "-q", "--bare", &bare_str]);
+    git_in(&host.work, &home, &["remote", "add", "origin", &bare_str]);
+    git_in(&host.work, &home, &["push", "-q", "-u", "origin", "main"]);
+    let fetched = host.work.join(".git/FETCH_HEAD");
+    let (client, mut events) = host.subscribed().await;
+    let (link, _link_events) = host.client(ClientKind::Link).await;
+    let folder = host.folder(&client).await;
+    let thread = client.thread_start(start(AgentId::Claude, &folder, "List the files here.")).await.unwrap();
+    until_done(&mut events, &thread.id).await;
+
+    // Shown on the PC: read, never fetched while the switch is off.
+    link.ui_viewing(Some(thread.id.clone())).await.unwrap();
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    assert!(!fetched.exists(), "a timer never fetches with the switch off");
+
+    let on = FoldersSetParams { id: folder.id.clone(), follow_remote: Some(true), ..Default::default() };
+    assert!(link.folders_set_with(on).await.unwrap().follow_remote);
+    let deadline = tokio::time::Instant::now() + WAIT;
+    while !fetched.exists() {
+        assert!(tokio::time::Instant::now() < deadline, "never fetched");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(client.folders_list().await.unwrap()[0].follow_remote, "kept");
+    host.stop().await;
+}
+
+/// A fake `gh` beside the test host's `git`: signed in to github.com (G's
+/// fixtures, fictional), no pull request until one is created; it keeps
+/// the create call's argv and body. Nothing is contacted. (`PATH` holds
+/// only `git` and it: programs are named by their path.)
+fn fake_gh(host: &TestHost) -> PathBuf {
+    let calls = host.dir.path().join("gh");
+    std::fs::create_dir_all(&calls).unwrap();
+    let scm = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/scm/gh");
+    for name in ["auth-signed-in.json", "create-out.txt", "pr-created.json"] {
+        std::fs::copy(scm.join(name), calls.join(name)).unwrap();
+    }
+    let script = format!(
+        "#!/bin/sh\nd={}\ncase \"$1 $2\" in\n\
+         \"--version \") echo 'gh version 2.102.0 (2026-01-01)' ;;\n\
+         \"auth status\") /bin/cat \"$d/auth-signed-in.json\" ;;\n\
+         \"pr list\") if [ -f \"$d/created\" ]; then /bin/cat \"$d/pr-created.json\"; else echo '[]'; fi ;;\n\
+         \"pr create\") printf '%s\\n' \"$@\" > \"$d/create-argv\"; /bin/cat > \"$d/create-body\"; : > \"$d/created\"; /bin/cat \"$d/create-out.txt\" ;;\n\
+         *) echo \"unexpected: $*\" >&2; exit 1 ;;\nesac\n",
+        quote(&calls)
+    );
+    let gh = host.dir.path().join("bin/gh");
+    std::fs::write(&gh, script).unwrap();
+    std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
+    calls
+}
+
+/// The launcher names a pull request's base `main`, without its remote: the
+/// host takes it as the push remote's branch, for `pr.create` and for
+/// "Ask <agent> to write it".
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_base_named_without_its_remote_is_the_push_remotes_branch() {
+    if no_git() {
+        return;
+    }
+    let host = TestHost::start(Options {
+        claude_resume: Some("claude-01-list.jsonl"),
+        agent_idle: Some(Duration::from_millis(300)),
+        git: true,
+        ..Default::default()
+    })
+    .await;
+    let home = repo(&host);
+    // Pushed already (as far as git knows): origin on github.com, never contacted.
+    git_in(&host.work, &home, &["remote", "add", "origin", "https://github.com/fictional/repo.git"]);
+    git_in(&host.work, &home, &["update-ref", "refs/remotes/origin/main", "HEAD"]);
+    git_in(&host.work, &home, &["switch", "-q", "-c", "feat/x"]);
+    git_in(&host.work, &home, &["update-ref", "refs/remotes/origin/feat/x", "HEAD"]);
+    git_in(&host.work, &home, &["branch", "-q", "--set-upstream-to=origin/feat/x", "feat/x"]);
+    let calls = fake_gh(&host);
+    let (client, mut events) = host.subscribed().await;
+    let (launcher, _launcher_events) = host.client(ClientKind::Launcher).await;
+    let folder = host.folder(&client).await;
+    let thread = client.thread_start(start(AgentId::Claude, &folder, "List the files here.")).await.unwrap();
+    until_done(&mut events, &thread.id).await;
+    let status = launcher
+        .git_status(GitStatusParams { thread_id: Some(thread.id.clone()), ..Default::default() })
+        .await
+        .unwrap();
+    assert_eq!((status.branch.as_deref(), status.ahead), (Some("feat/x"), Some(0)));
+
+    // Ask: the text names the branch as the launcher did.
+    tokio::time::sleep(Duration::from_millis(1200)).await;
+    let mut ask = ThreadSendParams::ask(thread.id.clone(), Purpose::Pr, Origin::launcher());
+    ask.base = Some("main".into());
+    launcher.thread_send_with(ask).await.unwrap();
+    let rest = until_done(&mut events, &thread.id).await;
+    let asked = items_of(&rest).into_iter().find(|i| i.kind == ItemKind::User).expect("the ask");
+    assert_eq!(
+        asked.text.as_deref(),
+        Some(ASK_PR_TEXT.replace("%1", "feat/x").replace("%2", "main").as_str())
+    );
+
+    // Open: `main` is origin's main.
+    let open = PrCreateParams {
+        thread_id: thread.id.clone(),
+        title: "Fix the retry".into(),
+        body: "Body with `ticks` and $(nothing)".into(),
+        base: Some("main".into()),
+        ..Default::default()
+    };
+    let job = launcher.pr_create(open).await.unwrap();
+    let ended = job_end(&mut events, &job.id).await;
+    assert_eq!(ended.phase, JobPhase::Done, "{ended:?}");
+    assert_eq!(ended.result.as_ref().and_then(|r| r.number), Some(215));
+    let argv = std::fs::read_to_string(calls.join("create-argv")).unwrap();
+    let argv: Vec<&str> = argv.lines().collect();
+    let after = |flag: &str| argv.iter().position(|a| *a == flag).and_then(|i| argv.get(i + 1)).copied();
+    assert_eq!((after("--base"), after("--head")), (Some("main"), Some("feat/x")), "{argv:?}");
+    assert_eq!(
+        std::fs::read_to_string(calls.join("create-body")).unwrap(),
+        "Body with `ticks` and $(nothing)"
+    );
+    next(&mut events, "the notice", |e| {
+        matches!(e, Event::ThreadItem(i) if i.thread_id == thread.id
+            && i.item.notice == Some(NoticeKind::PrOpened)
+            && i.item.text.as_deref() == Some("Opened pull request #215"))
+    })
+    .await;
+
+    // A base no remote has is refused by lookup, and nothing is created.
+    std::fs::remove_file(calls.join("create-argv")).unwrap();
+    std::fs::remove_file(calls.join("created")).unwrap();
+    let missing = PrCreateParams {
+        thread_id: thread.id.clone(),
+        title: "t".into(),
+        base: Some("no-such-branch".into()),
+        ..Default::default()
+    };
+    let job = launcher.pr_create(missing).await.unwrap();
+    let ended = job_end(&mut events, &job.id).await;
+    assert_eq!(
+        (ended.phase, ended.error.map(|e| e.reason)),
+        (JobPhase::Failed, Some("not_found".to_owned()))
+    );
+    assert!(!calls.join("create-argv").exists());
     host.stop().await;
 }

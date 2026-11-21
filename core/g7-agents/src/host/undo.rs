@@ -701,7 +701,7 @@ impl Host {
                 format!("{} can only be forked from its latest message.", agent.display_name()),
             )
         })?;
-        let (new, hint) = {
+        let (new, hint, worktree_dir) = {
             let reg = self.lock_reg();
             if reg.threads.len() >= MAX_THREADS_STORED {
                 return Err(err(ErrorCode::Limit, "G7 keeps up to 5,000 threads. Delete some first."));
@@ -765,9 +765,11 @@ impl Host {
                 found: false,
                 readonly: None,
                 undo: None,
+                wrote: None,
                 ..parent.clone()
             };
-            (new, hint)
+            // A worktree thread's fork works in the same worktree.
+            (new, hint, entry.worktree_dir.clone())
         };
         let (from, info) = (thread.clone(), new.clone());
         let loaded = self
@@ -784,6 +786,10 @@ impl Host {
             let mut reg = self.lock_reg();
             let folders = reg.folders.clone();
             let mut entry = crate::host::threads::Registry::entry_from(loaded, &folders);
+            if entry.info.worktree.is_some() {
+                entry.worktree_dir = worktree_dir;
+                entry.cwd = reg.work_dir(&entry);
+            }
             entry.pending_fork = Some(hint.encode());
             entry.info.forked_from = new.forked_from.clone();
             // After the copied items, so it shows under them (§U6.5).

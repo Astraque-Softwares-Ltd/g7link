@@ -64,6 +64,21 @@ pub enum Note {
         agent: AgentId,
         thread: Option<ThreadInfo>,
     },
+    /// A phone committed, pushed or opened a pull request in a thread
+    /// (phase 4, §SC5.3): the PC is told, with the phone's name.
+    PhoneGit {
+        thread: ThreadInfo,
+        device: String,
+        did: GitDid,
+    },
+}
+
+/// What a phone did in a thread's folder.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GitDid {
+    Committed { files: u32 },
+    Pushed { branch: String },
+    OpenedPr { number: u32 },
 }
 
 impl Note {
@@ -79,6 +94,7 @@ impl Note {
             | Note::PlanReady { thread } => thread.id.clone(),
             Note::ApprovalGone { thread_id, .. } | Note::Removed { thread_id } => thread_id.clone(),
             Note::LimitReset { agent, .. } => format!("limit:{}", agent.as_str()),
+            Note::PhoneGit { thread, .. } => format!("git:{}", thread.id),
         }
     }
 
@@ -86,6 +102,7 @@ impl Note {
     fn opens(&self) -> Option<String> {
         match self {
             Note::LimitReset { thread, .. } => thread.as_ref().map(|t| t.id.clone()),
+            Note::PhoneGit { thread, .. } => Some(thread.id.clone()),
             _ => Some(self.key()),
         }
     }
@@ -225,6 +242,25 @@ pub fn render(note: &Note) -> Option<Rendered> {
             critical: false,
             token: None,
         }),
+        Note::PhoneGit { thread, device, did } => {
+            let device = first_line(device, MAX_BODY_LINE);
+            let folder = &thread.folder_label;
+            let summary = match did {
+                GitDid::Committed { files } => {
+                    let noun = if *files == 1 { "file" } else { "files" };
+                    format!("{device} committed {files} {noun} in {folder}")
+                }
+                GitDid::Pushed { branch } => format!("{device} pushed {branch} in {folder}"),
+                GitDid::OpenedPr { number } => format!("{device} opened pull request #{number} in {folder}"),
+            };
+            Some(Rendered {
+                summary,
+                body: first_line(&thread.title, MAX_BODY_LINE),
+                actions: vec![("default", "Open")],
+                critical: false,
+                token: None,
+            })
+        }
         Note::ApprovalGone { .. } | Note::Removed { .. } => None,
     }
 }
@@ -463,6 +499,10 @@ mod tests {
             found: false,
             readonly: None,
             undo: None,
+            branch: None,
+            worktree: None,
+            changed: None,
+            wrote: None,
         }
     }
 

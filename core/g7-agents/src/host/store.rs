@@ -45,6 +45,8 @@ struct StoredFolder {
     mcp_seen: Vec<api::FolderMcp>,
     #[serde(default = "yes")]
     checkpoints: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    follow_remote: bool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -178,6 +180,7 @@ impl Store {
                 mcp: f.mcp,
                 mcp_seen: f.mcp_seen,
                 checkpoints: f.checkpoints,
+                follow_remote: f.follow_remote,
             })
             .collect()
     }
@@ -195,6 +198,7 @@ impl Store {
                     mcp: f.mcp,
                     mcp_seen: f.mcp_seen.clone(),
                     checkpoints: f.checkpoints,
+                    follow_remote: f.follow_remote,
                 })
                 .collect(),
         };
@@ -551,6 +555,7 @@ mod tests {
             mcp: false,
             mcp_seen: vec![FolderMcp { agent: AgentId::Claude, names: vec!["github".into()] }],
             checkpoints: false,
+            follow_remote: false,
         };
         store.save_folders(std::slice::from_ref(&folder)).unwrap();
         let loaded = store.load_folders();

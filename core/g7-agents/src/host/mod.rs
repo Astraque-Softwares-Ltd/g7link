@@ -26,6 +26,7 @@ pub mod presence;
 pub mod questions;
 pub mod scm;
 pub mod sessions;
+pub mod source;
 pub mod store;
 pub mod threads;
 pub mod undo;
@@ -481,6 +482,17 @@ impl Hub {
         }
     }
 
+    /// The threads a launcher or G7 Link shows now, or a phone does.
+    pub(crate) fn viewed_threads(&self, now: Instant) -> std::collections::HashSet<String> {
+        let mut viewed: std::collections::HashSet<String> =
+            self.lock().values().filter(|s| s.shows_threads()).filter_map(|s| s.viewing.clone()).collect();
+        if let Some(presence) = self.lock_presence().fresh(now) {
+            viewed.extend(presence.remote.iter().filter_map(|r| r.thread_id.clone()));
+        }
+        viewed.retain(|id| is_valid_thread_id(id));
+        viewed
+    }
+
     /// `client` is a launcher or G7 Link: what it views counts as read.
     fn viewed_by(&self, client: u64) -> bool {
         self.lock().get(&client).is_some_and(ClientSlot::shows_threads)
@@ -648,6 +660,9 @@ pub struct Host {
     pub searches: Mutex<HashMap<u64, db::Interrupt>>,
     /// The user's `git`, for restore points; `None` when there is none.
     pub git: Option<Arc<git::Git>>,
+    /// Source control (phase 4), with the same `git`; `None` without one.
+    pub scm: Option<Arc<scm::Scm>>,
+    pub source: source::Source,
     clients: AtomicUsize,
     next_client: AtomicU64,
     idle_since: Mutex<Instant>,
@@ -746,6 +761,7 @@ pub async fn serve(config: Config, stop: impl std::future::Future<Output = ()>) 
     let (events_tx, mut events_rx) = mpsc::unbounded_channel::<(String, u64, AgentEvent)>();
     let (actions_tx, mut actions_rx) = mpsc::unbounded_channel::<NoteAction>();
     let notifier = config.notify.then(|| Notifier::spawn(actions_tx));
+    let git = git::Git::new(&config.env);
     let host = Arc::new(Host {
         hub: Hub::default(),
         store,
@@ -769,13 +785,16 @@ pub async fn serve(config: Config, stop: impl std::future::Future<Output = ()>) 
         uploads: Mutex::new(HashMap::new()),
         rewinds: Mutex::new(undo::RewindTokens::default()),
         searches: Mutex::new(HashMap::new()),
-        git: git::Git::new(&config.env),
+        scm: git.clone().map(|git| Arc::new(scm::Scm::new(git, &config.env))),
+        git,
+        source: source::Source::load(&config.data_dir),
         clients: AtomicUsize::new(0),
         next_client: AtomicU64::new(1),
         idle_since: Mutex::new(Instant::now()),
         shutdown: Notify::new(),
         config,
     });
+    host.attach_worktrees();
     host.sessions.set_following_loaded(settings.follow_sessions);
     if host.store.has_db() {
         host.sessions.attach_store(Arc::new(FoundStoreOf { host: Arc::downgrade(&host) }));
@@ -802,6 +821,17 @@ pub async fn serve(config: Config, stop: impl std::future::Future<Output = ()>) 
             while let Some(action) = actions_rx.recv().await {
                 let Some(host) = host.upgrade() else { break };
                 host.on_note_action(action);
+            }
+        })
+    };
+    // The folders of the threads a client shows (§SC3.2).
+    let git_poll = {
+        let host = Arc::downgrade(&host);
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(source::POLL).await;
+                let Some(host) = host.upgrade() else { break };
+                host.git_poll().await;
             }
         })
     };
@@ -834,6 +864,7 @@ pub async fn serve(config: Config, stop: impl std::future::Future<Output = ()>) 
                 host.expire_presence();
                 host.ring_limit_alarms(store::now_ms());
                 host.expire_undos();
+                host.git_tick();
                 host.files.sweep();
                 host.drop_stale_uploads();
                 ticks += 1;
@@ -843,7 +874,9 @@ pub async fn serve(config: Config, stop: impl std::future::Future<Output = ()>) 
                 {
                     tokio::spawn(async move { images.sweep().await });
                 }
-                let busy = host.clients.load(Ordering::SeqCst) > 0 || host.any_running();
+                let busy = host.clients.load(Ordering::SeqCst) > 0
+                    || host.any_running()
+                    || host.source.running_jobs() > 0;
                 if busy {
                     host.touch();
                     continue;
@@ -870,8 +903,10 @@ pub async fn serve(config: Config, stop: impl std::future::Future<Output = ()>) 
         }
     };
     accept.abort();
+    git_poll.abort();
     let _ = std::fs::remove_file(&host.config.socket);
     host.sessions.stop();
+    host.stop_jobs().await;
     host.shutdown_threads().await;
     host.files.shutdown().await;
     host.save_drafts_now();
@@ -1208,11 +1243,17 @@ impl Host {
             }
             method::THREAD_START => {
                 let p: ThreadStartParams = parse(params)?;
+                if p.worktree.is_some() {
+                    let mut result = self.thread_start_worktree(kind, p, owner).await?;
+                    result.thread = result.thread.for_client(caps.items3);
+                    return to_value(&result);
+                }
                 let (thread, duplicate) = self.thread_start_keyed(p, owner).await?;
-                to_value(&ThreadStartResult { thread: thread.for_client(caps.items3), duplicate })
+                to_value(&ThreadStartResult { thread: thread.for_client(caps.items3), duplicate, job: None })
             }
             method::THREAD_SEND => {
                 let p: ThreadSendParams = parse(params)?;
+                let p = self.ask_params(p)?;
                 to_value(&self.thread_send(p, owner).await?)
             }
             method::THREAD_INTERRUPT => {
@@ -1225,9 +1266,8 @@ impl Host {
                 to_value(&self.thread_read(p, caps).await?)
             }
             method::THREAD_DELETE => {
-                let p: ThreadIdParams = parse(params)?;
-                self.thread_delete(&p.thread_id)?;
-                Ok(json!({}))
+                let p: ThreadDeleteParams = parse(params)?;
+                to_value(&self.thread_delete_git(kind, p).await?)
             }
             method::THREAD_TERMINAL_COMMAND => {
                 let p: ThreadIdParams = parse(params)?;
@@ -1381,7 +1421,10 @@ impl Host {
             }
             method::FOLDERS_SET => {
                 let p: FoldersSetParams = parse(params)?;
-                to_value(&FolderResult { folder: self.folders_set(&p.id, p.mcp, p.checkpoints).await? })
+                if p.follow_remote.is_some() {
+                    source::check_may(kind, None, source::Ask::FollowRemote)?;
+                }
+                to_value(&FolderResult { folder: self.folders_set(&p).await? })
             }
             method::SETTINGS_SET => {
                 let p: SettingsSetParams = parse(params)?;
@@ -1469,6 +1512,7 @@ impl Host {
                 let thread = self.thread_fork(p).await?;
                 to_value(&ThreadResult { thread: thread.for_client(caps.items3) })
             }
+            m if source::METHODS.contains(&m) => self.git_call(kind, m, params).await,
             method::HELLO => Err(RpcError::new(ErrorCode::BadRequest, "already said hello")),
             _ => Err(RpcError::new(ErrorCode::BadRequest, UNKNOWN_METHOD)),
         }
@@ -1576,24 +1620,34 @@ impl Host {
         if p.query.len() > MAX_FILES_QUERY * 4 || p.query.chars().count() > MAX_FILES_QUERY {
             return Err(RpcError::new(ErrorCode::BadRequest, "The query is too long."));
         }
+        // A worktree thread's files are in its worktree (§SC3.8).
         let folder = {
             let reg = self.lock_reg();
-            let folder_id = match (&p.folder_id, &p.thread_id) {
-                (Some(id), _) => id.clone(),
-                (None, Some(thread)) => reg
-                    .threads
-                    .get(thread)
-                    .map(|e| e.info.folder_id.clone())
-                    .ok_or_else(|| RpcError::new(ErrorCode::NotFound, "No such thread."))?,
+            let (folder_id, worktree) = match (&p.folder_id, &p.thread_id) {
+                (Some(id), _) => (id.clone(), None),
+                (None, Some(thread)) => {
+                    let entry = reg
+                        .threads
+                        .get(thread)
+                        .ok_or_else(|| RpcError::new(ErrorCode::NotFound, "No such thread."))?;
+                    let worktree = entry.info.worktree.is_some().then(|| entry.worktree_dir.clone());
+                    (entry.info.folder_id.clone(), worktree)
+                }
                 (None, None) => {
                     return Err(RpcError::new(ErrorCode::BadRequest, "Name a folder or a thread."));
                 }
             };
-            reg.folders
-                .iter()
-                .find(|f| f.id == folder_id)
-                .map(|f| PathBuf::from(&f.path))
-                .ok_or_else(|| RpcError::new(ErrorCode::NotFound, "No such folder."))?
+            match worktree {
+                Some(dir) => dir
+                    .filter(|d| d.is_dir())
+                    .ok_or_else(|| RpcError::new(ErrorCode::NotFound, "Its worktree is gone."))?,
+                None => reg
+                    .folders
+                    .iter()
+                    .find(|f| f.id == folder_id)
+                    .map(|f| PathBuf::from(&f.path))
+                    .ok_or_else(|| RpcError::new(ErrorCode::NotFound, "No such folder."))?,
+            }
         };
         let found = self.files.search(&folder, &p.query, p.limit).await?;
         Ok(FilesSearchResult {
@@ -1779,6 +1833,10 @@ fn brought_in_info(id: &str, b: &sessions::import::BroughtIn) -> ThreadInfo {
         found: true,
         readonly: b.folder.is_none().then_some(Readonly::OutsideFolders),
         undo: None,
+        branch: None,
+        worktree: None,
+        changed: None,
+        wrote: None,
     }
 }
 
@@ -1861,7 +1919,13 @@ impl Answered {
 /// A host with no socket and no agents, for tests of the registry.
 #[cfg(test)]
 pub(crate) fn test_host(dir: &std::path::Path, approval_lifetime_ms: u64) -> Arc<Host> {
-    test_host_with(dir, approval_lifetime_ms, None)
+    test_host_with(dir, approval_lifetime_ms, None, Vec::new())
+}
+
+/// A test host whose environment is `env` (it finds `git` on its `PATH`).
+#[cfg(test)]
+pub(crate) fn test_host_env(dir: &std::path::Path, env: Vec<(OsString, OsString)>) -> Arc<Host> {
+    test_host_with(dir, APPROVAL_LIFETIME_MS, None, env)
 }
 
 /// [`test_host`] whose notifications land in the receiver.
@@ -1871,11 +1935,16 @@ pub(crate) fn test_host_noting(
     approval_lifetime_ms: u64,
 ) -> (Arc<Host>, mpsc::UnboundedReceiver<notify::Note>) {
     let (notifier, notes) = Notifier::recording();
-    (test_host_with(dir, approval_lifetime_ms, Some(notifier)), notes)
+    (test_host_with(dir, approval_lifetime_ms, Some(notifier), Vec::new()), notes)
 }
 
 #[cfg(test)]
-fn test_host_with(dir: &std::path::Path, approval_lifetime_ms: u64, notifier: Option<Notifier>) -> Arc<Host> {
+fn test_host_with(
+    dir: &std::path::Path,
+    approval_lifetime_ms: u64,
+    notifier: Option<Notifier>,
+    env: Vec<(OsString, OsString)>,
+) -> Arc<Host> {
     let config = Config {
         socket: dir.join("host.sock"),
         runtime_dir: dir.to_owned(),
@@ -1884,7 +1953,7 @@ fn test_host_with(dir: &std::path::Path, approval_lifetime_ms: u64, notifier: Op
         codex_bin: None,
         bridge_exe: PathBuf::from("/bin/false"),
         notify: false,
-        env: Vec::new(),
+        env,
         idle_exit: IDLE_EXIT,
         agent_idle: Duration::from_millis(AGENT_IDLE_MS),
         approval_lifetime_ms,
@@ -1923,6 +1992,8 @@ fn test_host_with(dir: &std::path::Path, approval_lifetime_ms: u64, notifier: Op
         rewinds: Mutex::new(undo::RewindTokens::default()),
         searches: Mutex::new(HashMap::new()),
         git: git::Git::new(&config.env),
+        scm: None,
+        source: source::Source::load(&config.data_dir),
         clients: AtomicUsize::new(0),
         next_client: AtomicU64::new(1),
         idle_since: Mutex::new(Instant::now()),
