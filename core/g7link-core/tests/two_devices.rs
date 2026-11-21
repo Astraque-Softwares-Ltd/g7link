@@ -4601,7 +4601,16 @@ async fn remote_input_needs_toggle_and_delivers_motion_keys_and_slides() {
     }
     with_timeout("laser off", phone.node.remote_laser(pc_id, false, 0.0, 0.0)).await.unwrap();
 
-    let recorded = pc.platform.remote_inputs.lock().unwrap().clone();
+    // Scrolls are injected by the PC's motion worker, on its own thread, so
+    // they may land just after the answer.
+    let deadline = tokio::time::Instant::now() + WAIT;
+    let recorded = loop {
+        let recorded = pc.platform.remote_inputs.lock().unwrap().clone();
+        if events.iter().all(|ev| recorded.contains(ev)) || tokio::time::Instant::now() >= deadline {
+            break recorded;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
     for ev in &events {
         assert!(recorded.contains(ev), "missing {ev:?} in {recorded:?}");
     }
@@ -4764,15 +4773,24 @@ async fn smooth_scroll_reaches_the_pc_in_fractions_of_a_click() {
     for (dx, dy) in steps {
         with_timeout("scroll", phone.node.remote_scroll_fast(pc_id, dx, dy)).await.unwrap();
     }
+    // The PC adds up scrolls that arrive together (remote.rs `coalesce`), so what
+    // reaches it is the same total in fractions of a click, maybe in fewer events.
+    // These steps are exact binary fractions, so any grouping adds up exactly.
+    let want = steps.iter().fold((0.0f32, 0.0f32), |(x, y), &(dx, dy)| (x + dx, y + dy));
     let deadline = tokio::time::Instant::now() + WAIT;
     loop {
         let recorded = pc.platform.remote_inputs.lock().unwrap().clone();
-        if steps.iter().all(|&(dx, dy)| recorded.contains(&RemoteInput::Scroll { dx, dy })) {
+        let total = recorded.iter().fold((0.0f32, 0.0f32), |(x, y), event| match event {
+            RemoteInput::Scroll { dx, dy } => (x + dx, y + dy),
+            _ => (x, y),
+        });
+        if total == want {
             break;
         }
         assert!(tokio::time::Instant::now() < deadline, "timed out waiting for scrolls: {recorded:?}");
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
+    assert_eq!(want, (-1.25, 1.875), "the steps themselves are fractions of a click");
 
     // More than the protocol allows in one event never leaves the phone.
     assert!(phone.node.remote_scroll_fast(pc_id, 0.0, 500.0).await.is_err());
