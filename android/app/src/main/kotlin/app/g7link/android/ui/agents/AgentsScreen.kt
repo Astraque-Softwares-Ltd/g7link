@@ -88,7 +88,7 @@ import kotlinx.coroutines.launch
 private enum class ListLoad { LOADING, READY, NOT_ALLOWED, UNAVAILABLE, UNREACHABLE, FAILED }
 
 /** What fills the Agents screen: the list, or a screen opened from its top bar. */
-private enum class AgentsPage { LIST, SEARCH, IMPORT }
+private enum class AgentsPage { LIST, SEARCH, IMPORT, PULL_REQUESTS }
 
 /**
  * A PC's agent threads (board 16): the sections, the filters with the
@@ -190,6 +190,17 @@ fun AgentsScreen(
             )
             return
         }
+        AgentsPage.PULL_REQUESTS -> {
+            AgentPrListScreen(
+                device = device,
+                core = core,
+                agents = agents,
+                onOpenThread = onOpenThread,
+                onBack = { page = AgentsPage.LIST },
+                modifier = modifier,
+            )
+            return
+        }
         AgentsPage.LIST -> Unit
     }
 
@@ -262,6 +273,7 @@ fun AgentsScreen(
                     canImport = !offline && load == ListLoad.READY,
                     onImport = { page = AgentsPage.IMPORT },
                     onSettings = { settings = true },
+                    onPullRequests = { page = AgentsPage.PULL_REQUESTS },
                 )
             }
             if (offline && listShown) OfflineBar(device.name, agents.savedMs ?: agents.listedMs, rememberNow())
@@ -373,9 +385,9 @@ fun AgentsScreen(
     }
 }
 
-/** The list's More: bring in earlier sessions, and the agents' settings on this phone. */
+/** The list's More: bring in earlier sessions, the pull requests (phase 4 §SC9.3), and the agents' settings on this phone. */
 @Composable
-private fun ListMenu(canImport: Boolean, onImport: () -> Unit, onSettings: () -> Unit) {
+private fun ListMenu(canImport: Boolean, onImport: () -> Unit, onSettings: () -> Unit, onPullRequests: () -> Unit) {
     var open by remember { mutableStateOf(false) }
     Box {
         G7IconButton(icon = AgentGlyphs.more, contentDescription = stringResource(R.string.agents_more), onClick = { open = true })
@@ -386,6 +398,13 @@ private fun ListMenu(canImport: Boolean, onImport: () -> Unit, onSettings: () ->
                 onClick = {
                     open = false
                     onImport()
+                },
+            )
+            DropdownMenuItem(
+                text = { Text(stringResource(R.string.agents_git_prs)) },
+                onClick = {
+                    open = false
+                    onPullRequests()
                 },
             )
             DropdownMenuItem(

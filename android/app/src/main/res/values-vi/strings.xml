@@ -1848,4 +1848,201 @@
     <!-- A followed session that stopped at its agent's usage limit (owner's report, 2026-11-21) -->
     <string name="agents_session_limit">Đã đạt giới hạn</string>
     <string name="agents_session_limit_resets">Đã đạt giới hạn · đặt lại %1$s</string>
+    <!-- Agents phase 4 (0.1.20): source control on the phone -->
+    <string name="agents_git_source_control">Quản lý mã nguồn</string>
+    <string name="agents_git_worktree">Worktree</string>
+    <string name="agents_git_detached">Tách rời tại %1$s</string>
+    <string name="agents_git_checked">Đã kiểm tra lúc %1$s</string>
+    <string name="agents_git_in_step">Đồng bộ với %1$s</string>
+    <string name="agents_git_review">Xem lại và commit</string>
+    <string name="agents_git_nothing">Không có gì để commit.</string>
+    <string name="agents_git_push">Push</string>
+    <string name="agents_git_push_new">Chưa có trên remote</string>
+    <string name="agents_git_up_to_date">Đã cập nhật</string>
+    <string name="agents_git_switch_off">Bật “Push và mở pull request” cho điện thoại này trong G7 Link trên %1$s.</string>
+    <string name="agents_git_pr">Pull request</string>
+    <string name="agents_git_branch">Nhánh</string>
+    <string name="agents_git_not_repo">Thư mục này không phải kho git.</string>
+    <string name="agents_git_no_git">Git chưa được cài trên %1$s.</string>
+    <string name="agents_git_refused">Git không làm việc trong thư mục này. Nó cho rằng thư mục không an toàn.</string>
+    <string name="agents_git_locked">Git đang bận trong thư mục này. Hãy thử lại sau giây lát.</string>
+    <string name="agents_git_doing_merge">Đang có một merge dở dang ở đây. Hãy hoàn tất trong terminal.</string>
+    <string name="agents_git_doing_rebase">Đang có một rebase dở dang ở đây. Hãy hoàn tất trong terminal.</string>
+    <string name="agents_git_doing_cherry_pick">Đang có một cherry-pick dở dang ở đây. Hãy hoàn tất trong terminal.</string>
+    <string name="agents_git_doing_revert">Đang có một revert dở dang ở đây. Hãy hoàn tất trong terminal.</string>
+    <string name="agents_git_doing_bisect">Đang có một bisect dở dang ở đây. Hãy hoàn tất trong terminal.</string>
+    <string name="agents_git_detached_line">Bạn không ở trên nhánh nào. Hãy tạo một nhánh để giữ các commit mới.</string>
+    <string name="agents_git_no_commits">Chưa có commit nào.</string>
+    <string name="agents_git_wait_finishes">Hãy đợi %1$s xong.</string>
+    <string name="agents_git_in_worktree">Luồng này làm việc trong worktree riêng.</string>
+    <string name="agents_git_conflicts_any">Thư mục này có xung đột. Hãy giải quyết trước.</string>
+    <string name="agents_git_shared_busy">Một luồng khác đang làm việc trong thư mục này.</string>
+    <string name="agents_git_read_of">Đã đọc %1$d/%2$d</string>
+    <string name="agents_git_not_read">Chưa đọc</string>
+    <string name="agents_git_reading">Đang đọc</string>
+    <string name="agents_git_read">Đã đọc</string>
+    <string name="agents_git_start_reading">Bắt đầu đọc</string>
+    <string name="agents_git_keep_reading">Đọc tiếp</string>
+    <string name="agents_git_scroll_to_end">Cuộn đến cuối để tiếp tục</string>
+    <string name="agents_git_next_file">Tệp tiếp theo</string>
+    <string name="agents_git_end_of">Hết %1$s</string>
+    <string name="agents_git_too_large">Quá lớn để đọc ở đây. Hãy commit trên %1$s.</string>
+    <string name="agents_git_files_again">Các tệp đã thay đổi. Hãy đọc lại.</string>
+    <string name="agents_git_include">Bao gồm %1$s</string>
+    <string name="agents_git_max_files">Tối đa 200 tệp mỗi commit từ điện thoại.</string>
+    <string name="agents_git_tick_one">Hãy chọn ít nhất một tệp.</string>
+    <string name="agents_git_message">Thông điệp commit</string>
+    <string name="agents_git_use_title">Dùng tiêu đề của luồng</string>
+    <string name="agents_git_ask">Nhờ %1$s viết</string>
+    <string name="agents_git_asking">Đang nhờ %1$s…</string>
+    <string name="agents_git_use_message">Dùng thông điệp của %1$s</string>
+    <string name="agents_git_subject_long">Dòng tiêu đề dài</string>
+    <string name="agents_git_commit">Commit</string>
+    <string name="agents_git_hooks_running">Đang chạy hook của bạn…</string>
+    <string name="agents_git_committed">Đã commit %1$s · %2$s</string>
+    <string name="agents_git_commit_hook">Hook commit của bạn đã dừng commit.</string>
+    <string name="agents_git_commit_failed">Commit không thành công.</string>
+    <string name="agents_git_commit_stopped">Commit đã bị dừng. Một số tệp có thể vẫn ở trạng thái staged.</string>
+    <string name="agents_git_identity">Git chưa biết tên và email của bạn. Hãy đặt chúng trong terminal:</string>
+    <string name="agents_git_changed_looking">Các tệp đã thay đổi trong lúc bạn xem.</string>
+    <string name="agents_git_reload">Tải lại</string>
+    <string name="agents_git_back_to_thread">Quay lại luồng</string>
+    <string name="agents_git_push_title">Push %1$s lên %2$s</string>
+    <string name="agents_git_push_confirm">Push %1$s lên %2$s?</string>
+    <string name="agents_git_push_default">Thao tác này push lên %1$s, nhánh mặc định.</string>
+    <string name="agents_git_pushing">Đang push lên %1$s…</string>
+    <string name="agents_git_pushed">Đã push %1$s lên %2$s</string>
+    <string name="agents_git_push_behind">Remote có các commit mà bạn chưa có. Hãy pull trong terminal, hoặc nhờ %1$s trong luồng này, rồi push lại.</string>
+    <string name="agents_git_push_refused">Remote đã từ chối lần push.</string>
+    <string name="agents_git_push_hook">Hook pre-push của bạn đã dừng lần push.</string>
+    <string name="agents_git_sign_in">Git không đăng nhập được vào remote. Hãy push một lần từ terminal để thiết lập.</string>
+    <string name="agents_git_network">Không kết nối được với remote.</string>
+    <string name="agents_git_no_remote">Kho này không có remote.</string>
+    <string name="agents_git_choose_remote">Chọn một remote</string>
+    <string name="agents_git_push_failed">Push không thành công.</string>
+    <string name="agents_git_fetched">Đã lấy từ remote.</string>
+    <string name="agents_git_switch_branch">Chuyển nhánh</string>
+    <string name="agents_git_new_branch">Nhánh mới…</string>
+    <string name="agents_git_branch_name">Tên nhánh</string>
+    <string name="agents_git_create">Tạo</string>
+    <string name="agents_git_on_remote">Trên %1$s</string>
+    <string name="agents_git_switched">Đã chuyển sang %1$s</string>
+    <string name="agents_git_created">Đã tạo %1$s</string>
+    <string name="agents_git_bad_name">Tên đó không thể là một nhánh.</string>
+    <string name="agents_git_name_exists">Đã có nhánh với tên đó.</string>
+    <string name="agents_git_other_worktree">Đang mở trong worktree khác (%1$s)</string>
+    <string name="agents_git_dirty">Thư mục này có thay đổi. Hãy chuyển nhánh trên %1$s.</string>
+    <string name="agents_git_would_overwrite">Git không chuyển nhánh: các tệp này sẽ bị ghi đè. Hãy commit chúng trước.</string>
+    <string name="agents_git_switch_failed">Git không chuyển nhánh.</string>
+    <string name="agents_git_current">Hiện tại</string>
+    <string name="agents_git_search_branches">Tìm nhánh</string>
+    <string name="agents_git_gh_missing">Pull request cần GitHub CLI.</string>
+    <string name="agents_git_gh_install">Hãy cài trên %1$s, rồi chạy:</string>
+    <string name="agents_git_gh_signed_out">Bạn đã đăng xuất khỏi GitHub CLI. Trên %1$s, hãy chạy:</string>
+    <string name="agents_git_gh_signed_out_short">Bạn đã đăng xuất khỏi GitHub CLI.</string>
+    <string name="agents_git_gh_old">GitHub CLI của bạn quá cũ cho việc này. Hãy cập nhật.</string>
+    <string name="agents_git_not_github">Remote của thư mục này không nằm trên GitHub.</string>
+    <string name="agents_git_not_pushed">Hãy push nhánh này để mở pull request.</string>
+    <string name="agents_git_unreached">Không kết nối được GitHub. Đang hiện dữ liệu đọc lúc %1$s.</string>
+    <string name="agents_git_unreached_none">Không kết nối được GitHub.</string>
+    <string name="agents_git_open_pr">Mở pull request</string>
+    <string name="agents_git_title">Tiêu đề</string>
+    <string name="agents_git_description">Mô tả</string>
+    <string name="agents_git_into_label">Vào</string>
+    <string name="agents_git_draft">Bản nháp</string>
+    <string name="agents_git_opening">Đang mở…</string>
+    <string name="agents_git_opened">Đã mở pull request #%1$d</string>
+    <string name="agents_git_pr_exists">Nhánh này đã có pull request.</string>
+    <string name="agents_git_pr_confirm">Mở pull request vào %1$s?</string>
+    <string name="agents_git_pr_from">Từ %1$s, trong %2$s</string>
+    <string name="agents_git_pr_failed">GitHub đã không mở nó.</string>
+    <string name="agents_git_branch_into">%1$s vào %2$s</string>
+    <string name="agents_git_default_branch">nhánh mặc định</string>
+    <string name="agents_git_pr_open">Đang mở</string>
+    <string name="agents_git_pr_draft">Bản nháp</string>
+    <string name="agents_git_pr_merged">Đã merge</string>
+    <string name="agents_git_pr_closed">Đã đóng</string>
+    <string name="agents_git_into">vào %1$s</string>
+    <string name="agents_git_checks_failed">%1$d/%2$d thất bại</string>
+    <string name="agents_git_checks_running">%1$d/%2$d đang chạy</string>
+    <string name="agents_git_no_checks">Không có kiểm tra</string>
+    <string name="agents_git_approved">Đã duyệt</string>
+    <string name="agents_git_changes_requested">Yêu cầu thay đổi</string>
+    <string name="agents_git_review_required">Cần review</string>
+    <string name="agents_git_has_conflicts">Có xung đột với %1$s</string>
+    <string name="agents_git_open_github">Mở trên GitHub</string>
+    <string name="agents_git_read_at">Đọc lúc %1$s</string>
+    <string name="agents_git_check_passed">Đạt</string>
+    <string name="agents_git_check_failed">Thất bại</string>
+    <string name="agents_git_check_running">Đang chạy</string>
+    <string name="agents_git_check_skipped">Bỏ qua</string>
+    <string name="agents_git_check_cancelled">Đã hủy</string>
+    <string name="agents_git_prs">Pull request</string>
+    <string name="agents_git_mine">Của tôi</string>
+    <string name="agents_git_review_requested">Được nhờ review</string>
+    <string name="agents_git_this_folder">Thư mục này</string>
+    <string name="agents_git_no_prs">Không có pull request nào đang mở.</string>
+    <string name="agents_git_no_reviews">Không có gì đang chờ bạn review.</string>
+    <string name="agents_git_open_thread">Mở luồng</string>
+    <string name="agents_git_copy_link">Sao chép liên kết</string>
+    <string name="agents_git_uncommitted">Chưa commit</string>
+    <string name="agents_git_comment">Bình luận</string>
+    <string name="agents_git_quotes_max">Tối đa 5 trích dẫn mỗi tin nhắn.</string>
+    <string name="agents_quote_remove">Xóa trích dẫn</string>
+    <string name="agents_git_file_added">Đã thêm</string>
+    <string name="agents_git_file_changed">Đã đổi</string>
+    <string name="agents_git_file_deleted">Đã xóa</string>
+    <string name="agents_git_file_renamed">Đã đổi tên</string>
+    <string name="agents_git_file_new">Mới</string>
+    <string name="agents_git_file_new_folder">Thư mục mới</string>
+    <string name="agents_git_file_conflict">Xung đột</string>
+    <string name="agents_git_file_type">Đã đổi loại</string>
+    <plurals name="agents_git_changed">
+        <item quantity="other">%1$d thay đổi</item>
+    </plurals>
+    <plurals name="agents_git_to_push">
+        <item quantity="other">%1$d commit cần push</item>
+    </plurals>
+    <plurals name="agents_git_behind">
+        <item quantity="other">%1$d commit trên remote mà bạn chưa có, tính đến lần fetch gần nhất</item>
+    </plurals>
+    <plurals name="agents_git_as_of_minutes">
+        <item quantity="other">tính đến %1$d phút trước</item>
+    </plurals>
+    <plurals name="agents_git_as_of_hours">
+        <item quantity="other">tính đến %1$d giờ trước</item>
+    </plurals>
+    <plurals name="agents_git_as_of_days">
+        <item quantity="other">tính đến %1$d ngày trước</item>
+    </plurals>
+    <plurals name="agents_git_review_sub">
+        <item quantity="other">%1$d tệp · +%2$d −%3$d</item>
+    </plurals>
+    <plurals name="agents_git_push_sub">
+        <item quantity="other">%1$d commit lên %2$s</item>
+    </plurals>
+    <plurals name="agents_git_commits">
+        <item quantity="other">%1$d commit</item>
+    </plurals>
+    <plurals name="agents_git_conflicts">
+        <item quantity="other">%1$d tệp có xung đột. Hãy giải quyết trước.</item>
+    </plurals>
+    <plurals name="agents_git_files_to">
+        <item quantity="other">%1$d tệp vào %2$s</item>
+    </plurals>
+    <plurals name="agents_git_commit_on">
+        <item quantity="other">Commit %1$d tệp trên %2$s?</item>
+    </plurals>
+    <plurals name="agents_git_checks_passed">
+        <item quantity="other">%1$d kiểm tra đạt</item>
+    </plurals>
+    <plurals name="agents_git_not_kept">
+        <item quantity="other">%1$d dòng trước đó không được giữ</item>
+    </plurals>
+    <plurals name="agents_git_lines">
+        <item quantity="other">%1$d dòng</item>
+    </plurals>
+    <plurals name="agents_git_more_files">
+        <item quantity="other">Còn %1$d tệp không được liệt kê.</item>
+    </plurals>
 </resources>

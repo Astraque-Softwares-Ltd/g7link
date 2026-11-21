@@ -73,8 +73,15 @@ data class AgentsState(
     val importing: AgentImportProgress? = null,
     /** Drafts changed on another device, by key: their rev. */
     val draftChanges: Map<String, ULong> = emptyMap(),
+    /** What the PC last said of each thread's folder (`agent.git`) or this phone read, by thread. */
+    val gitStrips: Map<String, GitStrip> = emptyMap(),
+    /** Commits, pushes, switches and pull requests on the PC, by id, as they run (contract §SC6.1). */
+    val gitJobs: Map<String, GitJob> = emptyMap(),
 ) {
     fun thread(id: String): AgentThread? = threads.firstOrNull { it.id == id }
+
+    /** The strip under a thread's status line: what the PC last said of its folder, else what the thread says. */
+    fun gitStrip(threadId: String): GitStrip? = gitStrips[threadId] ?: thread(threadId)?.let { AgentGitFfi.stripOf(null, it) }
 
     /** The main list: neither archived nor snoozed. */
     val listed: List<AgentThread>
@@ -414,6 +421,8 @@ object AgentsModel {
         is Event.AgentImport -> event.id
         is Event.AgentOutbox -> event.id
         is Event.AgentPresence -> event.id
+        is Event.AgentGit -> event.id
+        is Event.AgentGitJob -> event.id
         else -> null
     }
 
@@ -422,12 +431,12 @@ object AgentsModel {
         // No catalog: nothing can run there, or this phone's access was turned off.
         is Event.AgentCatalog ->
             if (event.catalog == null) AgentsUpdate(AgentsState()) else AgentsUpdate(state.copy(catalog = event.catalog))
-        is Event.AgentThreadChanged -> AgentsUpdate(withThread(state, event.thread))
+        is Event.AgentThreadChanged -> AgentsUpdate(withGitOf(withThread(state, event.thread), event.thread))
         is Event.AgentThreadRemoved -> AgentsUpdate(removed(state, event.thread))
         is Event.AgentDelta -> delta(state, event)
         is Event.AgentItemChanged -> itemChanged(state, event)
         is Event.AgentDone -> {
-            val next = withThread(state, event.thread)
+            val next = withGitOf(withThread(state, event.thread), event.thread)
             val open = next.open
             // The finished text always comes before the end; text still streaming means some was missed.
             val reread = if (open != null && open.threadId == event.thread.id && open.streaming.isNotEmpty()) open.threadId else null
@@ -448,8 +457,35 @@ object AgentsModel {
         is Event.AgentCut -> cut(state, event.thread, event.fromSeq, event.toSeq, event.restored)
         is Event.AgentImport -> AgentsUpdate(state.copy(importing = event.progress))
         is Event.AgentOutbox -> AgentsUpdate(state.copy(held = event.held.take(MAX_HELD)))
+        // Source control (contract §SC6.1): the strip's summary, and a job's new lines.
+        is Event.AgentGit -> AgentsUpdate(
+            state.copy(gitStrips = AgentGitStrips.put(state.gitStrips, event.thread, AgentGitFfi.stripOf(state.gitStrips[event.thread], event))),
+        )
+        is Event.AgentGitJob -> AgentsUpdate(withJob(state, AgentGitFfi.job(event.job)))
         else -> AgentsUpdate(state)
     }
+
+    // ---- Source control (contract §SC6, §SC9.3) ----
+
+    /** A thread's own git fields update the strip the PC's `agent.git` made, when there is one. */
+    private fun withGitOf(state: AgentsState, thread: AgentThread): AgentsState {
+        val known = state.gitStrips[thread.id] ?: return state
+        return state.copy(gitStrips = AgentGitStrips.put(state.gitStrips, thread.id, AgentGitFfi.stripOf(known, thread)))
+    }
+
+    /** A status this phone read: the strip follows it. */
+    fun withGitStatus(state: AgentsState, threadId: String, status: GitStatus): AgentsState =
+        state.copy(gitStrips = AgentGitStrips.put(state.gitStrips, threadId, AgentGitStrips.fromStatus(state.gitStrips[threadId], status)))
+
+    /** The strip this phone kept, while the PC is away. */
+    fun withGitStrip(state: AgentsState, threadId: String, strip: GitStrip): AgentsState =
+        state.copy(gitStrips = AgentGitStrips.put(state.gitStrips, threadId, strip))
+
+    /** A job's new lines from `agent.git.progress`. */
+    fun withJob(state: AgentsState, job: GitJob): AgentsState = state.copy(gitJobs = AgentJobs.kept(state.gitJobs, job))
+
+    /** A job as the PC answered (started, read again, stopped): it replaces what was kept. */
+    fun withJobRead(state: AgentsState, job: GitJob): AgentsState = state.copy(gitJobs = AgentJobs.kept(state.gitJobs, job, read = true))
 
     // ---- History and undo (contract §U7, §U8.3, §U9) ----
 
@@ -1171,6 +1207,7 @@ object AgentsModel {
             questions = state.questions - goneQuestions,
             replying = state.replying - goneQuestions,
             open = if (open != null && open.threadId == threadId) open.copy(removed = true) else open,
+            gitStrips = state.gitStrips - threadId,
         )
     }
 

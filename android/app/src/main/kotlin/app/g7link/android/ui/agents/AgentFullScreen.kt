@@ -84,6 +84,15 @@ sealed interface FullView {
 
     /** A turn's recorded changes (contract §U9.1 "Changes"), at [path] when a file was tapped. */
     data class Changes(val turn: UInt, val path: String?) : FullView
+
+    /** Review and commit (phase 4 §SC9.3), from the folder as it was read. */
+    data class Review(val status: GitStatus) : FullView
+
+    /** The branch's pull request, or the form to open one. */
+    data class Pr(val status: GitStatus) : FullView
+
+    /** A push on the PC, as it runs and how it ended. */
+    data class Push(val job: String, val branch: String, val remote: String) : FullView
 }
 
 /** A link waiting for Open or Cancel: the target as the render crate let it through, and the text that showed it. */

@@ -64,8 +64,8 @@ import app.g7link.core.agentDiff
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-/** Which turns the diff covers (contract §U9.1 "Changes"). */
-enum class DiffScope { THIS_TURN, WHOLE_THREAD }
+/** Which turns the diff covers (contract §U9.1 "Changes"), or what isn't committed yet (phase 4 §SC9.1). */
+enum class DiffScope { THIS_TURN, WHOLE_THREAD, UNCOMMITTED }
 
 /** What a file of the diff shows once read. */
 @Immutable
@@ -82,7 +82,7 @@ sealed interface FileDiff {
 object AgentDiffModel {
     /** The turns [scope] covers, from a thread's newest turn [newest]. */
     fun range(scope: DiffScope, turn: UInt, newest: UInt): AgentTurnRange = when (scope) {
-        DiffScope.THIS_TURN -> AgentTurnRange.Turn(turn)
+        DiffScope.THIS_TURN, DiffScope.UNCOMMITTED -> AgentTurnRange.Turn(turn)
         DiffScope.WHOLE_THREAD -> AgentTurnRange.Span(1u, maxOf(newest, turn, 1u))
     }
 
@@ -131,27 +131,53 @@ internal fun ChangesFullScreen(
     turnFiles: Int?,
     startPath: String?,
     onClose: () -> Unit,
+    pcName: String = "",
+    /** The thread's folder is a repository: "Uncommitted" is offered too. */
+    uncommitted: Boolean = false,
+    /** Lines picked in an uncommitted diff become a quote chip in the reply box; null: not offered. */
+    onComment: ((Quote) -> Unit)? = null,
 ) {
     var scope by rememberSaveable(threadId, turn) { mutableStateOf(DiffScope.THIS_TURN) }
     var path by rememberSaveable(threadId, turn) { mutableStateOf(startPath) }
     var attempt by remember { mutableIntStateOf(0) }
     val range = AgentDiffModel.range(scope, turn, newestTurn)
     var files by remember(threadId, turn) { mutableStateOf<AgentCall<AgentTurnFiles>?>(null) }
-    LaunchedEffect(pcId, threadId, range, attempt) {
+    LaunchedEffect(pcId, threadId, range, attempt, scope) {
         files = null
-        files = core.agentDiffFiles(pcId, threadId, range)
+        if (scope != DiffScope.UNCOMMITTED) files = core.agentDiffFiles(pcId, threadId, range)
     }
-    BackHandler { if (path != null) path = null else onClose() }
+    // What isn't committed: the folder's status, its files each opening their diff.
+    var git by remember(threadId) { mutableStateOf<AgentCall<GitStatus>?>(null) }
+    var gitFile by remember(threadId) { mutableStateOf<GitFile?>(null) }
+    LaunchedEffect(pcId, threadId, scope) {
+        if (scope == DiffScope.UNCOMMITTED) git = core.agentGitStatus(pcId, threadId)
+    }
+    BackHandler {
+        when {
+            gitFile != null -> gitFile = null
+            path != null -> path = null
+            else -> onClose()
+        }
+    }
     val listed = (files as? AgentCall.Ok<AgentTurnFiles>)?.value
     val open = path
-    if (open != null) {
+    val shownFile = gitFile
+    if (scope == DiffScope.UNCOMMITTED && shownFile != null) {
+        UncommittedFile(core, pcId, threadId, shownFile, onComment = onComment, onBack = { gitFile = null })
+        return
+    }
+    if (open != null && scope != DiffScope.UNCOMMITTED) {
         FileView(core, pcId, threadId, range, listed?.files?.firstOrNull { it.path == open }, open, onBack = { path = null })
         return
     }
     val scheme = MaterialTheme.colorScheme
     Column(Modifier.fillMaxSize().background(scheme.surface)) {
         DiffHeader(title = stringResource(R.string.agents_diff_title), sub = title, onBack = onClose)
-        ScopeSwitch(scope, onScope = { scope = it })
+        ScopeSwitch(scope, uncommitted = uncommitted, onScope = { scope = it })
+        if (scope == DiffScope.UNCOMMITTED) {
+            UncommittedFiles(git, pcName, onOpen = { gitFile = it }, modifier = Modifier.weight(1f))
+            return@Column
+        }
         when (val result = files) {
             null -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp) }
             is AgentCall.Failed -> Box(Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) {
@@ -225,15 +251,20 @@ private fun DiffHeader(title: String, sub: String?, onBack: () -> Unit, mono: Bo
     }
 }
 
-/** "This turn" · "Whole thread". */
+/** "This turn" · "Whole thread" · "Uncommitted" (when the folder is a repository). */
 @Composable
-private fun ScopeSwitch(scope: DiffScope, onScope: (DiffScope) -> Unit) {
+private fun ScopeSwitch(scope: DiffScope, uncommitted: Boolean, onScope: (DiffScope) -> Unit) {
     val scheme = MaterialTheme.colorScheme
+    val scopes = buildList {
+        add(DiffScope.THIS_TURN to R.string.agents_diff_this_turn)
+        add(DiffScope.WHOLE_THREAD to R.string.agents_diff_whole)
+        if (uncommitted) add(DiffScope.UNCOMMITTED to R.string.agents_git_uncommitted)
+    }
     Row(
         modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp).selectableGroup(),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        for ((value, label) in listOf(DiffScope.THIS_TURN to R.string.agents_diff_this_turn, DiffScope.WHOLE_THREAD to R.string.agents_diff_whole)) {
+        for ((value, label) in scopes) {
             val on = value == scope
             Box(
                 modifier = Modifier

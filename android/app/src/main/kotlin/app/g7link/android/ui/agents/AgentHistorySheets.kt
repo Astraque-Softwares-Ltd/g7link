@@ -104,7 +104,7 @@ private fun SheetHead(title: String, sub: String? = null) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun AgentSheet(onDismiss: () -> Unit, content: @Composable () -> Unit) {
+internal fun AgentSheet(onDismiss: () -> Unit, content: @Composable () -> Unit) {
     val state = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = state, containerColor = MaterialTheme.colorScheme.surfaceContainerHigh) {
         Column(Modifier.fillMaxWidth().padding(horizontal = 8.dp).padding(bottom = 20.dp)) { content() }

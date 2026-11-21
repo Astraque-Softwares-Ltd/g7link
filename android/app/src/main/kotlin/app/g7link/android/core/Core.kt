@@ -3369,6 +3369,11 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
             // A rewind or its undo: the open thread's turns as they are now.
             is Event.AgentCut -> if (after.open?.threadId == event.thread) agentRereadTurns(pcId, event.thread)
             is Event.AgentPresence -> agentPresenceChanged(pcId, app.g7link.android.ui.agents.AgentPresenceFfi.of(event.presence))
+            // Lines went missing between a job's updates: read it whole.
+            is Event.AgentGitJob -> {
+                val job = app.g7link.android.ui.agents.AgentGitFfi.job(event.job)
+                if (app.g7link.android.ui.agents.AgentJobs.needsRead(before.gitJobs[job.id], job)) agentGitJobRead(pcId, job.id)
+            }
             else -> Unit
         }
         when (event) {
@@ -4218,6 +4223,135 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
     fun agentDraftLeave(pcId: String, key: String, text: String, images: List<String>, rev: ULong) {
         if (text.isEmpty() && images.isEmpty() && rev == 0uL) return
         scope.launch { agentDraftSet(pcId, key, text, images, rev) }
+    }
+
+    // ---- Source control (contract §SC6): read freely; commit after a review, push and pull requests behind the PC's switch ----
+
+    /** The thread's folder as git sees it; the strip under its status line follows it. */
+    suspend fun agentGitStatus(pcId: String, threadId: String): AgentCall<app.g7link.android.ui.agents.GitStatus> =
+        when (val result = agentCall { it.agentGitStatus(pcId, threadId) }) {
+            is AgentCall.Ok -> {
+                val status = app.g7link.android.ui.agents.AgentGitFfi.status(result.value)
+                updateAgents(pcId) { AgentsModel.withGitStatus(it, threadId, status) }
+                AgentCall.Ok(status)
+            }
+            is AgentCall.Failed -> result
+        }
+
+    /**
+     * What this phone kept of the folder from the PC, for the strip while it's away ("as of 12 min
+     * ago"): the strip goes into the thread's state; the answer is when it was kept, null when nothing was.
+     */
+    suspend fun agentGitCached(pcId: String, threadId: String): Long? {
+        val cached = (agentCall { it.agentCachedGit(pcId, threadId) } as? AgentCall.Ok)?.value ?: return null
+        val strip = cached.strip?.let(app.g7link.android.ui.agents.AgentGitFfi::strip) ?: return null
+        updateAgents(pcId) { AgentsModel.withGitStrip(it, threadId, strip) }
+        return cached.savedMs
+    }
+
+    /** One file's uncommitted change; with [review], the PC counts it read for that review once all of it went. */
+    suspend fun agentGitPatch(pcId: String, threadId: String, path: String, review: String?): AgentCall<app.g7link.android.ui.agents.GitPatch> =
+        when (val result = agentCall { it.agentGitPatch(pcId, threadId, path, review) }) {
+            is AgentCall.Ok -> AgentCall.Ok(app.g7link.android.ui.agents.AgentGitFfi.patch(result.value))
+            is AgentCall.Failed -> result
+        }
+
+    /** Pins the files about to be read and committed, as they are now. */
+    suspend fun agentGitReview(pcId: String, threadId: String, paths: List<String>): AgentCall<app.g7link.android.ui.agents.GitReviewAnswer> =
+        when (val result = agentCall { it.agentGitReview(pcId, threadId, paths) }) {
+            is AgentCall.Ok -> AgentCall.Ok(app.g7link.android.ui.agents.AgentGitFfi.review(result.value))
+            is AgentCall.Failed -> result
+        }
+
+    /** Commits the files of a review read whole on this phone. */
+    suspend fun agentGitCommit(pcId: String, threadId: String, review: String, message: String): app.g7link.android.ui.agents.GitStart =
+        agentGitStart(pcId, commit = true) { it.agentGitCommit(pcId, threadId, review, message) }
+
+    /** Pushes the branch (needs this phone's switch on the PC); [remote] after the PC asked which. */
+    suspend fun agentGitPush(pcId: String, threadId: String, remote: String?): app.g7link.android.ui.agents.GitStart =
+        agentGitStart(pcId) { it.agentGitPush(pcId, threadId, remote) }
+
+    /** Refresh: fetches from the remote. */
+    suspend fun agentGitFetch(pcId: String, threadId: String): app.g7link.android.ui.agents.GitStart =
+        agentGitStart(pcId) { it.agentGitFetch(pcId, threadId) }
+
+    suspend fun agentGitBranches(pcId: String, threadId: String): AgentCall<List<app.g7link.android.ui.agents.GitBranch>> =
+        when (val result = agentCall { it.agentGitBranches(pcId, threadId, null) }) {
+            is AgentCall.Ok -> AgentCall.Ok(result.value.branches.map(app.g7link.android.ui.agents.AgentGitFfi::branch))
+            is AgentCall.Failed -> result
+        }
+
+    /** Switches to a branch, one only on a remote ([track]), or a new one ([create]); never with changes from a phone. */
+    suspend fun agentGitSwitch(pcId: String, threadId: String, branch: String, create: Boolean, track: Boolean): app.g7link.android.ui.agents.GitStart =
+        agentGitStart(pcId) { it.agentGitSwitch(pcId, threadId, branch, create, track) }
+
+    /** Stop while a commit or a push runs. */
+    suspend fun agentGitStop(pcId: String, job: String): AgentCall<app.g7link.android.ui.agents.GitJob> =
+        when (val result = agentCall { it.agentGitStop(pcId, job) }) {
+            is AgentCall.Ok -> {
+                val stopped = app.g7link.android.ui.agents.AgentGitFfi.job(result.value)
+                updateAgents(pcId) { AgentsModel.withJobRead(it, stopped) }
+                AgentCall.Ok(stopped)
+            }
+            is AgentCall.Failed -> result
+        }
+
+    /** Lines went missing between a job's updates: the job as the PC keeps it. */
+    private fun agentGitJobRead(pcId: String, job: String) {
+        scope.launch {
+            val read = agentCall { it.agentGitJob(pcId, job) } as? AgentCall.Ok ?: return@launch
+            updateAgents(pcId) { AgentsModel.withJobRead(it, app.g7link.android.ui.agents.AgentGitFfi.job(read.value)) }
+        }
+    }
+
+    /** The branch's pull request and the PC's GitHub CLI; [refresh] reads GitHub again. */
+    suspend fun agentPrView(pcId: String, threadId: String, refresh: Boolean): AgentCall<app.g7link.android.ui.agents.PrView> =
+        when (val result = agentCall { it.agentPrView(pcId, threadId, refresh) }) {
+            is AgentCall.Ok -> AgentCall.Ok(app.g7link.android.ui.agents.AgentGitFfi.view(result.value))
+            is AgentCall.Failed -> result
+        }
+
+    /** Opens a pull request from the pushed branch (needs this phone's switch on the PC). */
+    suspend fun agentPrCreate(pcId: String, threadId: String, title: String, body: String, base: String?, draft: Boolean): app.g7link.android.ui.agents.GitStart =
+        agentGitStart(pcId) { it.agentPrCreate(pcId, threadId, title, body, base, draft) }
+
+    /** The Pull requests list: mine, review requested, or an agent folder's ([folder]). */
+    suspend fun agentPrList(pcId: String, show: app.g7link.android.ui.agents.PrShow, folder: String?): AgentCall<app.g7link.android.ui.agents.PrList> =
+        when (val result = agentCall { it.agentPrList(pcId, app.g7link.android.ui.agents.AgentGitFfi.show(show), folder, false) }) {
+            is AgentCall.Ok -> AgentCall.Ok(app.g7link.android.ui.agents.AgentGitFfi.rows(result.value))
+            is AgentCall.Failed -> result
+        }
+
+    /** "Ask <agent> to write it": a fixed message in the thread; its answer comes back as the thread's `wrote`. */
+    suspend fun agentAsk(pcId: String, threadId: String, purpose: app.g7link.android.ui.agents.WritePurpose): AgentCall<AgentThread> {
+        val result = agentCall { it.agentAsk(pcId, threadId, app.g7link.android.ui.agents.AgentGitFfi.purpose(purpose)) }
+        if (result is AgentCall.Ok) updateAgents(pcId) { AgentsModel.withThread(it, result.value) }
+        return result
+    }
+
+    /**
+     * A job started on the PC (kept with the thread's state as its lines come), or its refusal and
+     * reason: one refused before anything ran comes back already failed, with the PC's word.
+     */
+    private suspend fun agentGitStart(
+        pcId: String,
+        commit: Boolean = false,
+        block: suspend (G7LinkNode) -> app.g7link.core.AgentJob,
+    ): app.g7link.android.ui.agents.GitStart {
+        startJob?.join()
+        val current = node ?: return app.g7link.android.ui.agents.GitStart.Refused(null, AgentFailure.OFFLINE)
+        return try {
+            val job = app.g7link.android.ui.agents.AgentGitFfi.job(block(current))
+            updateAgents(pcId) { AgentsModel.withJobRead(it, job) }
+            val error = job.error
+            if (job.phase == app.g7link.android.ui.agents.JobPhase.FAILED && error != null) {
+                app.g7link.android.ui.agents.GitStart.Refused(error, AgentFailure.OTHER)
+            } else {
+                app.g7link.android.ui.agents.GitStart.Started(job)
+            }
+        } catch (e: G7LinkException) {
+            app.g7link.android.ui.agents.GitStart.Refused(app.g7link.android.ui.agents.AgentGitFfi.refusal(e, commit), agentFailure(e))
+        }
     }
 
     /** A short message at the bottom of the app's screen. */

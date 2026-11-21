@@ -138,6 +138,9 @@ internal fun AgentComposer(
     imagesRefused: Boolean,
     /** Words over the limit (as opposed to empty). */
     tooLong: Boolean,
+    /** Lines of a diff quoted into the message (§SC9.1 "Comment on a line"). */
+    quotes: List<Quote> = emptyList(),
+    onRemoveQuote: (Int) -> Unit = {},
 ) {
     val scheme = MaterialTheme.colorScheme
     val shape = if (joined) RoundedCornerShape(bottomStart = 12.dp, bottomEnd = 12.dp) else RoundedCornerShape(12.dp)
@@ -160,6 +163,7 @@ internal fun AgentComposer(
                 .padding(end = 8.dp, bottom = 8.dp),
         ) {
             if (images.isNotEmpty()) ImageStrip(images, thumbs, onRemoveImage)
+            if (quotes.isNotEmpty()) QuoteChips(quotes, onRemoveQuote)
             AgentTextField(
                 value = text,
                 onValueChange = onText,

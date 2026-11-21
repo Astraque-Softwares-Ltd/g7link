@@ -95,6 +95,33 @@ class CoreStateTest {
     }
 
     @Test
+    fun sourceControlEventsAreKeptByTheAgentsStateNotHere() {
+        val job = app.g7link.core.AgentJob(
+            id = "0123456789abcdef",
+            thread = "t1",
+            kind = app.g7link.core.AgentJobKind.COMMIT,
+            phase = app.g7link.core.AgentJobPhase.RUNNING,
+            startedMs = 0L,
+            endedMs = null,
+            mine = true,
+            lines = listOf("Running hooks"),
+            from = 0uL,
+            dropped = 0u,
+            result = null,
+            error = null,
+        )
+        val events = listOf(
+            Event.AgentGit("a", "t1", "feat/sync-retry", false, 4u, 2u, 0u, null),
+            Event.AgentGitJob("a", job),
+        )
+        val state = CoreState().reduce(Event.DeviceAdded(pc("a", "Desk", 10)))
+        for (event in events) {
+            assertFalse(event.affectsCoreState())
+            assertEquals(state, state.reduce(event))
+        }
+    }
+
+    @Test
     fun aPcWithAnOlderAppIsShownAsNeedingAnUpdateUntilItConnects() {
         var state = CoreState().reduce(Event.DeviceAdded(pc("a", "Desk", 10)))
         assertFalse(state.device("a")!!.needsUpdate)

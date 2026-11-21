@@ -4,6 +4,8 @@ package app.g7link.android.ui.agents
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.PathFillType
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.PathParser
 import androidx.compose.ui.unit.dp
@@ -82,6 +84,45 @@ internal object AgentGlyphs {
 
     /** G7 Link's `laptop`: "Files aren't changed from the phone. Do that on <PC>." */
     val laptop by lazy { glyph("laptop", "M1 3.75A2.75 2.75 0 0 1 3.75 1h8.5A2.75 2.75 0 0 1 15 3.75v5a2.75 2.75 0 0 1-2.75 2.75h-2v2.039a.75.75 0 0 1-.25 1.457H6a.75.75 0 0 1-.25-1.457V11.5h-2A2.75 2.75 0 0 1 1 8.75zM6.5 10h5.75c.69 0 1.25-.56 1.25-1.25v-5c0-.69-.56-1.25-1.25-1.25h-8.5c-.69 0-1.25.56-1.25 1.25v5c0 .69.56 1.25 1.25 1.25zm.75 1.5v1.996h1.5V11.5z") }
+
+    // Source control (contract §SC9.1): Lucide's stroke paths, as the boards and AgentGitGlyphs.qml draw them.
+    // Lucide icons, ISC (portions from Feather, MIT): LICENSES/ISC-Lucide.txt.
+
+    /** `git-branch`: the thread's branch, the strip, the Branch row. */
+    val branch by lazy { stroke("branch", "M6 3v12M18 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM6 21a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM18 9a9 9 0 0 1-9 9") }
+
+    /** `git-pull-request`. */
+    val pullRequest by lazy { stroke("pullRequest", "M18 21a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM6 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM13 6h3a2 2 0 0 1 2 2v7M6 9v12") }
+
+    /** `git-commit`: Review and commit, Commit. */
+    val commit by lazy { stroke("commit", "M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM3 12h6M15 12h6") }
+
+    /** `arrow-up`: commits to push, Push. */
+    val push by lazy { stroke("push", "M12 19V5M5 12l7-7 7 7") }
+
+    /** `arrow-down`: commits on the remote, as of the last fetch. */
+    val behind by lazy { stroke("behind", "M12 5v14M19 12l-7 7-7-7") }
+
+    /** `message-square`: a quote chip, Comment. */
+    val comment by lazy { stroke("comment", "M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z") }
+
+    /** `external-link`: Open on GitHub, a pull request in the browser. */
+    val external by lazy { stroke("external", "M15 3h6v6M10 14L21 3M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6") }
+
+    /** `square`: Stop while hooks or a push run. */
+    val stopSquare by lazy { stroke("stopSquare", "M6 6h12v12H6z") }
+
+    /** A 24-grid stroke icon with round caps and joins, as Icons.qml draws them. */
+    private fun stroke(name: String, path: String): ImageVector =
+        ImageVector.Builder(name = name, defaultWidth = 24.dp, defaultHeight = 24.dp, viewportWidth = 24f, viewportHeight = 24f)
+            .addPath(
+                pathData = PathParser().parsePathString(path).toNodes(),
+                fill = null,
+                stroke = SolidColor(Color.White),
+                strokeLineWidth = 1.8f,
+                strokeLineCap = StrokeCap.Round,
+                strokeLineJoin = StrokeJoin.Round,
+            ).build()
 
     private fun glyph(name: String, vararg paths: String): ImageVector {
         val builder = ImageVector.Builder(

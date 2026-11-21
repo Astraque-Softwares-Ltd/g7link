@@ -413,6 +413,91 @@ fun AgentThreadScreen(
         guardChanged()
     }
 
+    // ---- Source control (phase 4 §SC9.3): the strip, its sheet, review and commit, push, the pull request, branches ----
+    val strip = agents.gitStrip(threadId)
+    var gitStatus by remember(threadId) { mutableStateOf<GitStatus?>(null) }
+    var gitSavedMs by remember(threadId) { mutableStateOf<Long?>(null) }
+    var prView by remember(threadId) { mutableStateOf<PrView?>(null) }
+    var gitSheet by remember(threadId) { mutableStateOf(false) }
+    var gitRead by remember(threadId) { mutableIntStateOf(0) }
+    var gitRefresh by remember(threadId) { mutableStateOf<String?>(null) }
+    var prRefresh by remember(threadId) { mutableStateOf(false) }
+    var branchSheet by remember(threadId) { mutableStateOf(false) }
+    var pushAsk by remember(threadId) { mutableStateOf<PushRow.Ready?>(null) }
+    val pushAllowed = AgentGitFfi.pushAllowed(agents.catalog)
+    val threadBusy = thread != null && (running || thread.state == AgentThreadState.WAITING)
+    // The folder as git sees it: read when the thread opens and when the sheet does; offline, the strip this phone kept.
+    LaunchedEffect(device.id, threadId, device.online, gitRead) {
+        if (device.online) {
+            gitStatus = (core.agentGitStatus(device.id, threadId) as? AgentCall.Ok)?.value ?: gitStatus
+            gitSavedMs = null
+        } else {
+            gitSavedMs = core.agentGitCached(device.id, threadId)
+        }
+    }
+    // The pull request is read (GitHub may be asked) only when the sheet opens or Refresh is pressed.
+    LaunchedEffect(device.id, threadId, gitSheet, gitRead, device.online) {
+        if (!gitSheet || !device.online) return@LaunchedEffect
+        val refresh = prRefresh
+        prRefresh = false
+        prView = (core.agentPrView(device.id, threadId, refresh) as? AgentCall.Ok)?.value ?: prView
+    }
+    // Refresh: a fetch from the remote, then the folder and the pull request read again.
+    val refreshJob = gitRefresh?.let { agents.gitJobs[it] }
+    LaunchedEffect(refreshJob?.phase) {
+        if (gitRefresh != null && refreshJob != null && refreshJob.phase != JobPhase.RUNNING) {
+            gitRefresh = null
+            gitRead++
+        }
+    }
+    val gitRefreshNow: () -> Unit = {
+        if (gitRefresh == null) {
+            prRefresh = true
+            scope.launch {
+                when (val started = core.agentGitFetch(device.id, threadId)) {
+                    is GitStart.Started -> gitRefresh = started.job.id
+                    // No remote to fetch from: the folder is read again all the same.
+                    is GitStart.Refused -> gitRead++
+                }
+            }
+        }
+    }
+    val startPush: (PushRow.Ready, String?) -> Unit = { push, remote ->
+        pushAsk = null
+        scope.launch {
+            when (val started = core.agentGitPush(device.id, threadId, remote)) {
+                is GitStart.Started -> full = FullView.Push(started.job.id, push.branch, remote ?: push.remote.orEmpty())
+                is GitStart.Refused -> {
+                    val error = started.error
+                    if (error?.reason == "pick_remote" && error.names.isNotEmpty()) {
+                        pushAsk = push.copy(remote = null, remotes = error.names)
+                    } else {
+                        core.say(
+                            when {
+                                error != null -> resources.getString(R.string.agents_git_push_failed)
+                                started.failure == AgentFailure.DENIED -> resources.getString(R.string.agents_git_switch_off, device.name)
+                                else -> failedSay(started.failure)
+                            },
+                        )
+                    }
+                }
+            }
+        }
+    }
+    // A comment on diff lines: a chip in the reply box, at most five a message.
+    val addQuote: (Quote) -> Unit = { quote ->
+        val next = AgentQuotes.add(draft, quote)
+        if (next == null) {
+            core.say(resources.getString(R.string.agents_git_quotes_max))
+        } else {
+            draft = next
+            draftFor = AgentDock.editedUnder(queue)
+            drafts = AgentDrafts.edited(drafts)
+            full = null
+            runCatching { focus.requestFocus() }
+        }
+    }
+
     // ---- Phase 2 actions (contract §Q3.2 through the phone's wire, §Q5) ----
     val addImages: (List<android.net.Uri>, String?) -> Unit = { uris, cameraPath ->
         val room = AgentImages.room(images)
@@ -808,6 +893,69 @@ fun AgentThreadScreen(
                 turnFiles = turn?.let { (it.files + it.skipped).toInt() },
                 startPath = view.path,
                 onClose = { full = null },
+                pcName = device.name,
+                uncommitted = AgentGit.stripShown(strip) && !offline,
+                onComment = if (readonly || offline) null else addQuote,
+            )
+            return
+        }
+        is FullView.Review -> {
+            AgentReviewScreen(
+                device = device,
+                core = core,
+                threadId = threadId,
+                initial = view.status,
+                thread = thread,
+                agentName = agentName,
+                pushAllowed = pushAllowed,
+                onPush = { push ->
+                    full = null
+                    pushAsk = push
+                },
+                onClose = {
+                    full = null
+                    gitRead++
+                },
+            )
+            return
+        }
+        is FullView.Pr -> {
+            AgentPrScreen(
+                device = device,
+                core = core,
+                threadId = threadId,
+                initial = view.status,
+                thread = thread,
+                agentName = agentName,
+                pushAllowed = pushAllowed,
+                onClose = {
+                    full = null
+                    gitRead++
+                },
+            )
+            return
+        }
+        is FullView.Push -> {
+            val job = agents.gitJobs[view.job]
+            val pushed = job?.let(AgentJobs::end)
+            val openPr: () -> Unit = { gitStatus?.let { status -> full = FullView.Pr(status) } }
+            AgentJobScreen(
+                title = stringResource(R.string.agents_git_push_title, view.branch, view.remote),
+                sub = null,
+                job = job,
+                running = stringResource(R.string.agents_git_pushing, view.remote),
+                pcName = device.name,
+                agentName = agentName,
+                onStop = { scope.launch { core.agentGitStop(device.id, view.job) } },
+                onClose = {
+                    full = null
+                    gitRead++
+                },
+                next = if (pushed is JobEnd.Pushed && pushAllowed && gitStatus?.github != null && prView?.pr == null) {
+                    stringResource(R.string.agents_git_open_pr) to openPr
+                } else {
+                    null
+                },
             )
             return
         }
@@ -836,6 +984,9 @@ fun AgentThreadScreen(
                 onDetails = { details = true },
                 drawer = drawer,
             )
+            if (AgentGit.stripShown(strip) && strip != null && !readonly) {
+                GitStripLine(strip = strip, asOfMs = if (offline) gitSavedMs else null, now = now, onOpen = { gitSheet = true })
+            }
             // What this phone saved stands in while the PC can't be reached (or hasn't answered yet).
             val saved = open != null && open.loaded && open.savedMs != null
             if (offline && saved) OfflineBar(device.name, open?.savedMs, now)
@@ -996,11 +1147,19 @@ fun AgentThreadScreen(
                                 ComposerNote(stringResource(R.string.agents_found_copy_note))
                             }
                             if (offline && images.isNotEmpty()) ComposerNote(stringResource(R.string.agents_pictures_wait, device.name), icon = G7Icons.photo, warn = true)
+                            // Quote chips live in the draft's text, in front of the words (§SC9.1); a question's answer has none.
+                            val (quotes, words) = remember(draft) { AgentQuotes.split(draft) }
+                            val answering = question != null && answers != null
                             AgentComposer(
                                 view = composer,
                                 hint = composerHint(composer.hint, agentName, pausedUntil, device.name),
-                                text = if (question != null && answers != null) QuestionDock.otherText(question, answers) else draft,
-                                onText = typed,
+                                text = if (question != null && answers != null) QuestionDock.otherText(question, answers) else words,
+                                onText = { value -> if (answering) typed(value) else typed(AgentQuotes.typed(draft, value)) },
+                                quotes = if (answering) emptyList() else quotes,
+                                onRemoveQuote = { index ->
+                                    draft = AgentQuotes.remove(draft, index)
+                                    drafts = AgentDrafts.edited(drafts)
+                                },
                                 onFocus = focused,
                                 focus = focus,
                                 sending = sending,
@@ -1090,6 +1249,67 @@ fun AgentThreadScreen(
             onAction = { action -> onMessageAction(row, action) },
             onDismiss = { actionsFor = null },
         )
+    }
+    if (gitSheet) {
+        AgentGitSheet(
+            // Offline, the sheet is the strip this phone kept, every row needing the PC.
+            status = if (offline) strip?.let { AgentGit.offlineStatus(it, gitSavedMs) } ?: gitStatus else gitStatus,
+            prView = prView,
+            refreshing = gitRefresh != null,
+            context = GitSheetContext(
+                pcName = device.name,
+                agentName = agentName,
+                offline = offline,
+                pushAllowed = pushAllowed,
+                threadBusy = threadBusy,
+                asOfMs = if (offline) gitSavedMs else null,
+                now = now,
+            ),
+            onReview = {
+                gitSheet = false
+                gitStatus?.let { full = FullView.Review(it) }
+            },
+            onPush = { push ->
+                gitSheet = false
+                pushAsk = push
+            },
+            onPr = {
+                gitSheet = false
+                gitStatus?.let { full = FullView.Pr(it) }
+            },
+            onBranch = {
+                gitSheet = false
+                branchSheet = true
+            },
+            onRefresh = gitRefreshNow,
+            onDismiss = { gitSheet = false },
+        )
+    }
+    pushAsk?.let { push ->
+        PushConfirm(push = push, onPush = { remote -> startPush(push, remote) }, onDismiss = { pushAsk = null })
+    }
+    if (branchSheet) {
+        gitStatus?.let { status ->
+            AgentBranchSheet(
+                device = device,
+                core = core,
+                threadId = threadId,
+                status = status,
+                threadBusy = threadBusy,
+                agentName = agentName,
+                onSwitched = { end ->
+                    branchSheet = false
+                    core.say(
+                        when (end) {
+                            is JobEnd.Switched -> resources.getString(if (end.created) R.string.agents_git_created else R.string.agents_git_switched, end.branch)
+                            else -> resources.getString(R.string.agents_git_switched, status.branch.orEmpty())
+                        },
+                    )
+                    gitRead++
+                },
+                onDismiss = { branchSheet = false },
+            )
+        }
     }
     rewind?.let { sheet ->
         val message = open?.items?.firstOrNull { it.turn == sheet.turn && it.kind == app.g7link.core.AgentItemKind.USER }?.text.orEmpty()

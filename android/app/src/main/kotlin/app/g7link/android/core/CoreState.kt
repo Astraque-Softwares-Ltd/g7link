@@ -634,6 +634,9 @@ data class CoreState(
         is Event.AgentOutbox,
         // What a PC says of itself (§V4.4): kept by Core.agentPresence, for holding notifications.
         is Event.AgentPresence,
+        // A thread's folder and its source-control jobs (§SC6.1): kept by Core.agents with the threads.
+        is Event.AgentGit,
+        is Event.AgentGitJob,
         -> this
     }
 
@@ -743,6 +746,8 @@ internal fun Event.affectsCoreState(): Boolean = when (this) {
     is Event.AgentImport,
     is Event.AgentOutbox,
     is Event.AgentPresence,
+    is Event.AgentGit,
+    is Event.AgentGitJob,
     -> false
     else -> true
 }
