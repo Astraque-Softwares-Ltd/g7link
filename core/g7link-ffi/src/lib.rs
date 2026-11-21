@@ -22,12 +22,14 @@ mod agent_control;
 mod agent_git;
 mod agent_history;
 mod agent_presence;
+mod agent_reply;
 pub mod agent_rows;
 
 pub use agent_control::*;
 pub use agent_git::*;
 pub use agent_history::*;
 pub use agent_presence::*;
+pub use agent_reply::*;
 
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(3);
 
@@ -4390,6 +4392,7 @@ impl Event {
             // Shown on PCs only.
             NodeEvent::AgentsRequested { .. }
             | NodeEvent::AgentSessionsRequested { .. }
+            | NodeEvent::AgentReplyRequested { .. }
             | NodeEvent::AgentViewing { .. } => return None,
             // Asked for by PCs only, and codes go to PCs.
             NodeEvent::BleWanted { .. }
@@ -7375,6 +7378,7 @@ mod tests {
             Some(Event::AgentSessionItem { item, .. }) if item.seq == 0
         ));
         assert_eq!(Event::from_node(NodeEvent::AgentSessionsRequested { device: pc }), None);
+        assert_eq!(Event::from_node(NodeEvent::AgentReplyRequested { device: pc }), None);
     }
 
     #[test]

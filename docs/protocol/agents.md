@@ -17,6 +17,7 @@ never sends a path, a command, a program name or a flag.
 | `agent.follow` | phone | Shows a PC's sessions started outside G7 Link (§3) |
 | `agent.say_why` | desktop | `agent.answer` may carry `message`: deny and say why (§2.4) |
 | `agent.control` | both | Models and effort, plan mode, steering and the queue, the agent's questions, images, `@` files, `/` commands and drafts (§5) |
+| `agent.reply` | desktop | Can enter a reply into a session started on this PC now (§9) |
 
 Everything here is governed by the PC's per-device toggle `agents`, **off by
 default**. While it is off for a phone the PC sends that phone nothing from
@@ -260,9 +261,9 @@ agent.asked  += message?: text                 // with outcome "denied": what th
 
 A phone can also follow the Claude and Codex sessions the PC's user started
 there without G7 Link: in a terminal, or in the agent's own desktop app. They
-are read-only from the phone: there is no message that types into, answers or
-stops a session. Once nothing has a session open, the phone may continue it as
-a thread of its own.
+are read-only from the phone: no message answers or stops a session, and only
+§9's reply, behind a toggle of its own, types into one. Once nothing has a
+session open, the phone may continue it as a thread of its own.
 
 The PC offers `agent.sessions`; a phone that shows them offers
 `agent.follow`. Everything here is governed by a second per-device toggle on
@@ -1084,7 +1085,103 @@ review doesn't list; `NOT_FOUND` for an unknown thread or job, and a review
 the PC no longer keeps; `BUSY` while git is busy in the folder or the thread
 works.
 
-## 9. Implementation notes
+## 9. Reply on the PC
+
+Added in G7 Link 0.1.21. A phone types a reply into a session it follows
+(§3), where the session runs: the PC brings the session's own window forward,
+proves that what has the keyboard is that session, pastes the text as one
+bracketed paste and presses Enter. The agent's answer arrives as the session's
+items, as everything else does. Nothing is written to the agent's files and
+nothing goes to a vendor's host. Each check that fails is a refusal with a
+reason the phone can show; a reply is never a best guess.
+
+The PC offers `agent.reply` only while it can do it now: it offers
+`agent.sessions`, its window backend can write the PRIMARY selection, and its
+input device can be made. Everything here is governed by a third per-device
+toggle on the PC, `agent_reply`, **off by default**, which counts only while
+`agents` and `agent_sessions` are on. While it is off the PC answers `DENIED`,
+and the first such request makes the PC show its user a one-time prompt for
+that phone, as §1's and §3's do. Nothing here travels on Bluetooth.
+
+```
+RPC agent/session.reply   t = "agent.session.reply"
+    b = { session: text, text?: text, check?: bool, confirm?: text }
+    → ok { result: text, reason?: text, target?: AgentReplyTarget, nonce?: text, retry_ms?: uint }
+
+AgentReplyTarget = { app: text, agent: text, folder: text, kind: text }   // kind: "terminal" | "app"
+```
+
+This isn't `agent/reply`, §5's answer to an agent's question.
+
+- **A check** (`check: true`, no `text`) enters nothing. The PC runs its
+  checks without bringing anything forward and answers `ready` or `refused`,
+  never `confirm`: a check that lacks only the confirmation is `ready`.
+  A phone checks when the session's screen opens, when the session's state
+  changes and when the reply box gains focus, and shows a box only while the
+  last check was `ready`.
+- **A reply** (`text`) answers `sent`, `refused` or `failed`. `sent`: Enter was
+  pressed in the proven window; it doesn't say the agent read it, which the
+  next `agent.session.item` does. `refused`: nothing was typed. `failed`:
+  `focus` (the window didn't come forward; nothing was typed),
+  `interrupted` (the text was pasted and **not** sent; a phone never retries
+  it, which would paste it twice) or `input` (a key couldn't be pressed; the
+  paste may have landed, so a phone shows it as `interrupted`).
+- **Refusal reasons:** `locked`, `in_use` (someone used the PC in the last
+  5 s, or a window is full screen), `confirm`, `needs_you` (the agent waits
+  for an answer on the PC), `busy` (Codex is mid-turn), `ended`,
+  `no_process`, `no_window`, `ambiguous` (it can't be told which window shows
+  the session), `tab` (it's in a background tab), `place` (it runs where G7
+  doesn't type: the agent's app, VS Code, ssh, a terminal G7 doesn't know),
+  `clipboard`, `text` (it starts with `!` or `/`, which the agent reads as a
+  command), `rate`, `setup` (the PC needs an update to its desktop's
+  extension).
+- **Confirming.** The first reply from a phone to a session's window is
+  refused with `confirm`, the `target` and a `nonce`; the phone shows where
+  it will type and, when its user says Send, sends the same text again with
+  `confirm` set to the nonce. A nonce works once, for 2 minutes, for that
+  phone, session and window. The PC remembers the confirmation in memory: a
+  different window, a restarted terminal, a restarted G7 Link or 24 h asks
+  again.
+- **`target`** is on every `ready`, `sent` and `confirm` answer: the app's
+  name from its desktop entry (never a window title), the agent's name and
+  the folder's name (never a path). A phone shows "Terminal · Claude ·
+  g7linux".
+- **Rate.** One reply is entered at a time on a PC (another one meanwhile is
+  `BUSY`). Each phone gets at most 1 reply entered into a session every 3 s,
+  6 a minute and 60 an hour, and 2 checks a second; refusals that typed
+  nothing don't count, but at most 1 attempt a second is looked at.
+  `retry_ms` comes with `rate` and `in_use` when the PC knows it.
+- **The text.** The PC makes line ends one `\n`, a tab four spaces and the
+  text NFC, and trims trailing white space and new lines, before anything
+  else. It never logs the text, writes it to disk or puts it in an error, a
+  notification or a crash report.
+- **Never retried.** A phone sends a reply once and never holds it while
+  offline. An answer that never came is shown as "Not known if it was sent"
+  until the session's next item settles it.
+- A receiver reads a `result` it doesn't know as `failed`, a `reason` it
+  doesn't know as a plain "Couldn't reply", and a `kind` it doesn't know with
+  a plain icon.
+
+Limits (bytes of UTF-8 unless noted):
+
+| Field | Limit |
+|---|---|
+| `session` | an id (1 to 40, `[a-z0-9]`) |
+| `text` | 1 to 8192, not blank; no control character but newline, carriage return and tab; no bidirectional formatting control |
+| `check`, `text` | exactly one of the two |
+| `confirm`, `nonce` | 32 lowercase hex digits; `confirm` only with `text` |
+| `result`, `reason` | 1 to 32, `[a-z_]` |
+| `app`, `agent`, `folder` | 64; `folder` never contains `/` or `\` |
+| `kind` | 1 to 32, `[a-z_]` |
+| `retry_ms` | at most 60000 |
+
+Errors as §2.3: `UNSUPPORTED` while the PC doesn't offer `agent.reply`;
+`DENIED` while a toggle is off; `NOT_FOUND` for a session the PC doesn't list;
+`BAD_MESSAGE` for a request out of its limits; `BUSY` while another reply is
+being entered on the PC; `INTERNAL` when the PC's answer didn't come in time
+(a phone treats it as not known whether it was typed).
+
+## 10. Implementation notes
 
 - G7 Link desktop talks to the agent host (`g7-agents`) on a local socket and
   relays its threads; the folder's path never leaves the PC. The PC's
@@ -1132,6 +1229,20 @@ works.
   with a job that already failed. G7 Link desktop passes the host's
   `git.changed` and `git.progress` on as `agent.git` and `agent.git.progress`
   (`Node::agent_git_changed`, `Node::agent_git_progress`).
+- The core answers §9's request after checking that the PC offers
+  `agent.reply`, the three toggles (with their prompts:
+  `NodeEvent::AgentReplyRequested` for the third) and the limits, then asks
+  the platform (`AgentRequest::SessionReply`, answered with
+  `AgentReply::Replied`). G7 Link desktop does the rest: the text's rules,
+  the rate, the one-at-a-time lock, the confirmation, finding and proving
+  the window, and the keys. The core passes an answer on only when it's a
+  whole answer to that request (a check is answered `ready` or `refused`; a
+  `confirm` carries its target and nonce), made to fit; anything else is
+  `INTERNAL`. On the phone, an error after the request went out without a
+  usable answer, the PC's `INTERNAL` included, reaches the app as
+  `G7LinkError.Timeout`: not known whether it was typed. The FFI's
+  `agent_session_reply_check` and `agent_session_reply` clean the text
+  first (line ends made `\n`, other control characters dropped).
 - G7 Link desktop's second prompt, for `agent_sessions`: title "Let %1 see
   sessions started on this PC?"; body "It will be able to list and read the
   Claude and Codex sessions you start here in a terminal or the Claude app, in

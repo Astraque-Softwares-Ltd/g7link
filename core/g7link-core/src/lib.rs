@@ -12,6 +12,7 @@ mod agent_cache;
 pub mod agent_git;
 pub mod agent_history;
 pub mod agent_presence;
+pub mod agent_reply;
 pub mod agents;
 mod ble_link;
 mod calls;
@@ -77,6 +78,7 @@ pub use agent_history::{
     Cached as AgentCached, CachedItems as AgentCachedItems, HeldState, HeldWhy, TurnRange, history,
 };
 pub use agent_presence::{AgentPcPresence, AgentPresence, AgentView, AgentViewing, presence};
+pub use agent_reply::{AgentReplyTarget, AgentSessionReplied, AgentSessionReply, session_reply};
 pub use agents::{
     AgentAsk, AgentAsked, AgentCatalog, AgentCatalogAgent, AgentCatalogFolder, AgentCommand, AgentConfigure,
     AgentContext, AgentDraft, AgentDraftSaved, AgentDraftSet, AgentEvent, AgentExport, AgentFailure,

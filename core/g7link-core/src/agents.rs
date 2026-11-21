@@ -24,7 +24,8 @@
 //! time per phone, refused when more bytes come than were announced.
 //!
 //! Presence (§7) is [`crate::agent_presence`]'s; its state lives here, in
-//! `Agents`, so it ends with the session and the toggle.
+//! `Agents`, so it ends with the session and the toggle. Reply on the PC
+//! (§9) is [`crate::agent_reply`]'s.
 
 use std::{
     collections::{HashMap, HashSet, VecDeque},
@@ -310,6 +311,15 @@ pub enum AgentRequest {
     /// `agent.write`: "Ask <agent> to write it", `purpose` one of
     /// `git::purpose` (the host's `thread.send { purpose }`). Answered with `Thread`.
     Ask { thread: String, purpose: String },
+    // ---- Reply on the PC (`docs/protocol/agents.md` §9) ----
+    /// `agent.session.reply`, after the core checked that this PC offers
+    /// `agent.reply`, the three toggles and the limits. `text: None` is a
+    /// check: enter nothing, answer `ready` or `refused`. Otherwise enter
+    /// `text` (1 to 8,192 bytes as the phone sent it, no control characters
+    /// but `\n`, `\r` and `\t`: clean it and apply §9's rules first) into the
+    /// session's window and press Enter. `confirm`: the nonce of an earlier
+    /// `confirm` answer, only with `text`. Answered with `Replied`.
+    SessionReply { session: String, text: Option<String>, confirm: Option<String> },
 }
 
 /// Never prints a prompt, text or token (protocol v0 §11).
@@ -513,6 +523,13 @@ impl std::fmt::Debug for AgentRequest {
             Self::Ask { thread, purpose } => {
                 f.debug_struct("Ask").field("thread", thread).field("purpose", purpose).finish()
             }
+            Self::SessionReply { session, text, confirm } => f
+                .debug_struct("SessionReply")
+                .field("session", session)
+                .field("check", &text.is_none())
+                .field("bytes", &text.as_ref().map(String::len))
+                .field("confirm", &confirm.is_some())
+                .finish(),
         }
     }
 }
@@ -522,7 +539,8 @@ impl std::fmt::Debug for AgentRequest {
 /// `Read`, `Sessions` for `Sessions`, `SessionItems` for `SessionRead`,
 /// `Export` for `Export`, `Files` for `Files`, `Commands` for `Commands`,
 /// `Draft` for `DraftGet`, `DraftSaved` for `DraftSet`, `Image` for
-/// `ImageAdd`, `Thumb` for `ImageThumb`, `Ok` for the rest. Threads carry
+/// `ImageAdd`, `Thumb` for `ImageThumb`, `Replied` for `SessionReply`, `Ok`
+/// for the rest. Threads carry
 /// `from_phone` for the phone that asked; the core makes everything fit the
 /// phone that asked (legacy forms, no secret asks, relative paths only).
 #[derive(Clone, PartialEq, Eq)]
@@ -579,6 +597,11 @@ pub enum AgentReply {
     /// (its error's `data.reason`, the words of §8): for one that starts a
     /// job the phone gets a job that already failed with it.
     Refused(AgentJobError),
+    /// `SessionReply`: `ready`, `sent`, `refused` or `failed` (§9). The
+    /// core passes it on only when it answers that request whole
+    /// ([`crate::agent_reply::AgentSessionReplied::answers`]); anything else
+    /// is `Internal`.
+    Replied(crate::agent_reply::AgentSessionReplied),
 }
 
 /// Never prints a thumbnail's bytes.
@@ -616,6 +639,7 @@ impl std::fmt::Debug for AgentReply {
             Self::Pr(view) => f.debug_tuple("Pr").field(view).finish(),
             Self::PrRows(rows) => f.debug_tuple("PrRows").field(&rows.prs.len()).finish(),
             Self::Refused(error) => f.debug_tuple("Refused").field(error).finish(),
+            Self::Replied(replied) => f.debug_tuple("Replied").field(replied).finish(),
         }
     }
 }
@@ -822,6 +846,8 @@ pub(crate) struct Agents {
     pub(crate) presence: crate::agent_presence::Presence,
     /// §8: the reviews phones read before they commit.
     pub(crate) git: crate::agent_git::Reviews,
+    /// §9: the phones that saw the `agent_reply` prompt.
+    pub(crate) reply: crate::agent_reply::Replies,
 }
 
 impl Agents {
@@ -852,6 +878,7 @@ impl Agents {
         let watched = self.session_ended(peer);
         self.presence.remove_peer(peer);
         self.git.forget(peer);
+        self.reply.forget(peer);
         {
             let mut inner = self.lock();
             inner.prompted.remove(peer);
@@ -2171,6 +2198,9 @@ pub(crate) async fn handle(
             crate::agent_git::handle_request(shared, peer, env, rsp).await?
         }
         t if crate::agent_git::is_event(t) => crate::agent_git::handle_event(shared, peer, env).await,
+        t if crate::agent_reply::is_request(t) => {
+            crate::agent_reply::handle_request(shared, peer, env, rsp).await?;
+        }
         types::AGENT_CATALOG if shared.we_offer(agent::REMOTE) => {
             let Ok(catalog) = env.body::<AgentCatalog>() else { return Ok(true) };
             if !catalog.is_valid() {

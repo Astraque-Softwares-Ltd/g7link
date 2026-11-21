@@ -373,6 +373,9 @@ pub const DEVICE_TOGGLES: &[(&str, bool)] = &[
     // Pushing and opening pull requests from a phone is opt-in, set on the
     // PC only (docs/protocol/agents.md §8).
     ("agent_push", false),
+    // Typing replies into sessions started on this PC is opt-in, set on the
+    // PC only (docs/protocol/agents.md §9).
+    ("agent_reply", false),
 ];
 
 /// The default for a toggle, or `None` if no such toggle exists.

@@ -2306,7 +2306,18 @@ async fn stop_reconnecting_keeps_a_device_disconnected_until_turned_back_on() {
     wait_online(&mut phone, pc_id).await;
     wait_online(&mut pc, phone_id).await;
     assert!(phone.node.paired_devices().unwrap()[0].reconnect);
-    with_timeout("ring after reconnecting", pc.node.ring(phone_id, true)).await.expect("ring works again");
+    // Both sides dial at once after the switch, so the first link can still be replaced by the
+    // second just after "online": the ring has to work within a moment, not on the first try.
+    let deadline = tokio::time::Instant::now() + WAIT;
+    loop {
+        match with_timeout("ring after reconnecting", pc.node.ring(phone_id, true)).await {
+            Ok(_) => break,
+            Err(_) if tokio::time::Instant::now() < deadline => {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+            Err(e) => panic!("ring works again: {e:?}"),
+        }
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
