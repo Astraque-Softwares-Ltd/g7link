@@ -287,7 +287,7 @@ pub(crate) async fn run_program(p: Program<'_>, mut on_line: Option<LineSink<'_>
         .stderr(Stdio::piped())
         .process_group(0)
         .kill_on_drop(true);
-    let mut child = cmd.spawn()?;
+    let mut child = crate::host::git::run::spawn_retrying(&mut cmd).await?;
     let pid = child.id();
     let stdin = child.stdin.take();
     let stdout = child.stdout.take();

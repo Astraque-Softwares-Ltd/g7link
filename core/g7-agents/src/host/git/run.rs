@@ -254,7 +254,7 @@ impl Git {
             .stderr(Stdio::piped())
             .process_group(0)
             .kill_on_drop(true);
-        let mut child = cmd.spawn()?;
+        let mut child = spawn_retrying(&mut cmd).await?;
         let pid = child.id();
         let stdin = child.stdin.take();
         let stdout = child.stdout.take();
@@ -347,7 +347,7 @@ impl Git {
             .stderr(Stdio::piped())
             .process_group(0)
             .kill_on_drop(true);
-        let mut child = cmd.spawn()?;
+        let mut child = spawn_retrying(&mut cmd).await?;
         let pid = child.id();
         let stdin = child.stdin.take();
         let stdout = child.stdout.take();
@@ -603,3 +603,23 @@ impl Out {
         if self.ok() { Ok(self) } else { Err(GitError::Failed(self.why())) }
     }
 }
+
+/// Starts `cmd`, trying again for a moment while its program is busy (`ETXTBSY`):
+/// a process forked elsewhere while the file was open for writing (an upgrade,
+/// a freshly written wrapper) holds it until it execs.
+pub(crate) async fn spawn_retrying(cmd: &mut Command) -> io::Result<tokio::process::Child> {
+    let mut tries = 0;
+    loop {
+        match cmd.spawn() {
+            Err(e) if e.kind() == io::ErrorKind::ExecutableFileBusy && tries < SPAWN_BUSY_TRIES => {
+                tries += 1;
+                tokio::time::sleep(SPAWN_BUSY_WAIT).await;
+            }
+            other => return other,
+        }
+    }
+}
+
+/// How often, and how long apart, a busy program is tried again (200 ms in all).
+const SPAWN_BUSY_TRIES: u32 = 10;
+const SPAWN_BUSY_WAIT: Duration = Duration::from_millis(20);
