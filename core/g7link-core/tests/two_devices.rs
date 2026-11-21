@@ -2223,6 +2223,71 @@ async fn unpairing_is_mirrored_on_the_other_device() {
     assert!(matches!(pc.node.ring(phone_id, true).await, Err(Error::NotPaired)));
 }
 
+/// Polls `check` until it gives a value: for what's stored without an event.
+async fn poll_until<T>(what: &str, mut check: impl FnMut() -> Option<T>) -> T {
+    with_timeout(what, async {
+        loop {
+            if let Some(found) = check() {
+                return found;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_pc_says_how_it_is_reached_and_a_typed_address_lasts() {
+    use g7link_core::reach::PeerAddressOutcome;
+
+    let mut pc = device("Desktop", DeviceKind::Desktop).await;
+    let mut phone = device("Pixel", DeviceKind::Phone).await;
+    pair_qr(&mut pc, &mut phone).await;
+    let pc_id = pc.node.device_id();
+
+    // On connect the PC says how it's reached: Away mode off, and only its
+    // tailnet addresses (this machine may have some; CI has none).
+    let reach = poll_until("the PC's reach", || phone.node.peer_reach(pc_id).unwrap()).await;
+    assert!(!reach.away);
+    assert!(reach.tailnet.iter().all(|a| g7link_core::is_tailnet_ip(a.ip())), "only tailnet addresses");
+
+    // A change of its Away mode is heard while connected.
+    pc.node.set_away_mode(true);
+    poll_until("the PC's Away mode on", || phone.node.peer_reach(pc_id).unwrap().filter(|r| r.away)).await;
+    pc.node.set_away_mode(false);
+    poll_until("the PC's Away mode off", || phone.node.peer_reach(pc_id).unwrap().filter(|r| !r.away)).await;
+
+    // An address typed for the PC is saved and dialed, and both last a restart.
+    let typed: SocketAddr = "100.64.0.9:5000".parse().unwrap();
+    assert_eq!(
+        phone.node.set_peer_address(pc_id, "100.64.0.9:5000").await.unwrap(),
+        PeerAddressOutcome::Ready
+    );
+    assert!(phone.node.dial_addrs(pc_id).contains(&typed));
+    phone.node.shutdown().await;
+    let TestDevice { node, dir, .. } = phone;
+    drop(node);
+    let phone = start_in(dir, "Pixel", DeviceKind::Phone).await;
+    assert_eq!(phone.node.peer_address(pc_id).unwrap().as_deref(), Some("100.64.0.9:5000"));
+    assert!(phone.node.dial_addrs(pc_id).contains(&typed), "dialed after the restart");
+    assert!(phone.node.peer_reach(pc_id).unwrap().is_some(), "what the PC said is kept");
+
+    assert_eq!(phone.node.set_peer_address(pc_id, "").await.unwrap(), PeerAddressOutcome::Cleared);
+    assert_eq!(phone.node.peer_address(pc_id).unwrap(), None);
+    assert!(!phone.node.dial_addrs(pc_id).contains(&typed));
+    assert_eq!(phone.node.set_peer_address(pc_id, "http://x").await.unwrap(), PeerAddressOutcome::Invalid);
+    assert_eq!(phone.node.peer_address(pc_id).unwrap(), None, "nothing saved");
+
+    // A public address with Away mode off: saved, never dialed.
+    let public: std::net::IpAddr = "203.0.113.7".parse().unwrap();
+    assert_eq!(
+        phone.node.set_peer_address(pc_id, "203.0.113.7").await.unwrap(),
+        PeerAddressOutcome::NotAllowed
+    );
+    assert_eq!(phone.node.peer_address(pc_id).unwrap().as_deref(), Some("203.0.113.7"));
+    assert!(phone.node.dial_addrs(pc_id).iter().all(|a| a.ip() != public));
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn reconnects_after_a_restart() {
     let mut pc = device("Desktop", DeviceKind::Desktop).await;

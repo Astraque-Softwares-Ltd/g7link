@@ -5304,6 +5304,55 @@ pub enum RelayEditResult {
     Failed,
 }
 
+/// What saving an address typed for a PC came to (`set_peer_address`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum PeerAddressResult {
+    /// The address was removed.
+    Cleared,
+    /// Saved and in use.
+    Ready,
+    /// Saved, but the name has no answer right now.
+    NotFound,
+    /// Saved, but used only with Away mode on.
+    NotAllowed,
+    /// Not an address or a name; nothing saved.
+    Invalid,
+}
+
+impl From<core::reach::PeerAddressOutcome> for PeerAddressResult {
+    fn from(outcome: core::reach::PeerAddressOutcome) -> Self {
+        use core::reach::PeerAddressOutcome as O;
+        match outcome {
+            O::Cleared => PeerAddressResult::Cleared,
+            O::Ready => PeerAddressResult::Ready,
+            O::NotFound => PeerAddressResult::NotFound,
+            O::NotAllowed => PeerAddressResult::NotAllowed,
+            O::Invalid => PeerAddressResult::Invalid,
+        }
+    }
+}
+
+/// How a PC would be reached away from home, from what the phone knows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum AwayReach {
+    Tailscale,
+    MobileData,
+    TailscaleOff,
+    HomeOnly,
+}
+
+impl From<core::reach::AwayReach> for AwayReach {
+    fn from(reach: core::reach::AwayReach) -> Self {
+        use core::reach::AwayReach as R;
+        match reach {
+            R::Tailscale => AwayReach::Tailscale,
+            R::MobileData => AwayReach::MobileData,
+            R::TailscaleOff => AwayReach::TailscaleOff,
+            R::HomeOnly => AwayReach::HomeOnly,
+        }
+    }
+}
+
 /// The G7 Link engine. One per app process.
 #[derive(uniffi::Object)]
 pub struct G7LinkNode {
@@ -5512,6 +5561,25 @@ impl G7LinkNode {
         let id = parse_id(&id)?;
         let node = self.node.clone();
         self.run(async move { Ok(node.ring(id, on).await?) }).await
+    }
+
+    /// Saves the address typed for a paired PC (`""` clears it), looks a name
+    /// up (up to 3 s) and redials. Throws for a device that isn't paired.
+    pub async fn set_peer_address(&self, id: String, address: String) -> Result<PeerAddressResult> {
+        let id = parse_id(&id)?;
+        let node = self.node.clone();
+        self.run(async move { Ok(node.set_peer_address(id, &address).await?.into()) }).await
+    }
+
+    /// The address typed for a paired PC, if any.
+    pub fn peer_address(&self, id: String) -> Result<Option<String>> {
+        Ok(self.node.peer_address(parse_id(&id)?)?)
+    }
+
+    /// How a paired PC would be reached away from home; `tailnet_up`:
+    /// Tailscale is up on this phone now.
+    pub fn away_reach(&self, id: String, tailnet_up: bool) -> Result<AwayReach> {
+        Ok(self.node.away_reach(parse_id(&id)?, tailnet_up)?.into())
     }
 
     pub async fn stop_ringing(&self) -> Result<()> {
@@ -7255,6 +7323,14 @@ pub fn extract_artwork_scheme(
     core::extract_artwork_scheme_rgba(&rgba, width, height, cache_key.as_deref()).map(Into::into)
 }
 
+/// Whether `address` is an IP literal in Tailscale's ranges (`100.64.0.0/10`,
+/// `fd7a:115c:a1e0::/48`), with or without a `%zone`; false for anything else.
+#[uniffi::export]
+pub fn is_tailnet_address(address: String) -> bool {
+    let ip = address.trim().split('%').next().unwrap_or_default();
+    ip.parse::<std::net::IpAddr>().is_ok_and(core::is_tailnet_ip)
+}
+
 /// The install ID for a platform ID that survives reinstalls (Android's `ANDROID_ID`):
 /// a salted hash, so the raw ID never leaves the device. `None` for an empty input.
 #[uniffi::export]
@@ -7278,6 +7354,55 @@ pub fn init_logging(filter: String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn address_results_and_away_reach_reach_kotlin_one_to_one() {
+        use g7link_core::reach::{AwayReach as R, PeerAddressOutcome as O};
+        let outcomes = [
+            (O::Cleared, PeerAddressResult::Cleared),
+            (O::Ready, PeerAddressResult::Ready),
+            (O::NotFound, PeerAddressResult::NotFound),
+            (O::NotAllowed, PeerAddressResult::NotAllowed),
+            (O::Invalid, PeerAddressResult::Invalid),
+        ];
+        for (outcome, result) in outcomes {
+            assert_eq!(PeerAddressResult::from(outcome), result);
+        }
+        let reaches = [
+            (R::Tailscale, AwayReach::Tailscale),
+            (R::MobileData, AwayReach::MobileData),
+            (R::TailscaleOff, AwayReach::TailscaleOff),
+            (R::HomeOnly, AwayReach::HomeOnly),
+        ];
+        for (reach, kotlin) in reaches {
+            assert_eq!(AwayReach::from(reach), kotlin);
+        }
+    }
+
+    #[test]
+    fn only_tailscale_ip_literals_are_tailnet_addresses() {
+        for yes in [
+            "100.64.0.1",
+            "100.78.127.19",
+            " 100.127.255.254 ",
+            "fd7a:115c:a1e0::5d01:7fd5",
+            "fd7a:115c:a1e0::1%tun0",
+        ] {
+            assert!(is_tailnet_address(yes.into()), "{yes}");
+        }
+        for no in [
+            "",
+            "100.63.255.255",
+            "100.128.0.1",
+            "192.168.1.20",
+            "fd7a:115c:a1e1::1",
+            "guchu",
+            "100.64.0.1:7718",
+            "fe80::1%wlan0",
+        ] {
+            assert!(!is_tailnet_address(no.into()), "{no}");
+        }
+    }
 
     fn core_thread(state: &str) -> core::AgentThread {
         core::AgentThread {

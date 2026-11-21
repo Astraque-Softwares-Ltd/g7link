@@ -19,6 +19,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::{
     CameraCaptureMode, Error, RecordingMarker, Result, TaskNotify,
+    reach::{PeerAddress, PeerReach},
     timeline::{
         DEFAULT_TIMELINE_PAGE_LIMIT, MAX_TIMELINE_PAGE_LIMIT, NewTimelineEntry, TimelineEntry, TimelineKind,
         TimelinePage, TimelineQuery, TimelineRetention,
@@ -632,6 +633,11 @@ const MIGRATIONS: &[&str] = &[
      ALTER TABLE chat_threads ADD COLUMN kept       INTEGER NOT NULL DEFAULT 0;
      ALTER TABLE chat_threads ADD COLUMN retired_ms INTEGER;
      CREATE INDEX IF NOT EXISTS idx_chat_threads_peer_key ON chat_threads (peer, notification_key);",
+    // v12: how a paired device is reached away from home: what it said in its
+    // last `device.reach` (`reach`, `"<0|1>|<addr>,<addr>"`) and the address
+    // the user typed for it (`manual_addr`). `''` is none.
+    "ALTER TABLE peers ADD COLUMN reach       TEXT NOT NULL DEFAULT '';
+     ALTER TABLE peers ADD COLUMN manual_addr TEXT NOT NULL DEFAULT '';",
 ];
 
 /// A paired device as stored on disk.
@@ -647,6 +653,10 @@ pub(crate) struct PeerRecord {
     pub power: PowerLevel,
     /// Wake-on-LAN addresses from a paired PC's last `pc.wake_info`.
     pub wake_info: Option<PcWakeInfo>,
+    /// What the device said in its last `device.reach`.
+    pub reach: Option<PeerReach>,
+    /// The address the user typed for the device.
+    pub manual_addr: Option<PeerAddress>,
 }
 
 /// How a sealed `payload_json` starts: the rest is base64 of the sealed JSON.
@@ -978,6 +988,27 @@ impl Store {
         self.with(|c| {
             c.execute(
                 "UPDATE peers SET wake_info = ?2 WHERE id = ?1",
+                params![id.as_bytes().as_slice(), encoded],
+            )
+            .map(drop)
+        })
+    }
+
+    /// Records what a paired device said in `device.reach`, or forgets it.
+    pub fn update_reach(&self, id: &DeviceId, reach: Option<&PeerReach>) -> Result<()> {
+        let encoded = reach.map(PeerReach::to_storage_string).unwrap_or_default();
+        self.with(|c| {
+            c.execute("UPDATE peers SET reach = ?2 WHERE id = ?1", params![id.as_bytes().as_slice(), encoded])
+                .map(drop)
+        })
+    }
+
+    /// Saves the address the user typed for a paired device, or clears it.
+    pub fn set_manual_addr(&self, id: &DeviceId, addr: Option<&PeerAddress>) -> Result<()> {
+        let encoded = addr.map(ToString::to_string).unwrap_or_default();
+        self.with(|c| {
+            c.execute(
+                "UPDATE peers SET manual_addr = ?2 WHERE id = ?1",
                 params![id.as_bytes().as_slice(), encoded],
             )
             .map(drop)
@@ -2587,7 +2618,7 @@ fn decode_queue_row(
 }
 
 const SELECT: &str = "SELECT id, name, kind, os, os_ver, model, accent, paired_at, last_seen, last_addrs, \
-     caps, power, wake_info, screen, install_id FROM peers";
+     caps, power, wake_info, screen, install_id, reach, manual_addr FROM peers";
 
 /// The device's install ID when it's well formed (others are never stored).
 fn valid_install_id(info: &DeviceInfo) -> Option<&str> {
@@ -3005,6 +3036,8 @@ fn row_to_peer(row: &rusqlite::Row<'_>) -> rusqlite::Result<PeerRecord> {
     let power: String = row.get(11)?;
     let wake_info: String = row.get(12)?;
     let screen: String = row.get(13)?;
+    let reach: String = row.get(15)?;
+    let manual_addr: String = row.get(16)?;
     Ok(PeerRecord {
         id: DeviceId(id),
         info: DeviceInfo {
@@ -3024,6 +3057,9 @@ fn row_to_peer(row: &rusqlite::Row<'_>) -> rusqlite::Result<PeerRecord> {
         caps: caps.split(',').filter(|c| !c.is_empty()).map(str::to_owned).collect(),
         power: power_from_str(&power),
         wake_info: PcWakeInfo::from_storage_str(&wake_info),
+        // Unreadable text is no value, not a failed read.
+        reach: PeerReach::from_storage_str(&reach),
+        manual_addr: PeerAddress::parse(&manual_addr),
     })
 }
 
@@ -3628,6 +3664,54 @@ mod tests {
     }
 
     #[test]
+    fn reach_and_typed_address_persist_across_reopen() {
+        use crate::reach::{AddressHost, PeerAddress, PeerReach};
+        let dir = tempfile::tempdir().unwrap();
+        let id = DeviceId([8; 32]);
+        let reach = PeerReach { tailnet: vec!["100.78.127.19:7718".parse().unwrap()], away: true };
+        let typed = PeerAddress { host: AddressHost::Name("guchu".into()), port: Some(7718) };
+        {
+            let store = Store::open(dir.path()).unwrap();
+            store.upsert_peer(&id, &info("Studio"), 42).unwrap();
+            let fresh = store.get_peer(&id).unwrap().unwrap();
+            assert_eq!((fresh.reach, fresh.manual_addr), (None, None));
+            store.update_reach(&id, Some(&reach)).unwrap();
+            store.set_manual_addr(&id, Some(&typed)).unwrap();
+        }
+        {
+            let store = Store::open(dir.path()).unwrap();
+            let peer = store.get_peer(&id).unwrap().unwrap();
+            assert_eq!(peer.reach, Some(reach));
+            assert_eq!(peer.manual_addr, Some(typed));
+            store.update_reach(&id, None).unwrap();
+            store.set_manual_addr(&id, None).unwrap();
+            let cleared = store.get_peer(&id).unwrap().unwrap();
+            assert_eq!((cleared.reach, cleared.manual_addr), (None, None));
+        }
+    }
+
+    #[test]
+    fn unreadable_reach_and_typed_address_load_as_none() {
+        let store = Store::in_memory().unwrap();
+        let id = DeviceId([9; 32]);
+        store.upsert_peer(&id, &info("Studio"), 42).unwrap();
+        for (reach, manual) in
+            [("2|100.64.0.1:1", "http://x"), ("1|8.8.8.8:53", "127.0.0.1"), ("garbage", " ")]
+        {
+            store
+                .with(|c| {
+                    c.execute(
+                        "UPDATE peers SET reach = ?2, manual_addr = ?3 WHERE id = ?1",
+                        params![id.as_bytes().as_slice(), reach, manual],
+                    )
+                })
+                .unwrap();
+            let peer = store.get_peer(&id).unwrap().expect("the device still loads");
+            assert_eq!((peer.reach, peer.manual_addr), (None, None), "{reach:?} {manual:?}");
+        }
+    }
+
+    #[test]
     fn timeline_crud_filters_and_retention() {
         let store = Store::in_memory().unwrap();
         let dev_a = DeviceId([1; 32]);
@@ -4093,7 +4177,8 @@ mod tests {
                 store.with(|c| c.pragma_query_value(None, "user_version", |r| r.get(0))).unwrap();
             assert_eq!(final_ver as usize, MIGRATIONS.len(), "migrated from v{start_version} to the latest");
 
-            if start_version >= 6 {
+            // A store already at v11 had its chats merged when it got there.
+            if (6..CHAT_IDENTITY_VERSION).contains(&start_version) {
                 let club =
                     store.chat_thread(&peer, "chat:com.whatsapp:t:book club").unwrap().expect("merged");
                 assert_eq!(club.title, "Book Club");
@@ -4209,6 +4294,16 @@ mod tests {
                 )
                 .unwrap();
             assert_eq!(store.list_send_queue(Some(&peer)).unwrap().len(), 1);
+
+            // v12: nothing said or typed yet, and both columns take a value.
+            assert_eq!((rec.reach.as_ref(), rec.manual_addr.as_ref()), (None, None));
+            let reach =
+                crate::reach::PeerReach { tailnet: vec!["100.64.0.7:7718".parse().unwrap()], away: false };
+            let typed = crate::reach::PeerAddress::parse("100.64.0.7").unwrap();
+            store.update_reach(&peer, Some(&reach)).unwrap();
+            store.set_manual_addr(&peer, Some(&typed)).unwrap();
+            let after = store.get_peer(&peer).unwrap().unwrap();
+            assert_eq!((after.reach, after.manual_addr), (Some(reach), Some(typed)));
         }
     }
 
@@ -5112,7 +5207,7 @@ mod tests {
 
             let before = crate::now_unix_ms();
             let store = Store::init(conn).unwrap();
-            assert_eq!(version(&store), 11);
+            assert_eq!(version(&store), MIGRATIONS.len() as i64);
 
             let club = "chat:com.whatsapp:t:book club";
             let mut expected = expect(&p, club, &[m1, m2, m2b, m3, m4, m5]);
@@ -5248,7 +5343,10 @@ mod tests {
             let store = Store::init(conn).unwrap();
             let after: Vec<_> = store.with(|c| Ok(tables.iter().map(|t| dump(c, t)).collect())).unwrap();
             for (table, (before, after)) in tables.iter().zip(before.iter().zip(&after)) {
-                assert_eq!(before, after, "{table}");
+                // Later migrations add columns at the end: what was there stays byte for byte.
+                let width = before.first().map_or(0, Vec::len);
+                let kept: Vec<_> = after.iter().map(|row| row[..width.min(row.len())].to_vec()).collect();
+                assert_eq!(before, &kept, "{table}");
             }
             let columns: Vec<String> = store
                 .with(|c| {
@@ -5281,7 +5379,7 @@ mod tests {
             );
             let messages_before = messages(&conn);
             let store = Store::init(conn).unwrap();
-            assert_eq!(version(&store), 11, "it opens, at v11");
+            assert_eq!(version(&store), MIGRATIONS.len() as i64, "it opens, at the latest version");
             for tid in [&first, &second] {
                 let t = store.chat_thread(&peer, tid).unwrap().expect("left as it was");
                 assert!(!t.active && t.unread == 0 && t.retired_ms.is_some() && !t.kept, "{t:?}");
@@ -5309,7 +5407,7 @@ mod tests {
             .unwrap();
             let messages_before = messages(&conn);
             let store = Store::init(conn).unwrap();
-            assert_eq!(version(&store), 11);
+            assert_eq!(version(&store), MIGRATIONS.len() as i64);
             let t = store.chat_thread(&peer, &club).unwrap().expect("its old ID");
             assert!(!t.active && t.unread == 0 && t.retired_ms.is_some(), "{t:?}");
             assert!(!t.kept, "the merge's kept was undone with it");
@@ -5370,7 +5468,7 @@ mod tests {
                     .unwrap()
             };
             let first = chats(&Store::open(dir.path()).unwrap());
-            assert_eq!(first.2, 11);
+            assert_eq!(first.2, MIGRATIONS.len() as i64);
             assert_eq!((first.0.len(), first.1.len()), (1, 2));
             std::thread::sleep(std::time::Duration::from_millis(5));
             let again = chats(&Store::open(dir.path()).unwrap());

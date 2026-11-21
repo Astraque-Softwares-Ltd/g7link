@@ -203,7 +203,14 @@ pub(crate) struct Shared {
     relay_connector: Option<crate::direct_network::RelayConnector>,
     /// Whether the user has the app open: heartbeats ping more often then.
     pub(crate) interactive: Arc<crate::session::Interactive>,
-    memory: MemoryLookup,
+    /// The addresses this device dials paired devices at (`remember_addrs`).
+    pub(crate) memory: MemoryLookup,
+    /// Typed names for paired devices and their lookups (`reach.rs`).
+    pub(crate) manual: Mutex<HashMap<DeviceId, crate::reach::ManualAddrs>>,
+    /// Told each time a lookup of a typed name ends.
+    pub(crate) resolve_done: Notify,
+    /// The `device.reach` last sent to every connected peer.
+    pub(crate) sent_reach: tokio::sync::Mutex<Option<g7link_protocol::messages::DeviceReach>>,
     /// This device's notifications, when it mirrors them (phones).
     pub notifications: Feed,
     /// Local notification history for fast listing and substring search.
@@ -1277,7 +1284,7 @@ impl Shared {
             return;
         }
         if let Ok(Some(record)) = self.store.get_peer(&peer) {
-            self.remember_addrs(&peer, &record.last_addrs);
+            self.remember_addrs(&peer, &self.known_addrs(&record));
         }
         self.endpoint.network_change().await;
         if let Some(session) = self.session(&peer) {
@@ -1304,22 +1311,23 @@ impl Shared {
         }
     }
 
+    /// Whether the dialer may be given `addr` for `peer`: the cable's
+    /// address; else never a loopback one, and with Away mode off only this
+    /// network's (`is_lan_peer_ip`: private, link-local, tailnet, or announced
+    /// over mDNS here).
+    pub(crate) fn dialable(&self, peer: &DeviceId, addr: &SocketAddr) -> bool {
+        self.is_usb_addr_for(peer, addr) || self.ip_dialable(peer, addr.ip())
+    }
+
+    /// [`Shared::dialable`] for an address that isn't the cable's.
+    pub(crate) fn ip_dialable(&self, peer: &DeviceId, ip: std::net::IpAddr) -> bool {
+        !ip.to_canonical().is_loopback() && (self.away_mode() || self.is_lan_peer_ip(peer, ip))
+    }
+
     /// Feeds known addresses of a peer into address lookup.
     pub fn remember_addrs(&self, peer: &DeviceId, addrs: &[SocketAddr]) {
         let allow_wan = self.away_mode();
-        let mut all: Vec<SocketAddr> = addrs
-            .iter()
-            .copied()
-            .filter(|a| {
-                if self.is_usb_addr_for(peer, a) {
-                    true
-                } else if a.ip().is_loopback() {
-                    false
-                } else {
-                    allow_wan || self.is_lan_peer_ip(peer, a.ip())
-                }
-            })
-            .collect();
+        let mut all: Vec<SocketAddr> = addrs.iter().copied().filter(|a| self.dialable(peer, a)).collect();
         if let Some(usb_addr) = self.usb_peer_addr(peer)
             && !all.contains(&usb_addr)
         {
@@ -1336,7 +1344,7 @@ impl Shared {
     /// Removes any cached non-LAN (cellular / public IPv6 / WAN) or stale loopback
     /// addresses for `peer` so `maintain` does not repeatedly dial a dead endpoint.
     pub(crate) fn purge_non_lan_addrs(&self, peer: &DeviceId) {
-        if let Ok(Some(record)) = self.store.get_peer(peer) {
+        if let Ok(Some(mut record)) = self.store.get_peer(peer) {
             let lan_only: Vec<SocketAddr> = record
                 .last_addrs
                 .iter()
@@ -1348,7 +1356,8 @@ impl Shared {
             {
                 let _ = self.store.record_seen(peer, seen, &lan_only);
             }
-            self.remember_addrs(peer, &lan_only);
+            record.last_addrs = lan_only;
+            self.remember_addrs(peer, &self.known_addrs(&record));
         }
     }
 
@@ -1502,6 +1511,7 @@ impl Shared {
         }
         lock(&self.links).remove(peer);
         lock(&self.lan_seen).remove(peer);
+        self.set_manual_name(peer, None);
         lock(&self.dial_failures).remove(peer);
         lock(&self.matrices).remove(peer);
         lock(&self.remote).remove_peer(peer);
@@ -1684,6 +1694,7 @@ impl Shared {
             shared.send_call_state(&s).await;
             shared.send_toggles_state(&s).await;
             crate::actions::send_wake_info(&shared, &s).await;
+            shared.send_reach(&s).await;
             crate::actions::send_active_tasks(&shared, &s).await;
             shared.send_deck(&s).await;
             crate::agents::send_catalog(&shared, &s).await;
@@ -1746,7 +1757,7 @@ impl Shared {
         tokio::spawn(maintain(Arc::downgrade(self), peer, wake, cancel));
     }
 
-    fn wake_supervisor(&self, peer: &DeviceId) {
+    pub(crate) fn wake_supervisor(&self, peer: &DeviceId) {
         if let Some(sup) = lock(&self.supervisors).get(peer) {
             sup.wake.notify_one();
         }
@@ -1963,6 +1974,8 @@ async fn maintain(shared: Weak<Shared>, peer: DeviceId, wake: Arc<Notify>, cance
             }
             continue;
         }
+        // A typed name is looked up again now and then; the dial doesn't wait for it.
+        node.refresh_manual(&peer);
         // When both devices come up together they'd dial each other at once and
         // one connection would be dropped. The higher ID briefly defers so the
         // lower one usually wins; it still dials in case the other can't reach it.
@@ -2288,28 +2301,30 @@ impl Node {
 
         // A stable port lets paired devices reconnect to the addresses they
         // remember even where local discovery is blocked (guest Wi-Fi, some
-        // routers and VPNs). Reuse the last one; take any free port if it's
-        // gone, and remember that instead.
+        // routers and VPNs), and lets firewall rules name it. Take the
+        // preferred port if it's free, else reuse the last one, else any free
+        // port, and remember what was taken.
         let saved = if config.port == 0 { Ports::load(&config.data_dir) } else { None };
-        let wanted =
-            if config.port != 0 { Some(Ports { v4: config.port, v6: Some(config.port) }) } else { saved };
-        // Right after a restart the previous process may still be letting go
-        // of the ports, so try them for a moment before taking others.
-        let mut bound = bind_endpoint(&config, secret.clone(), wanted, relay_map.clone(), proxy).await;
-        for _ in 0..PORT_RETRIES {
-            if bound.is_ok() || wanted.is_none() {
-                break;
+        let endpoint = if config.port != 0 {
+            let required = Ports { v4: config.port, v6: Some(config.port) };
+            bind_retrying(&config, &secret, required, PORT_RETRIES, &relay_map, proxy).await?
+        } else {
+            let mut found = None;
+            for (ports, retries) in port_order(config.preferred_port, saved, config.away_mode) {
+                match bind_retrying(&config, &secret, ports, retries, &relay_map, proxy).await {
+                    Ok(endpoint) => {
+                        found = Some(endpoint);
+                        break;
+                    }
+                    Err(e) => {
+                        tracing::info!(error = %e, port = ports.v4, "port unavailable; trying the next")
+                    }
+                }
             }
-            tokio::time::sleep(PORT_RETRY_DELAY).await;
-            bound = bind_endpoint(&config, secret.clone(), wanted, relay_map.clone(), proxy).await;
-        }
-        let endpoint = match bound {
-            Ok(endpoint) => endpoint,
-            Err(e) if config.port == 0 && wanted.is_some() => {
-                tracing::info!(error = %e, "saved ports unavailable; using others");
-                bind_endpoint(&config, secret.clone(), None, relay_map.clone(), proxy).await?
+            match found {
+                Some(endpoint) => endpoint,
+                None => bind_endpoint(&config, secret.clone(), None, relay_map.clone(), proxy).await?,
             }
-            Err(e) => return Err(e),
         };
         if config.port == 0
             && let Some(bound) = Ports::of(&endpoint.bound_sockets())
@@ -2361,6 +2376,9 @@ impl Node {
             relay_connector,
             interactive: Default::default(),
             memory,
+            manual: Mutex::new(HashMap::new()),
+            resolve_done: Notify::new(),
+            sent_reach: tokio::sync::Mutex::new(None),
             notifications: Feed::default(),
             notification_history: Mutex::new(Vec::new()),
             players: Default::default(),
@@ -2438,9 +2456,13 @@ impl Node {
         tokio::task::spawn_blocking(move || transfer::clean_incoming(&incoming));
 
         for peer in shared.store.list_peers()? {
+            if let Some(crate::reach::AddressHost::Name(name)) = peer.manual_addr.as_ref().map(|a| &a.host) {
+                shared.set_manual_name(&peer.id, Some(name));
+                shared.refresh_manual(&peer.id);
+            }
             // remember_addrs keeps only LAN addresses while away mode is off.
             // The stored list keeps the rest, for when it's turned on again.
-            shared.remember_addrs(&peer.id, &peer.last_addrs);
+            shared.remember_addrs(&peer.id, &shared.known_addrs(&peer));
             shared.start_supervisor(peer.id);
         }
         run_queue_coordinator(Arc::downgrade(&shared), shared.cancel.child_token());
@@ -2548,16 +2570,20 @@ impl Node {
             // now); the stored list keeps the others for turning it back on.
             if let Ok(peers) = self.shared.store.list_peers() {
                 for peer in peers {
-                    self.shared.remember_addrs(&peer.id, &peer.last_addrs);
+                    self.shared.remember_addrs(&peer.id, &self.shared.known_addrs(&peer));
                 }
             }
         } else {
             if let Ok(peers) = self.shared.store.list_peers() {
                 for peer in peers {
-                    self.shared.remember_addrs(&peer.id, &peer.last_addrs);
+                    self.shared.remember_addrs(&peer.id, &self.shared.known_addrs(&peer));
                 }
             }
             self.shared.nudge_reconnect();
+        }
+        if was != enabled {
+            let shared = self.shared.clone();
+            self.shared.runtime.spawn(async move { shared.refresh_reach().await });
         }
         self.shared.refresh_all_capabilities();
     }
@@ -2600,6 +2626,11 @@ impl Node {
     /// This device's direct addresses (for diagnostics and tests).
     pub async fn direct_addrs(&self) -> Vec<SocketAddr> {
         self.shared.direct_addrs().await
+    }
+
+    /// The UDP port the node listens on (IPv4).
+    pub fn listen_port(&self) -> Option<u16> {
+        self.shared.bound_v4_port()
     }
 
     /// Returns the loopback TCP port the phone-side USB tunnel listener is
@@ -2689,6 +2720,7 @@ impl Node {
         self.shared.endpoint.network_change().await;
         let shared = self.shared.clone();
         let _ = tokio::task::spawn_blocking(move || shared.refresh_gateways()).await;
+        self.shared.reach_network_changed();
         self.shared.nudge_reconnect();
         // Each session's heartbeat pings now and judges by its own rule:
         // a change here is no reason to close a session by itself.
@@ -5845,6 +5877,60 @@ impl Ports {
     }
 }
 
+/// The ports to try in turn when no port is required, and how many times
+/// to retry each: the preferred port (a restart may still hold it a moment),
+/// then without IPv6 (with Away mode on; off, only IPv4 is bound anyway), then
+/// the saved ports; each bind once. Without a preferred port, the saved ports
+/// get the retries.
+fn port_order(preferred: Option<u16>, saved: Option<Ports>, away_mode: bool) -> Vec<(Ports, usize)> {
+    // With Away mode off only the IPv4 port is bound: that's what tells two apart.
+    let key = |p: Ports| if away_mode { p } else { Ports { v4: p.v4, v6: None } };
+    let mut order: Vec<(Ports, usize)> = Vec::new();
+    let mut push = |ports: Ports, retries: usize| {
+        if !order.iter().any(|(p, _)| key(*p) == key(ports)) {
+            order.push((ports, retries));
+        }
+    };
+    match preferred.filter(|p| *p != 0) {
+        Some(p) => {
+            push(Ports { v4: p, v6: Some(p) }, PORT_RETRIES);
+            if away_mode {
+                push(Ports { v4: p, v6: None }, 0);
+            }
+            if let Some(saved) = saved {
+                push(saved, 0);
+            }
+        }
+        None => {
+            if let Some(saved) = saved {
+                push(saved, PORT_RETRIES);
+            }
+        }
+    }
+    order
+}
+
+/// [`bind_endpoint`] on `ports`, tried again `retries` times a moment apart
+/// while they're taken.
+async fn bind_retrying(
+    config: &NodeConfig,
+    secret: &iroh::SecretKey,
+    ports: Ports,
+    retries: usize,
+    relay_map: &RelayMap,
+    proxy: Option<&url::Url>,
+) -> Result<Endpoint> {
+    let mut bound = bind_endpoint(config, secret.clone(), Some(ports), relay_map.clone(), proxy).await;
+    for _ in 0..retries {
+        if bound.is_ok() {
+            break;
+        }
+        tokio::time::sleep(PORT_RETRY_DELAY).await;
+        bound = bind_endpoint(config, secret.clone(), Some(ports), relay_map.clone(), proxy).await;
+    }
+    bound
+}
+
 /// Binds the endpoint on `ports`, or any free ports.
 async fn bind_endpoint(
     config: &NodeConfig,
@@ -6611,6 +6697,258 @@ mod away_tests {
         drop(second);
         assert!(lock(&shared.incoming_turns).is_empty(), "nothing left behind");
         node.shutdown().await;
+    }
+
+    /// A paired PC in the store, never connected.
+    fn paired_pc(node: &Node, seed: u8) -> DeviceId {
+        let id = crate::device_id(&iroh::SecretKey::from_bytes(&[seed; 32]).public());
+        let info = DeviceInfo {
+            name: "Studio".into(),
+            kind: DeviceKind::Desktop,
+            os: "linux".into(),
+            os_ver: "6.12".into(),
+            model: None,
+            accent: None,
+            screen: None,
+            install_id: None,
+        };
+        node.shared.store.upsert_peer(&id, &info, crate::now_unix()).unwrap();
+        id
+    }
+
+    fn sa(text: &str) -> SocketAddr {
+        text.parse().unwrap()
+    }
+
+    #[tokio::test]
+    async fn known_addrs_merge_where_it_was_seen_what_it_said_and_what_was_typed() {
+        use crate::reach::{PeerAddressOutcome, PeerReach};
+        let dir = tempfile::TempDir::new().unwrap();
+        let node = node(&dir, false).await;
+        let pc = paired_pc(&node, 21);
+        let shared = node.shared.clone();
+        shared.store.record_seen(&pc, 1, &[sa("192.168.1.5:40314")]).unwrap();
+        shared
+            .store_reach(
+                &pc,
+                &g7link_protocol::messages::DeviceReach {
+                    tailnet: vec!["100.64.0.7:7719".into(), "192.168.1.5:7719".into()],
+                    away: false,
+                },
+            )
+            .unwrap();
+        let said = shared.store.get_peer(&pc).unwrap().unwrap().reach;
+        assert_eq!(
+            said,
+            Some(PeerReach { tailnet: vec![sa("100.64.0.7:7719")], away: false }),
+            "tailnet only"
+        );
+
+        assert_eq!(node.set_peer_address(pc, "100.64.0.9").await.unwrap(), PeerAddressOutcome::Ready);
+        let record = shared.store.get_peer(&pc).unwrap().unwrap();
+        assert_eq!(
+            shared.known_addrs(&record),
+            [
+                "192.168.1.5:40314",
+                "100.64.0.7:7719",
+                "100.64.0.9:7718",
+                "100.64.0.9:7719",
+                "100.64.0.9:40314",
+            ]
+            .map(sa),
+            "seen, said, then typed on the default and the known ports"
+        );
+        for addr in shared.known_addrs(&record) {
+            assert!(node.dial_addrs(pc).contains(&addr), "{addr} is dialed");
+        }
+
+        // Typing what it said adds nothing twice.
+        assert_eq!(node.set_peer_address(pc, "100.64.0.7:7719").await.unwrap(), PeerAddressOutcome::Ready);
+        let record = shared.store.get_peer(&pc).unwrap().unwrap();
+        assert_eq!(shared.known_addrs(&record), ["192.168.1.5:40314", "100.64.0.7:7719"].map(sa));
+        node.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn a_typed_name_counts_by_its_answers_and_never_dials_loopback() {
+        use crate::reach::PeerAddressOutcome;
+        let dir = tempfile::TempDir::new().unwrap();
+        let node = node(&dir, false).await;
+        let pc = paired_pc(&node, 22);
+        let shared = node.shared.clone();
+
+        // Answered, but only with this machine: saved, never dialed.
+        assert_eq!(
+            node.set_peer_address(pc, "LOCALHOST:5000").await.unwrap(),
+            PeerAddressOutcome::NotAllowed
+        );
+        assert_eq!(node.peer_address(pc).unwrap().as_deref(), Some("localhost:5000"));
+        let record = shared.store.get_peer(&pc).unwrap().unwrap();
+        assert!(shared.known_addrs(&record).contains(&sa("127.0.0.1:5000")), "the answer counts");
+        assert!(node.dial_addrs(pc).iter().all(|a| !a.ip().to_canonical().is_loopback()));
+
+        // No answer (the name can't exist): saved all the same.
+        assert_eq!(
+            node.set_peer_address(pc, "g7link-test.invalid").await.unwrap(),
+            PeerAddressOutcome::NotFound
+        );
+        assert_eq!(node.peer_address(pc).unwrap().as_deref(), Some("g7link-test.invalid"));
+        let record = shared.store.get_peer(&pc).unwrap().unwrap();
+        assert!(shared.known_addrs(&record).is_empty(), "the other name's answers are gone");
+        node.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn a_public_typed_ip_is_kept_but_dialed_only_with_away_mode_on() {
+        use crate::reach::PeerAddressOutcome;
+        let dir = tempfile::TempDir::new().unwrap();
+        let node = node(&dir, false).await;
+        let pc = paired_pc(&node, 23);
+        let public = sa("8.8.8.8:7718");
+
+        assert_eq!(node.set_peer_address(pc, "8.8.8.8:7718").await.unwrap(), PeerAddressOutcome::NotAllowed);
+        assert_eq!(node.peer_address(pc).unwrap().as_deref(), Some("8.8.8.8:7718"));
+        assert!(!node.dial_addrs(pc).contains(&public), "not with Away mode off");
+
+        node.set_away_mode(true);
+        settled(&node).await;
+        assert!(node.dial_addrs(pc).contains(&public), "Away mode on: it's dialed");
+        node.set_away_mode(false);
+        settled(&node).await;
+        node.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn clearing_a_typed_address_stops_dialing_it() {
+        use crate::reach::PeerAddressOutcome;
+        let dir = tempfile::TempDir::new().unwrap();
+        let node = node(&dir, false).await;
+        let pc = paired_pc(&node, 24);
+        let typed = sa("100.64.0.9:5000");
+
+        assert_eq!(node.set_peer_address(pc, " 100.64.0.9:5000 ").await.unwrap(), PeerAddressOutcome::Ready);
+        assert!(node.dial_addrs(pc).contains(&typed));
+        assert_eq!(node.set_peer_address(pc, "http://x").await.unwrap(), PeerAddressOutcome::Invalid);
+        assert_eq!(node.peer_address(pc).unwrap().as_deref(), Some("100.64.0.9:5000"), "nothing saved");
+
+        assert_eq!(node.set_peer_address(pc, "").await.unwrap(), PeerAddressOutcome::Cleared);
+        assert_eq!(node.peer_address(pc).unwrap(), None);
+        assert!(!node.dial_addrs(pc).contains(&typed));
+
+        // A device that isn't paired.
+        let stranger = crate::device_id(&iroh::SecretKey::from_bytes(&[99; 32]).public());
+        assert!(matches!(node.set_peer_address(stranger, "100.64.0.9").await, Err(Error::NotPaired)));
+        assert!(matches!(node.peer_address(stranger), Err(Error::NotPaired)));
+        assert!(matches!(node.away_reach(stranger, true), Err(Error::NotPaired)));
+        node.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn what_a_peer_says_replaces_what_it_said_before() {
+        use crate::reach::AwayReach;
+        use g7link_protocol::messages::DeviceReach;
+        let dir = tempfile::TempDir::new().unwrap();
+        let node = node(&dir, false).await;
+        let pc = paired_pc(&node, 25);
+        let shared = node.shared.clone();
+        assert_eq!(node.away_reach(pc, true).unwrap(), AwayReach::HomeOnly);
+
+        let said =
+            |addrs: &[&str], away| DeviceReach { tailnet: addrs.iter().map(|a| (*a).into()).collect(), away };
+        shared.store_reach(&pc, &said(&["100.64.0.7:7718"], false)).unwrap();
+        assert!(node.dial_addrs(pc).contains(&sa("100.64.0.7:7718")));
+        assert_eq!(node.away_reach(pc, true).unwrap(), AwayReach::Tailscale);
+        assert_eq!(node.away_reach(pc, false).unwrap(), AwayReach::TailscaleOff);
+
+        shared.store_reach(&pc, &said(&["100.64.0.8:7718"], true)).unwrap();
+        let dialed = node.dial_addrs(pc);
+        assert!(dialed.contains(&sa("100.64.0.8:7718")) && !dialed.contains(&sa("100.64.0.7:7718")));
+        assert_eq!(node.peer_reach(pc).unwrap().map(|r| r.away), Some(true));
+
+        shared.store_reach(&pc, &said(&[], false)).unwrap();
+        assert!(node.dial_addrs(pc).is_empty());
+        assert_eq!(node.away_reach(pc, true).unwrap(), AwayReach::HomeOnly);
+        node.shutdown().await;
+    }
+
+    #[test]
+    fn ports_are_tried_preferred_then_saved_then_any() {
+        let p = |v4, v6| Ports { v4, v6 };
+        let r = PORT_RETRIES;
+        assert_eq!(
+            port_order(Some(7000), Some(p(40314, None)), false),
+            vec![(p(7000, Some(7000)), r), (p(40314, None), 0)]
+        );
+        assert_eq!(
+            port_order(Some(7000), Some(p(40314, Some(40315))), true),
+            vec![(p(7000, Some(7000)), r), (p(7000, None), 0), (p(40314, Some(40315)), 0)]
+        );
+        // The saved port is the preferred one: it's tried once.
+        assert_eq!(port_order(Some(7000), Some(p(7000, None)), false), vec![(p(7000, Some(7000)), r)]);
+        assert_eq!(
+            port_order(Some(7000), Some(p(7000, None)), true),
+            vec![(p(7000, Some(7000)), r), (p(7000, None), 0)]
+        );
+        // No preferred port (the phone, the CLI): the saved ports, as before.
+        assert_eq!(port_order(None, Some(p(40314, None)), false), vec![(p(40314, None), r)]);
+        assert_eq!(port_order(Some(0), None, true), vec![]);
+        assert_eq!(port_order(None, None, false), vec![]);
+    }
+
+    fn free_udp_port() -> u16 {
+        std::net::UdpSocket::bind("0.0.0.0:0").unwrap().local_addr().unwrap().port()
+    }
+
+    async fn node_preferring(dir: &tempfile::TempDir, port: u16) -> Node {
+        let mut config = NodeConfig::new(
+            dir.path().to_path_buf(),
+            DeviceInfo {
+                name: "Test".into(),
+                kind: DeviceKind::Desktop,
+                os: "linux".into(),
+                os_ver: "6.12".into(),
+                model: None,
+                accent: None,
+                screen: None,
+                install_id: None,
+            },
+            "0.0.0-test",
+        );
+        config.lan_discovery = false;
+        config.localsend_port = 0;
+        config.preferred_port = Some(port);
+        Node::start(config, Arc::new(NoopPlatform)).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_free_preferred_port_is_the_one_listened_on() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let port = free_udp_port();
+        let node = node_preferring(&dir, port).await;
+        assert_eq!(node.listen_port(), Some(port));
+        assert_eq!(Ports::load(dir.path()).map(|p| p.v4), Some(port), "and it's remembered");
+        node.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn a_busy_preferred_port_falls_back_to_the_saved_one_then_any() {
+        let held = std::net::UdpSocket::bind("0.0.0.0:0").unwrap();
+        let busy = held.local_addr().unwrap().port();
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let saved = free_udp_port();
+        std::fs::write(dir.path().join(PORT_FILE), saved.to_string()).unwrap();
+        let node = node_preferring(&dir, busy).await;
+        assert_eq!(node.listen_port(), Some(saved), "the saved port");
+        node.shutdown().await;
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let node = node_preferring(&dir, busy).await;
+        let port = node.listen_port().expect("it still starts");
+        assert_ne!(port, busy);
+        assert_eq!(Ports::load(dir.path()).map(|p| p.v4), Some(port), "the port file names the bound port");
+        node.shutdown().await;
+        drop(held);
     }
 
     #[test]

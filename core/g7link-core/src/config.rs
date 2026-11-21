@@ -28,6 +28,9 @@ pub struct NodeConfig {
     /// Fixed UDP port to listen on (0 = any). A fixed port makes firewall
     /// rules simpler on the desktop.
     pub port: u16,
+    /// UDP port to try first when `port` is 0; if it's busy the saved port,
+    /// then any, is used.
+    pub preferred_port: Option<u16>,
     /// How the device key is protected at rest. `None` uses the platform
     /// default (the Secret Service on Linux, when there is one).
     pub key_protector: Option<std::sync::Arc<dyn KeyProtector>>,
@@ -139,6 +142,7 @@ impl NodeConfig {
             network_interface: None,
             lan_discovery: true,
             port: 0,
+            preferred_port: None,
             key_protector: None,
             downloads_dir: None,
             capabilities: vec![g7link_protocol::messages::continuity_camera::RECEIVE.into()],
@@ -161,6 +165,7 @@ impl fmt::Debug for NodeConfig {
             .field("away_mode", &self.away_mode)
             .field("lan_discovery", &self.lan_discovery)
             .field("port", &self.port)
+            .field("preferred_port", &self.preferred_port)
             .field("localsend_port", &self.localsend_port)
             .field("usb_port", &self.usb_port)
             .field("adb_server", &self.adb_server)

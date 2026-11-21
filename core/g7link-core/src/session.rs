@@ -93,7 +93,7 @@ pub(crate) fn is_lan_peer_ip(ip: std::net::IpAddr, announced: &[std::net::Socket
 
 /// Returns true if `ip` is in Tailscale's ranges: IPv4 `100.64.0.0/10` (the
 /// shared address space it assigns from) or IPv6 `fd7a:115c:a1e0::/48`.
-pub(crate) fn is_tailnet_ip(ip: std::net::IpAddr) -> bool {
+pub fn is_tailnet_ip(ip: std::net::IpAddr) -> bool {
     match ip.to_canonical() {
         std::net::IpAddr::V4(v4) => {
             let [a, b, ..] = v4.octets();
@@ -924,6 +924,12 @@ async fn on_core(
                 .await
                 .map_err(|err| Error::Internal(err.to_string()))??;
         }
+        types::DEVICE_REACH => match env.body::<DeviceReach>() {
+            Ok(reach) if reach.is_valid() => {
+                store_blocking(shared, move |shared| shared.store_reach(&peer, &reach)).await?;
+            }
+            _ => tracing::debug!(peer = %peer.short(), "ignored a malformed device.reach"),
+        },
         types::BLE_KEY => match env.body::<BleKey>() {
             Ok(body) => {
                 store_blocking(shared, move |shared| shared.ble_key_from_peer(peer, body)).await?;

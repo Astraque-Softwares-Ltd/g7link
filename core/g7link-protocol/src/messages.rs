@@ -22,6 +22,8 @@ pub mod types {
     pub const DEVICE_UPDATE: &str = "device.update";
     pub const DEVICE_RING: &str = "device.ring";
     pub const DEVICE_RING_STOPPED: &str = "device.ring_stopped";
+    /// One way, both directions: how the sender can be reached away from home.
+    pub const DEVICE_REACH: &str = "device.reach";
     pub const PAIR_REVOKE: &str = "pair.revoke";
     pub const BLE_KEY: &str = "ble.key";
     /// Phone to PC: keep a Bluetooth link with me while I renew this.
@@ -614,6 +616,58 @@ impl Battery {
         self.plugged = self.plugged.filter(|p| matches!(p.as_str(), "ac" | "usb" | "wireless"));
         self
     }
+}
+
+/// Limits for `device.reach`.
+pub mod reach {
+    /// Tailnet socket addresses in one message at most.
+    pub const MAX_ADDRS: usize = 4;
+}
+
+/// Body of `device.reach`: how the sender can be reached away from its home
+/// network.
+#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeviceReach {
+    /// The sender's own tailnet socket addresses (`"100.78.127.19:7718"`,
+    /// `"[fd7a:115c:a1e0::1]:7718"`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tailnet: Vec<String>,
+    /// Whether the sender connects through relays (its Away mode is on).
+    #[serde(default)]
+    pub away: bool,
+}
+
+/// Never prints addresses in logs (protocol v1 §11).
+impl std::fmt::Debug for DeviceReach {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DeviceReach").field("tailnet", &self.tailnet.len()).field("away", &self.away).finish()
+    }
+}
+
+impl DeviceReach {
+    /// At most [`reach::MAX_ADDRS`] addresses, each a socket address with a
+    /// port.
+    pub fn is_valid(&self) -> bool {
+        self.tailnet.len() <= reach::MAX_ADDRS && self.tailnet.iter().all(|a| parse_reach_addr(a).is_some())
+    }
+
+    /// The addresses that parse, deduplicated, at most [`reach::MAX_ADDRS`].
+    pub fn addrs(&self) -> Vec<std::net::SocketAddr> {
+        let mut addrs = Vec::new();
+        for addr in self.tailnet.iter().filter_map(|a| parse_reach_addr(a)) {
+            if !addrs.contains(&addr) {
+                addrs.push(addr);
+                if addrs.len() >= reach::MAX_ADDRS {
+                    break;
+                }
+            }
+        }
+        addrs
+    }
+}
+
+fn parse_reach_addr(s: &str) -> Option<std::net::SocketAddr> {
+    s.parse::<std::net::SocketAddr>().ok().filter(|a| a.port() != 0)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -8909,6 +8963,50 @@ mod tests {
     }
 
     #[test]
+    fn device_reach_validates_bounds_hides_addresses_and_round_trips() {
+        let reach = DeviceReach {
+            tailnet: vec!["100.78.127.19:7718".into(), "[fd7a:115c:a1e0::1]:7718".into()],
+            away: true,
+        };
+        assert!(reach.is_valid());
+        let debug = format!("{reach:?}");
+        assert!(!debug.contains("100.78") && !debug.contains("fd7a") && !debug.contains("7718"), "{debug}");
+
+        let env = Envelope::new(types::DEVICE_REACH, &reach).unwrap();
+        let back: DeviceReach = Envelope::from_cbor(&env.to_cbor()).unwrap().body().unwrap();
+        assert_eq!(back, reach);
+        assert_eq!(
+            back.addrs(),
+            vec!["100.78.127.19:7718".parse().unwrap(), "[fd7a:115c:a1e0::1]:7718".parse().unwrap()]
+        );
+
+        // An empty body is the defaults: no addresses, Away mode off.
+        let empty: DeviceReach =
+            Envelope::from_cbor(&Envelope::new(types::DEVICE_REACH, &Empty {}).unwrap().to_cbor())
+                .unwrap()
+                .body()
+                .unwrap();
+        assert_eq!(empty, DeviceReach::default());
+        assert!(empty.is_valid() && empty.addrs().is_empty());
+
+        for bad in ["100.78.127.19", "100.78.127.19:0", "fd7a:115c:a1e0::1", "guchu:7718", "", "[::1]:x"] {
+            assert!(!DeviceReach { tailnet: vec![bad.into()], away: false }.is_valid(), "{bad}");
+        }
+        let too_many = DeviceReach {
+            tailnet: (1..=reach::MAX_ADDRS + 1).map(|i| format!("100.64.0.{i}:7718")).collect(),
+            away: false,
+        };
+        assert!(!too_many.is_valid());
+        // Parsed, deduplicated and capped whatever came.
+        assert_eq!(too_many.addrs().len(), reach::MAX_ADDRS);
+        let messy = DeviceReach {
+            tailnet: vec!["100.64.0.1:7718".into(), "nope".into(), "100.64.0.1:7718".into()],
+            away: false,
+        };
+        assert_eq!(messy.addrs(), vec!["100.64.0.1:7718".parse().unwrap()]);
+    }
+
+    #[test]
     fn deck_layout_state_and_press_validate_sanitize_and_round_trip() {
         let layout = DeckLayout::default_layout();
         assert!(layout.is_valid());
@@ -9500,7 +9598,7 @@ mod tests {
                     NotifyAction,
                     ClipSet
                 ),
-                3 => try_decode!(MediaPlayer, MediaState, MediaCommand, PcPower, PcWakeInfo),
+                3 => try_decode!(MediaPlayer, MediaState, MediaCommand, PcPower, PcWakeInfo, DeviceReach),
                 4 => try_decode!(
                     MirrorStart,
                     MirrorPower,

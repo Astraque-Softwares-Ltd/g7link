@@ -49,6 +49,7 @@ pub mod palette;
 pub mod pc_capture;
 mod photos;
 pub mod play_on_phone;
+pub mod reach;
 pub mod relays;
 pub mod remote;
 mod ring;
@@ -210,7 +211,7 @@ pub use remote::{
     ButtonAction, INPUT_APP_ICON, INPUT_INJECT, INPUT_TEXT_MIRROR, KeyMod, MouseButton, RemoteInput,
     SlideAction, remote_keys,
 };
-pub use session::is_lan_ip;
+pub use session::{is_lan_ip, is_tailnet_ip};
 pub use storage::{FolderStorage, StorageError, StorageReadFile, TOGGLE as STORAGE_TOGGLE};
 pub use store::{
     CHAT_KEPT_IDLE_SECS, CHAT_RETIRED_GRACE_SECS, ChatMessageRecord, ChatThreadRecord,

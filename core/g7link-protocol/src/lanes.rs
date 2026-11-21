@@ -250,7 +250,7 @@ pub fn lane_of(t: &str) -> Option<Lane> {
     }
     let lane = match t {
         HELLO | HELLO_UPDATE | PING | PONG | DEVICE_BATTERY | DEVICE_INFO | DEVICE_UPDATE | DEVICE_RING
-        | DEVICE_RING_STOPPED | PAIR_REVOKE | BLE_KEY | BLE_USE => Lane::Control,
+        | DEVICE_RING_STOPPED | DEVICE_REACH | PAIR_REVOKE | BLE_KEY | BLE_USE => Lane::Control,
         OK | ERROR | PART => Lane::Reply,
         STREAM => Lane::Header,
         PAIR_REQUEST | PAIR_ACCEPT | PAIR_COMMIT | PAIR_NONCE | PAIR_REVEAL | PAIR_CONFIRM | PAIR_DONE => {
@@ -576,6 +576,7 @@ mod tests {
             DEVICE_UPDATE,
             DEVICE_RING,
             DEVICE_RING_STOPPED,
+            DEVICE_REACH,
             PAIR_REVOKE,
             BLE_KEY,
             BLE_USE,
