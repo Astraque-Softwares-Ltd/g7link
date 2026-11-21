@@ -46,6 +46,16 @@ pub struct DeviceFact {
     pub dial_failures: u32,
 }
 
+/// Tailscale on this PC: where phones reach it away from home, and whether
+/// the firewall may be in the way there.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TailnetFact {
+    pub iface: String,
+    pub addr: std::net::IpAddr,
+    pub port: u16,
+    pub firewall: desktop_checks::TailnetFirewall,
+}
+
 /// What the OS said, gathered first so the wording can be tested.
 #[derive(Debug, Clone, Default)]
 pub struct Facts {
@@ -55,6 +65,8 @@ pub struct Facts {
     pub networks: Vec<(String, bool)>,
     /// `None` when the firewall couldn't be read.
     pub firewall: Option<desktop_checks::Firewall>,
+    /// `None` when Tailscale isn't up on this PC.
+    pub tailnet: Option<TailnetFact>,
     /// Paired devices: link and discovery diagnostics.
     pub devices: Vec<DeviceFact>,
     /// Optional helper tools missing from `PATH` on Linux.
@@ -69,7 +81,14 @@ pub fn gather() -> Facts {
     let networks = desktop_checks::networks()
         .map(|list| list.into_iter().map(|n| (network_name(&n.name), n.trusted)).collect())
         .unwrap_or_default();
-    let firewall = std::env::current_exe().ok().and_then(|exe| desktop_checks::firewall(&exe).ok());
+    let port = desktop_checks::active_node_port();
+    let (firewall_kind, firewall) = desktop_checks::firewall_state(port);
+    let tailnet = adapters.tailnet.map(|t| TailnetFact {
+        firewall: desktop_checks::tailnet_firewall(firewall_kind, &t.iface, port),
+        iface: t.iface,
+        addr: t.addr,
+        port,
+    });
     let node = core_host::node();
     let devices = core_host::host().hub.read(|s| {
         s.devices
@@ -92,7 +111,8 @@ pub fn gather() -> Facts {
         local_address: adapters.local_address,
         vpn: adapters.vpn,
         networks,
-        firewall,
+        firewall: Some(firewall),
+        tailnet,
         devices,
         missing_tools: desktop_checks::missing_tools(),
         linux_checks: desktop_checks::linux_checks(),
@@ -263,6 +283,48 @@ pub fn diagnose(facts: &Facts, now_secs: i64) -> Vec<Check> {
             let title = tr!("Doctor", "The firewall lets your phone connect");
             checks.push(check("firewall", Outcome::Ok, title, "", None));
         }
+    }
+
+    // Away from home, through Tailscale. Whether ufw blocks its interface at
+    // all isn't known (Tailscale's own rules may come first), hence "may".
+    if let Some(t) = &facts.tailnet {
+        use desktop_checks::TailnetFirewall;
+        let may_block = tr!("Doctor", "The firewall may block your phone on Tailscale");
+        let finding = match t.firewall {
+            TailnetFirewall::Open => check(
+                "tailscale",
+                Outcome::Ok,
+                tr!("Doctor", "Away from home, your phone reaches this PC through Tailscale"),
+                tr!("Doctor", "At %1.", t.addr),
+                None,
+            ),
+            TailnetFirewall::Ufw => check(
+                "tailscale",
+                Outcome::Warn,
+                may_block,
+                tr!(
+                    "Doctor",
+                    "Away from home your phone reaches this PC at %1. Allow G7 Link on %2 once here.",
+                    t.addr,
+                    t.iface
+                ),
+                Some("firewall-tailscale"),
+            ),
+            TailnetFirewall::Firewalld | TailnetFirewall::Nftables => check(
+                "tailscale",
+                Outcome::Warn,
+                may_block,
+                tr!(
+                    "Doctor",
+                    "Away from home your phone reaches this PC at %1. Allow UDP port %3 on %2 in your firewall.",
+                    t.addr,
+                    t.iface,
+                    t.port
+                ),
+                (t.firewall == TailnetFirewall::Firewalld).then_some("firewall-settings"),
+            ),
+        };
+        checks.push(finding);
     }
 
     if facts.vpn {
@@ -457,6 +519,7 @@ pub fn fix(id: &str) -> bool {
             }
             true
         }
+        "firewall-tailscale" => desktop_checks::fix_firewall_tailnet(),
         "firewall-settings" => desktop_checks::open_firewall_settings(),
         "network-settings" => desktop_checks::open_network_settings(),
         "reconnect" => {
@@ -491,10 +554,76 @@ mod tests {
             vpn: false,
             networks: vec![("Home".into(), true)],
             firewall: Some(desktop_checks::Firewall { on: true, allowed: true, blocked: false }),
+            tailnet: None,
             devices: vec![device_fact("Pixel", LinkState::Online { path: ConnectionPath::Lan, rtt_ms: 4 })],
             missing_tools: Vec::new(),
             linux_checks: Vec::new(),
         }
+    }
+
+    fn tailnet(firewall: desktop_checks::TailnetFirewall) -> Option<TailnetFact> {
+        Some(TailnetFact {
+            iface: "tailscale0".into(),
+            addr: "100.78.127.19".parse().unwrap(),
+            port: 41641,
+            firewall,
+        })
+    }
+
+    #[test]
+    fn tailscale_open_says_how_phones_reach_this_pc_right_after_the_firewall() {
+        let mut f = facts();
+        f.tailnet = tailnet(desktop_checks::TailnetFirewall::Open);
+        let checks = diagnose(&f, 0);
+        assert!(checks.iter().all(|c| c.outcome == Outcome::Ok), "{checks:?}");
+        let at = checks.iter().position(|c| c.id == "tailscale").expect("tailscale check");
+        assert_eq!(checks[at - 1].id, "firewall");
+        assert_eq!(checks[at].title, "Away from home, your phone reaches this PC through Tailscale");
+        assert_eq!(checks[at].detail, "At 100.78.127.19.");
+        assert_eq!(checks[at].fix, None);
+    }
+
+    #[test]
+    fn tailscale_behind_ufw_offers_to_allow_it() {
+        let mut f = facts();
+        f.tailnet = tailnet(desktop_checks::TailnetFirewall::Ufw);
+        let checks = diagnose(&f, 0);
+        let ts = checks.iter().find(|c| c.id == "tailscale").expect("tailscale check");
+        assert_eq!(ts.outcome, Outcome::Warn);
+        assert_eq!(ts.title, "The firewall may block your phone on Tailscale");
+        assert_eq!(
+            ts.detail,
+            "Away from home your phone reaches this PC at 100.78.127.19. Allow G7 Link on tailscale0 once here."
+        );
+        assert_eq!(ts.fix, Some("firewall-tailscale"));
+    }
+
+    #[test]
+    fn tailscale_behind_firewalld_or_nftables_names_the_port() {
+        let mut f = facts();
+        f.tailnet = tailnet(desktop_checks::TailnetFirewall::Firewalld);
+        let checks = diagnose(&f, 0);
+        let ts = checks.iter().find(|c| c.id == "tailscale").expect("tailscale check");
+        assert_eq!(ts.outcome, Outcome::Warn);
+        assert_eq!(ts.title, "The firewall may block your phone on Tailscale");
+        assert_eq!(
+            ts.detail,
+            "Away from home your phone reaches this PC at 100.78.127.19. Allow UDP port 41641 on tailscale0 in your firewall."
+        );
+        assert_eq!(ts.fix, Some("firewall-settings"));
+
+        f.tailnet = tailnet(desktop_checks::TailnetFirewall::Nftables);
+        let checks = diagnose(&f, 0);
+        let ts = checks.iter().find(|c| c.id == "tailscale").expect("tailscale check");
+        assert_eq!(ts.outcome, Outcome::Warn);
+        assert!(ts.detail.contains("Allow UDP port 41641 on tailscale0"), "{}", ts.detail);
+        assert_eq!(ts.fix, None);
+    }
+
+    #[test]
+    fn no_tailscale_interface_no_tailscale_check() {
+        let checks = diagnose(&facts(), 0);
+        assert!(!checks.iter().any(|c| c.id == "tailscale"), "{checks:?}");
     }
 
     fn outcomes(checks: &[Check]) -> Vec<(&str, Outcome)> {

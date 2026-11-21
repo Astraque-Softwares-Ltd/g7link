@@ -229,6 +229,8 @@ async fn run(data_dir: PathBuf, platform: Arc<dyn Platform>) {
     let host = host();
     let wake = crate::sys::wol::query_wake_status();
     let mut config = NodeConfig::new(&data_dir, this_device(), env!("CARGO_PKG_VERSION"));
+    // The port the installer's firewall rules open; the saved one, then any, if it's busy.
+    config.preferred_port = Some(g7link_core::reach::DEFAULT_PORT);
     config.downloads_dir = Some(downloads_dir());
     // G7LINK_NO_ADB=1 keeps a development copy from reaching phones plugged in over USB,
     // unless G7LINK_ADB_ONLY_SERIAL explicitly restricts ADB to an Android emulator.

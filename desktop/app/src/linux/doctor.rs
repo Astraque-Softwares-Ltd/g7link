@@ -2,15 +2,23 @@
 use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
 use std::io::Result;
-use std::net::Ipv4Addr;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::path::Path;
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicU16, Ordering};
 
-pub const DEFAULT_PORT: u16 = 7718;
+pub const DEFAULT_PORT: u16 = g7link_core::reach::DEFAULT_PORT;
 pub const MDNS_PORT: u16 = 5353;
 
-static FIREWALL_VERIFIED: AtomicBool = AtomicBool::new(false);
+/// The installer's or the Tailscale fix's note that G7 Link is allowed in on
+/// Tailscale's interface: `<interface> <port>` lines.
+const TAILNET_MARKER: &str = "firewall_tailnet";
+/// `/sys/class/net/<name>/type` of a tunnel such as Tailscale's (`ARPHRD_NONE`).
+const ARPHRD_NONE: &str = "65534";
+
+/// The node port the firewall fix opened in this run (0: none), in case its
+/// note couldn't be written.
+static FIREWALL_VERIFIED: AtomicU16 = AtomicU16::new(0);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Firewall {
@@ -19,45 +27,93 @@ pub struct Firewall {
     pub blocked: bool,
 }
 
+/// Which firewall is on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FirewallKind {
+    Ufw,
+    Firewalld,
+    Nftables,
+}
+
+/// Whether the firewall lets phones in on Tailscale's interface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TailnetFirewall {
+    /// The firewall is off, or it lets G7 Link in there.
+    Open,
+    /// ufw is on, with no note of a rule for the interface and port.
+    Ufw,
+    /// firewalld's zone for the interface doesn't allow the port.
+    Firewalld,
+    /// nftables, whose rules the app can't judge.
+    Nftables,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Network {
     pub name: String,
     pub trusted: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// Tailscale's interface on this PC and its address on the tailnet.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Tailnet {
+    pub iface: String,
+    pub addr: IpAddr,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Adapters {
     pub local_address: bool,
     pub vpn: bool,
+    pub tailnet: Option<Tailnet>,
 }
 
+/// The UDP port the node listens on: the node's own word, else the port file
+/// it saved, else the default.
 pub fn active_node_port() -> u16 {
+    if let Some(port) = crate::core_host::node().and_then(|n| n.listen_port()).filter(|&p| p > 0) {
+        return port;
+    }
     let port_file = crate::core_host::host().data_dir.join("port");
-    fs::read_to_string(port_file)
-        .ok()
-        .and_then(|s| s.trim().parse::<u16>().ok())
-        .filter(|&p| p > 0)
-        .unwrap_or(DEFAULT_PORT)
+    fs::read_to_string(port_file).ok().and_then(|s| parse_port_file(&s)).unwrap_or(DEFAULT_PORT)
 }
 
-fn record_firewall_verified(port: u16) {
-    FIREWALL_VERIFIED.store(true, Ordering::SeqCst);
+/// The IPv4 port from the node's port file, "`<v4>`" or "`<v4> <v6>`".
+pub fn parse_port_file(content: &str) -> Option<u16> {
+    content.split_whitespace().next()?.parse::<u16>().ok().filter(|&p| p > 0)
+}
+
+/// The ports the firewall fixes open for G7 Link: the default one and the
+/// node's.
+fn opened_ports(node_port: u16) -> Vec<u16> {
+    let mut ports = vec![DEFAULT_PORT];
+    if node_port != DEFAULT_PORT && node_port != MDNS_PORT && node_port > 0 {
+        ports.push(node_port);
+    }
+    ports
+}
+
+fn record_firewall_verified(node_port: u16) {
+    FIREWALL_VERIFIED.store(node_port, Ordering::SeqCst);
     let verified_path = crate::core_host::host().data_dir.join("firewall_verified");
-    let _ = fs::write(verified_path, format!("{port}\n"));
+    let lines: String = opened_ports(node_port).iter().map(|p| format!("{p}\n")).collect();
+    if let Err(error) = crate::atomic_file::write(&verified_path, lines.as_bytes()) {
+        tracing::warn!(%error, "can't note the firewall rule");
+    }
 }
 
 fn is_firewall_verified(port: u16) -> bool {
-    if FIREWALL_VERIFIED.load(Ordering::SeqCst) {
+    if port != 0 && FIREWALL_VERIFIED.load(Ordering::SeqCst) == port {
         return true;
     }
     let verified_path = crate::core_host::host().data_dir.join("firewall_verified");
-    if let Ok(content) = fs::read_to_string(verified_path)
-        && content.lines().any(|l| l.trim().parse::<u16>().ok() == Some(port))
-    {
-        FIREWALL_VERIFIED.store(true, Ordering::SeqCst);
-        return true;
-    }
-    false
+    fs::read_to_string(verified_path).is_ok_and(|content| verified_lists_port(&content, port))
+}
+
+/// Whether the note that the firewall was opened (one port per line) names
+/// `port`. Only the port in use counts.
+pub fn verified_lists_port(content: &str, port: u16) -> bool {
+    port != 0 && content.lines().any(|l| l.trim().parse::<u16>().ok() == Some(port))
 }
 
 pub fn parse_ufw_status_for_port(output: &str, port: u16) -> Option<Firewall> {
@@ -95,11 +151,7 @@ pub fn parse_ufw_status_for_port(output: &str, port: u16) -> Option<Firewall> {
         let touches_port = port_spec == port_str
             || port_spec == port_tcp
             || port_spec == port_udp
-            || port_spec.starts_with(&port_colon)
-            || port_spec == "7718"
-            || port_spec == "7718/tcp"
-            || port_spec == "7718/udp"
-            || port_spec.starts_with("7718:");
+            || port_spec.starts_with(&port_colon);
         if !touches_port {
             continue;
         }
@@ -107,12 +159,12 @@ pub fn parse_ufw_status_for_port(output: &str, port: u16) -> Option<Firewall> {
         if upper_line.contains("DENY") || upper_line.contains("REJECT") {
             blocked = true;
         } else if upper_line.contains("ALLOW") {
-            if port_spec == port_str || port_spec == "7718" {
+            if port_spec == port_str {
                 tcp_allowed = true;
                 udp_allowed = true;
-            } else if port_spec == port_tcp || port_spec == "7718/tcp" || port_spec.ends_with("/tcp") {
+            } else if port_spec == port_tcp || port_spec.ends_with("/tcp") {
                 tcp_allowed = true;
-            } else if port_spec == port_udp || port_spec == "7718/udp" || port_spec.ends_with("/udp") {
+            } else if port_spec == port_udp || port_spec.ends_with("/udp") {
                 udp_allowed = true;
             }
         }
@@ -134,7 +186,7 @@ pub fn parse_firewalld_output_for_port(state: &str, ports: &str, rich_rules: &st
     let mut rich_allowed = false;
     for line in rich_rules.lines() {
         let lower = line.to_ascii_lowercase();
-        if lower.contains(&port_attr) || lower.contains("port=\"7718\"") {
+        if lower.contains(&port_attr) {
             if lower.contains("reject") || lower.contains("drop") {
                 blocked = true;
             } else if lower.contains("accept") {
@@ -143,12 +195,8 @@ pub fn parse_firewalld_output_for_port(state: &str, ports: &str, rich_rules: &st
         }
     }
 
-    let port_allowed = ports.split_whitespace().any(|p| {
-        p.eq_ignore_ascii_case(&port_tcp)
-            || p.starts_with(&port_dash)
-            || p.eq_ignore_ascii_case("7718/tcp")
-            || p.starts_with("7718-")
-    });
+    let port_allowed =
+        ports.split_whitespace().any(|p| p.eq_ignore_ascii_case(&port_tcp) || p.starts_with(&port_dash));
     Firewall { on: true, allowed: !blocked && (port_allowed || rich_allowed), blocked }
 }
 
@@ -164,7 +212,7 @@ fn check_ufw_config_fallback(port: u16) -> Option<Firewall> {
     let port_str = port.to_string();
     for rules_path in ["/etc/ufw/user.rules", "/lib/ufw/user.rules"] {
         if let Ok(rules) = fs::read_to_string(rules_path) {
-            let touches = |l: &str| l.contains(&port_str) || l.contains("7718");
+            let touches = |l: &str| l.contains(&port_str);
             let has_drop =
                 rules.lines().any(|l| touches(l) && (l.contains("-j DROP") || l.contains("-j REJECT")));
             let has_accept = rules.lines().any(|l| touches(l) && l.contains("-j ACCEPT"));
@@ -172,8 +220,7 @@ fn check_ufw_config_fallback(port: u16) -> Option<Firewall> {
         }
     }
     // Non-root users cannot read `/etc/ufw/user.rules` (0640 root:root); consult verified state.
-    let verified = is_firewall_verified(port) || is_firewall_verified(DEFAULT_PORT);
-    Some(Firewall { on: true, allowed: verified, blocked: false })
+    Some(Firewall { on: true, allowed: is_firewall_verified(port), blocked: false })
 }
 
 fn is_service_active(service: &str) -> bool {
@@ -204,7 +251,13 @@ fn has_command(cmd: &str) -> bool {
 }
 
 pub fn firewall(_exe: &Path) -> Result<Firewall> {
-    let port = active_node_port();
+    Ok(firewall_state(active_node_port()).1)
+}
+
+/// The firewall's state for the node's `port`, and which firewall it is
+/// (`None` when none is on).
+pub fn firewall_state(port: u16) -> (Option<FirewallKind>, Firewall) {
+    let kind_of = |fw: Firewall, kind| (fw.on.then_some(kind), fw);
 
     // 1. Try ufw status
     if let Ok(out) = Command::new("ufw").arg("status").output()
@@ -212,13 +265,13 @@ pub fn firewall(_exe: &Path) -> Result<Firewall> {
     {
         let stdout = String::from_utf8_lossy(&out.stdout);
         if let Some(fw) = parse_ufw_status_for_port(&stdout, port) {
-            return Ok(fw);
+            return kind_of(fw, FirewallKind::Ufw);
         }
     }
     if is_service_active("ufw")
         && let Some(fw) = check_ufw_config_fallback(port)
     {
-        return Ok(fw);
+        return kind_of(fw, FirewallKind::Ufw);
     }
 
     // 2. Try firewalld (firewall-cmd --state, --list-ports, --list-rich-rules)
@@ -236,13 +289,10 @@ pub fn firewall(_exe: &Path) -> Result<Firewall> {
                 .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
                 .unwrap_or_default();
             let mut fw = parse_firewalld_output_for_port(&state_str, &ports_str, &rich_str, port);
-            if !fw.allowed
-                && !fw.blocked
-                && (is_firewall_verified(port) || is_firewall_verified(DEFAULT_PORT))
-            {
+            if !fw.allowed && !fw.blocked && is_firewall_verified(port) {
                 fw.allowed = true;
             }
-            return Ok(fw);
+            return kind_of(fw, FirewallKind::Firewalld);
         }
     }
 
@@ -259,15 +309,94 @@ pub fn firewall(_exe: &Path) -> Result<Firewall> {
             let lower = conf.to_ascii_lowercase();
             let has_policy_drop = lower.contains("policy drop");
             let port_str = port.to_string();
-            let has_port = lower.contains(&port_str) || lower.contains("7718");
+            let has_port = lower.contains(&port_str);
             if has_policy_drop || has_port {
-                let verified = is_firewall_verified(port) || is_firewall_verified(DEFAULT_PORT);
-                return Ok(Firewall { on: true, allowed: has_port || verified, blocked: false });
+                let verified = is_firewall_verified(port);
+                let fw = Firewall { on: true, allowed: has_port || verified, blocked: false };
+                return kind_of(fw, FirewallKind::Nftables);
             }
         }
     }
 
-    Ok(Firewall { on: false, allowed: true, blocked: false })
+    (None, Firewall { on: false, allowed: true, blocked: false })
+}
+
+/// Whether the firewall lets phones in on Tailscale's interface `iface` to
+/// the node's `port`. The app can't read ufw's rules without root, so there
+/// only the installer's or the fix's note counts.
+pub fn tailnet_firewall(kind: Option<FirewallKind>, iface: &str, port: u16) -> TailnetFirewall {
+    let Some(kind) = kind else { return TailnetFirewall::Open };
+    let marker = crate::core_host::host().data_dir.join(TAILNET_MARKER);
+    if fs::read_to_string(marker).is_ok_and(|content| tailnet_marker_matches(&content, iface, port)) {
+        return TailnetFirewall::Open;
+    }
+    match kind {
+        FirewallKind::Ufw => TailnetFirewall::Ufw,
+        FirewallKind::Firewalld => {
+            let zone = Command::new("firewall-cmd")
+                .arg(format!("--get-zone-of-interface={iface}"))
+                .output()
+                .ok()
+                .filter(|o| o.status.success())
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())
+                .filter(|zone| !zone.is_empty());
+            // An interface in no zone of its own is in the default zone, which
+            // `--list-ports` lists without `--zone`.
+            let mut list = Command::new("firewall-cmd");
+            if let Some(zone) = &zone {
+                list.arg(format!("--zone={zone}"));
+            }
+            let ports = list
+                .arg("--list-ports")
+                .output()
+                .ok()
+                .filter(|o| o.status.success())
+                .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+                .unwrap_or_default();
+            if firewalld_tailnet_allowed(zone.as_deref(), &ports, port) {
+                TailnetFirewall::Open
+            } else {
+                TailnetFirewall::Firewalld
+            }
+        }
+        FirewallKind::Nftables => TailnetFirewall::Nftables,
+    }
+}
+
+/// Whether firewalld lets UDP `port` in on an interface in `zone`: the
+/// `trusted` zone lets everything in, other zones need the port listed.
+pub fn firewalld_tailnet_allowed(zone: Option<&str>, ports: &str, port: u16) -> bool {
+    zone.is_some_and(|z| z.eq_ignore_ascii_case("trusted")) || firewalld_ports_allow_udp(ports, port)
+}
+
+/// Whether firewalld's `--list-ports` output ("`7718/udp 8000-8100/udp`")
+/// covers UDP `port`.
+pub fn firewalld_ports_allow_udp(ports: &str, port: u16) -> bool {
+    ports.split_whitespace().any(|entry| {
+        let Some((range, proto)) = entry.rsplit_once('/') else { return false };
+        if !proto.eq_ignore_ascii_case("udp") {
+            return false;
+        }
+        match range.split_once('-') {
+            Some((low, high)) => match (low.parse::<u16>(), high.parse::<u16>()) {
+                (Ok(low), Ok(high)) => (low..=high).contains(&port),
+                _ => false,
+            },
+            None => range.parse::<u16>() == Ok(port),
+        }
+    })
+}
+
+/// Whether the note left by the installer or the Tailscale fix names this
+/// interface and port. A changed port or interface makes it stale.
+pub fn tailnet_marker_matches(content: &str, iface: &str, port: u16) -> bool {
+    content.lines().any(|line| {
+        let mut words = line.split_whitespace();
+        match (words.next(), words.next().and_then(|p| p.parse::<u16>().ok()), words.next()) {
+            (Some(name), Some(noted), None) => name == iface && noted == port,
+            _ => false,
+        }
+    })
 }
 
 /// Parses `nmcli -t -f GENERAL.CONNECTION,GENERAL.ZONE device show` output into a
@@ -341,15 +470,33 @@ pub fn parse_nmcli_active_networks(active_stdout: &str, zones: &HashMap<String, 
     list
 }
 
-fn interfaces_with_ipv4() -> (Vec<String>, bool) {
-    let mut ipv4_ifaces = Vec::new();
-    let mut vpn = false;
+/// Whether an interface's name (lowercased) is a VPN's. Tailscale's isn't:
+/// with a tailnet address it's how the phone gets here, without one it's off.
+fn is_vpn_name(lower: &str) -> bool {
+    ["tun", "tap", "wg", "nordlynx", "ppp", "zt"].iter().any(|prefix| lower.starts_with(prefix))
+}
+
+/// Whether the interface `name` is a tunnel such as Tailscale's, by its
+/// kind in `/sys/class/net`.
+fn is_tunnel(name: &str) -> bool {
+    if name.is_empty() || name.contains('/') || name == "." || name == ".." {
+        return false;
+    }
+    fs::read_to_string(Path::new("/sys/class/net").join(name).join("type"))
+        .is_ok_and(|kind| kind.trim() == ARPHRD_NONE)
+}
+
+/// The interfaces that are up (not loopback), one entry per address
+/// `getifaddrs` lists: its IPv4 or IPv6 address, or `None` for other kinds.
+fn up_interface_addrs() -> Vec<(String, Option<IpAddr>)> {
+    let mut entries = Vec::new();
     let mut ifap: *mut libc::ifaddrs = std::ptr::null_mut();
 
     // SAFETY: `getifaddrs` allocates and populates a linked list freed by `freeifaddrs`.
     if unsafe { libc::getifaddrs(&mut ifap) } == 0 && !ifap.is_null() {
         let mut cur = ifap;
-        // SAFETY: iterating valid `ifaddrs` nodes before `freeifaddrs`.
+        // SAFETY: iterating valid `ifaddrs` nodes before `freeifaddrs`; each
+        // `ifa_addr` is cast to the `sockaddr` kind its family names.
         unsafe {
             while let Some(ifa) = cur.as_ref() {
                 cur = ifa.ifa_next;
@@ -363,37 +510,97 @@ fn interfaces_with_ipv4() -> (Vec<String>, bool) {
                 let Ok(name) = std::ffi::CStr::from_ptr(ifa.ifa_name).to_str() else {
                     continue;
                 };
-                let lower = name.to_ascii_lowercase();
-                if lower == "lo" {
+                if name.eq_ignore_ascii_case("lo") {
                     continue;
                 }
-                let is_vpn = lower.starts_with("tun")
-                    || lower.starts_with("tap")
-                    || lower.starts_with("wg")
-                    || lower.starts_with("tailscale")
-                    || lower.starts_with("nordlynx")
-                    || lower.starts_with("ppp")
-                    || lower.starts_with("zt");
-                if is_vpn {
-                    vpn = true;
-                    continue;
-                }
-                if !ifa.ifa_addr.is_null() && i32::from((*ifa.ifa_addr).sa_family) == libc::AF_INET {
-                    let sin_addr = (*ifa.ifa_addr.cast::<libc::sockaddr_in>()).sin_addr.s_addr;
-                    let ip = Ipv4Addr::from(u32::from_be(sin_addr));
-                    if !ip.is_loopback() && !ip.is_link_local() && !ip.is_unspecified() {
-                        let owned = name.to_string();
-                        if !ipv4_ifaces.contains(&owned) {
-                            ipv4_ifaces.push(owned);
+                let addr = if ifa.ifa_addr.is_null() {
+                    None
+                } else {
+                    match i32::from((*ifa.ifa_addr).sa_family) {
+                        libc::AF_INET => {
+                            let sin_addr = (*ifa.ifa_addr.cast::<libc::sockaddr_in>()).sin_addr.s_addr;
+                            Some(IpAddr::V4(Ipv4Addr::from(u32::from_be(sin_addr))))
                         }
+                        libc::AF_INET6 => {
+                            let octets = (*ifa.ifa_addr.cast::<libc::sockaddr_in6>()).sin6_addr.s6_addr;
+                            Some(IpAddr::V6(Ipv6Addr::from(octets)))
+                        }
+                        _ => None,
                     }
-                }
+                };
+                entries.push((name.to_owned(), addr));
             }
             libc::freeifaddrs(ifap);
         }
     }
+    entries
+}
 
-    (ipv4_ifaces, vpn)
+/// What the interfaces that are up say about this PC's networks.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Interfaces {
+    /// Interfaces with a usable IPv4 address (not VPNs, not Tailscale).
+    ipv4: Vec<String>,
+    vpn: bool,
+    tailnet: Option<Tailnet>,
+}
+
+/// Sorts the `entries` of [`up_interface_addrs`]. Tailscale's interface is
+/// one up with a tailnet address, named `tailscale…` or a tunnel; it isn't
+/// counted as a VPN, and its IPv4 address is preferred.
+fn sort_interfaces(entries: &[(String, Option<IpAddr>)], is_tunnel: impl Fn(&str) -> bool) -> Interfaces {
+    let mut tailnet: Option<Tailnet> = None;
+    let mut tailnet_ifaces: Vec<&str> = Vec::new();
+    for (name, addr) in entries {
+        let Some(addr) = *addr else { continue };
+        if !g7link_core::is_tailnet_ip(addr)
+            || !(name.to_ascii_lowercase().starts_with("tailscale") || is_tunnel(name))
+        {
+            continue;
+        }
+        if !tailnet_ifaces.contains(&name.as_str()) {
+            tailnet_ifaces.push(name);
+        }
+        if tailnet.as_ref().is_none_or(|found| found.addr.is_ipv6() && addr.is_ipv4()) {
+            tailnet = Some(Tailnet { iface: name.clone(), addr });
+        }
+    }
+
+    let mut out = Interfaces { tailnet, ..Interfaces::default() };
+    for (name, addr) in entries {
+        if tailnet_ifaces.contains(&name.as_str()) {
+            continue;
+        }
+        if is_vpn_name(&name.to_ascii_lowercase()) {
+            out.vpn = true;
+            continue;
+        }
+        if let Some(IpAddr::V4(ip)) = addr
+            && !ip.is_loopback()
+            && !ip.is_link_local()
+            && !ip.is_unspecified()
+            && !out.ipv4.contains(name)
+        {
+            out.ipv4.push(name.clone());
+        }
+    }
+    out
+}
+
+fn interfaces() -> Interfaces {
+    sort_interfaces(&up_interface_addrs(), is_tunnel)
+}
+
+/// Whether `/sys/class/net` lists a VPN interface that is up, given its
+/// `(name, operstate)` pairs. Tailscale's interface (`tailnet`) isn't one.
+fn sys_net_has_vpn(ifaces: impl IntoIterator<Item = (String, String)>, tailnet: Option<&str>) -> bool {
+    ifaces.into_iter().any(|(name, state)| {
+        let name = name.to_ascii_lowercase();
+        let state = state.trim().to_ascii_lowercase();
+        (state == "up" || state == "unknown")
+            && !tailnet.is_some_and(|t| t.eq_ignore_ascii_case(&name))
+            && is_vpn_name(&name)
+    })
 }
 
 pub fn networks() -> Result<Vec<Network>> {
@@ -416,38 +623,22 @@ pub fn networks() -> Result<Vec<Network>> {
         }
     }
 
-    let (ipv4_ifaces, _) = interfaces_with_ipv4();
-    let list = ipv4_ifaces.into_iter().map(|name| Network { name, trusted: true }).collect();
+    let list = interfaces().ipv4.into_iter().map(|name| Network { name, trusted: true }).collect();
     Ok(list)
 }
 
 pub fn adapters() -> Adapters {
-    let (ipv4_ifaces, mut vpn) = interfaces_with_ipv4();
-    let local_address = !ipv4_ifaces.is_empty();
+    let Interfaces { ipv4, mut vpn, tailnet } = interfaces();
 
     if !vpn && let Ok(entries) = fs::read_dir("/sys/class/net") {
-        for entry in entries.flatten() {
-            let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
-            let state = fs::read_to_string(entry.path().join("operstate"))
-                .unwrap_or_default()
-                .trim()
-                .to_ascii_lowercase();
-            if (state == "up" || state == "unknown")
-                && (name.starts_with("tun")
-                    || name.starts_with("tap")
-                    || name.starts_with("wg")
-                    || name.starts_with("tailscale")
-                    || name.starts_with("nordlynx")
-                    || name.starts_with("ppp")
-                    || name.starts_with("zt"))
-            {
-                vpn = true;
-                break;
-            }
-        }
+        let ifaces = entries.flatten().map(|entry| {
+            let state = fs::read_to_string(entry.path().join("operstate")).unwrap_or_default();
+            (entry.file_name().to_string_lossy().into_owned(), state)
+        });
+        vpn = sys_net_has_vpn(ifaces, tailnet.as_ref().map(|t| t.iface.as_str()));
     }
 
-    Adapters { local_address, vpn }
+    Adapters { local_address: !ipv4.is_empty(), vpn, tailnet }
 }
 
 /// Returns the names of optional session-relevant helper commands that are not
@@ -597,11 +788,7 @@ pub fn linux_checks() -> Vec<(String, String, bool, String, Option<&'static str>
 }
 
 pub fn build_ufw_fix_script(node_port: u16) -> String {
-    let mut ports = vec![DEFAULT_PORT];
-    if node_port != DEFAULT_PORT && node_port != MDNS_PORT && node_port > 0 {
-        ports.push(node_port);
-    }
-    let port_cmds: Vec<String> = ports
+    let port_cmds: Vec<String> = opened_ports(node_port)
         .iter()
         .map(|p| {
             format!(
@@ -619,10 +806,7 @@ pub fn build_ufw_fix_script(node_port: u16) -> String {
 }
 
 pub fn build_firewalld_fix_script(node_port: u16) -> String {
-    let mut ports = vec![DEFAULT_PORT];
-    if node_port != DEFAULT_PORT && node_port != MDNS_PORT && node_port > 0 {
-        ports.push(node_port);
-    }
+    let ports = opened_ports(node_port);
     let mut cmds = Vec::new();
     for cidr in ["192.168.0.0/16", "10.0.0.0/8", "172.16.0.0/12"] {
         for &p in &ports {
@@ -673,6 +857,35 @@ pub fn fix_firewall(_exe: &Path) -> Result<bool> {
         return Ok(false);
     }
     Ok(false)
+}
+
+/// The command that lets G7 Link in on Tailscale's interface `iface` with
+/// ufw, or `None` for a name that can't be an interface's: it goes into a
+/// root shell, so only 1 to 15 of `[A-Za-z0-9_.-]` pass.
+pub fn build_ufw_tailnet_script(iface: &str, port: u16) -> Option<String> {
+    let valid_name = (1..=15).contains(&iface.len())
+        && iface.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'-'));
+    (valid_name && port != 0).then(|| format!("ufw allow in on {iface} to any port {port} proto udp"))
+}
+
+/// Lets G7 Link in on Tailscale's interface with ufw (after the password
+/// prompt) and notes it, since the app can't read the rule back. Returns
+/// whether the rule was added.
+pub fn fix_firewall_tailnet() -> bool {
+    let Some(tailnet) = interfaces().tailnet else { return false };
+    let port = active_node_port();
+    let Some(script) = build_ufw_tailnet_script(&tailnet.iface, port) else {
+        tracing::warn!("Tailscale's interface has a name the firewall fix won't use");
+        return false;
+    };
+    if !matches!(super::elevated::run_elevated(Path::new("sh"), &["-c", &script]), Ok(0)) {
+        return false;
+    }
+    let marker = crate::core_host::host().data_dir.join(TAILNET_MARKER);
+    if let Err(error) = crate::atomic_file::write(&marker, format!("{} {port}\n", tailnet.iface).as_bytes()) {
+        tracing::warn!(%error, "can't note the Tailscale firewall rule");
+    }
+    true
 }
 
 pub fn open_firewall_settings() -> bool {
@@ -815,6 +1028,169 @@ To                         Action      From
         assert!(fwd_script.contains("port=\"45678\""));
         assert!(fwd_script.contains("family=\"ipv6\" source address=\"fe80::/10\""));
         assert!(fwd_script.ends_with("firewall-cmd --reload"));
+    }
+
+    #[test]
+    fn port_file_gives_the_ipv4_port_with_one_or_two_numbers() {
+        assert_eq!(parse_port_file("40314\n"), Some(40314));
+        assert_eq!(parse_port_file("40314 40315\n"), Some(40314));
+        assert_eq!(parse_port_file("  51000   51000  "), Some(51000));
+        assert_eq!(parse_port_file("0 40314"), None);
+        assert_eq!(parse_port_file(""), None);
+        assert_eq!(parse_port_file("port"), None);
+        assert_eq!(parse_port_file("70000"), None);
+    }
+
+    #[test]
+    fn only_an_entry_for_the_port_in_use_counts() {
+        // The installer's note names the default port; the node listens elsewhere.
+        assert!(!verified_lists_port("7718\n", 40314));
+        assert!(verified_lists_port("7718\n", 7718));
+        assert!(verified_lists_port("7718\n40314\n", 40314));
+        assert!(!verified_lists_port("", 40314));
+        assert!(!verified_lists_port("7718\n", 0));
+
+        let ufw = "\
+Status: active
+
+To                         Action      From
+--                         ------      ----
+7718/tcp                   ALLOW       192.168.0.0/16
+7718/udp                   ALLOW       192.168.0.0/16
+";
+        assert_eq!(
+            parse_ufw_status_for_port(ufw, 40314),
+            Some(Firewall { on: true, allowed: false, blocked: false })
+        );
+        assert_eq!(
+            parse_firewalld_output_for_port("running\n", "7718/tcp 7718/udp\n", "", 40314),
+            Firewall { on: true, allowed: false, blocked: false }
+        );
+        let rich = "rule family=\"ipv4\" source address=\"192.168.0.0/16\" port port=\"7718\" protocol=\"udp\" accept\n";
+        assert_eq!(
+            parse_firewalld_output_for_port("running\n", "", rich, 40314),
+            Firewall { on: true, allowed: false, blocked: false }
+        );
+    }
+
+    #[test]
+    fn the_fixes_open_the_default_and_the_node_port() {
+        assert_eq!(opened_ports(DEFAULT_PORT), [DEFAULT_PORT]);
+        assert_eq!(opened_ports(40314), [DEFAULT_PORT, 40314]);
+        assert_eq!(opened_ports(MDNS_PORT), [DEFAULT_PORT]);
+    }
+
+    #[test]
+    fn builds_the_tailscale_rule_for_a_plain_interface_name_only() {
+        assert_eq!(
+            build_ufw_tailnet_script("tailscale0", 41641).as_deref(),
+            Some("ufw allow in on tailscale0 to any port 41641 proto udp")
+        );
+        assert_eq!(
+            build_ufw_tailnet_script("ts_1.home-a", 41641).as_deref(),
+            Some("ufw allow in on ts_1.home-a to any port 41641 proto udp")
+        );
+        assert!(build_ufw_tailnet_script("abcdefghijklmno", 41641).is_some(), "15 characters");
+        for refused in [
+            "tailscale0; rm -rf /",
+            "",
+            "abcdefghijklmnop",
+            "tailscale 0",
+            "ts0$(reboot)",
+            "ts0`id`",
+            "ts0|sh",
+            "ts0&",
+            "ts0>x",
+            "'ts0'",
+            "ts0\n",
+            "tailscalé",
+        ] {
+            assert_eq!(build_ufw_tailnet_script(refused, 41641), None, "{refused:?}");
+        }
+        assert_eq!(build_ufw_tailnet_script("tailscale0", 0), None);
+    }
+
+    #[test]
+    fn the_tailscale_note_must_name_this_interface_and_port() {
+        assert!(tailnet_marker_matches("tailscale0 7718\n", "tailscale0", 7718));
+        assert!(tailnet_marker_matches("wg9 1\ntailscale0 41641\n", "tailscale0", 41641));
+        assert!(!tailnet_marker_matches("tailscale0 7718\n", "tailscale0", 40314));
+        assert!(!tailnet_marker_matches("tailscale0 7718\n", "tailscale1", 7718));
+        assert!(!tailnet_marker_matches("tailscale0 7718 extra\n", "tailscale0", 7718));
+        assert!(!tailnet_marker_matches("tailscale0\n", "tailscale0", 7718));
+        assert!(!tailnet_marker_matches("", "tailscale0", 7718));
+    }
+
+    #[test]
+    fn firewalld_allows_tailscale_in_the_trusted_zone_or_with_the_udp_port() {
+        assert!(firewalld_tailnet_allowed(Some("trusted"), "", 41641));
+        assert!(firewalld_tailnet_allowed(Some("public"), "22/tcp 41641/udp", 41641));
+        assert!(firewalld_tailnet_allowed(None, "41000-42000/udp", 41641));
+        assert!(!firewalld_tailnet_allowed(Some("public"), "41641/tcp", 41641));
+        assert!(!firewalld_tailnet_allowed(Some("public"), "7718/udp 41642-41700/udp", 41641));
+        assert!(!firewalld_tailnet_allowed(Some("home"), "", 41641));
+        assert!(!firewalld_ports_allow_udp("x-y/udp 41641 /udp", 41641));
+    }
+
+    fn entry(name: &str, addr: Option<&str>) -> (String, Option<IpAddr>) {
+        (name.into(), addr.map(|a| a.parse().unwrap()))
+    }
+
+    #[test]
+    fn tailscale_is_found_and_isnt_a_vpn() {
+        let entries = [
+            entry("wlp2s0", Some("192.168.1.20")),
+            entry("tailscale0", None),
+            entry("tailscale0", Some("fd7a:115c:a1e0::1")),
+            entry("tailscale0", Some("100.78.127.19")),
+            entry("tailscale0", Some("fe80::1")),
+        ];
+        let found = sort_interfaces(&entries, |_| false);
+        assert!(!found.vpn, "{found:?}");
+        assert_eq!(found.ipv4, ["wlp2s0"]);
+        assert_eq!(
+            found.tailnet,
+            Some(Tailnet { iface: "tailscale0".into(), addr: "100.78.127.19".parse().unwrap() })
+        );
+
+        // Any tunnel with a tailnet address is Tailscale's (another name, IPv6 only).
+        let entries = [entry("ts9", Some("fd7a:115c:a1e0::5")), entry("eth0", Some("10.0.0.2"))];
+        let found = sort_interfaces(&entries, |name| name == "ts9");
+        assert!(!found.vpn);
+        assert_eq!(
+            found.tailnet,
+            Some(Tailnet { iface: "ts9".into(), addr: "fd7a:115c:a1e0::5".parse().unwrap() })
+        );
+
+        // A carrier's 100.64/10 address on an ordinary interface isn't Tailscale.
+        let entries = [entry("wwan0", Some("100.70.1.2"))];
+        let found = sort_interfaces(&entries, |_| false);
+        assert_eq!(found.tailnet, None);
+        assert_eq!(found.ipv4, ["wwan0"]);
+    }
+
+    #[test]
+    fn other_vpns_are_still_vpns() {
+        // Tailscale's interface without a tailnet address is Tailscale turned off: no VPN.
+        let entries = [entry("tailscale0", Some("fe80::1")), entry("eth0", Some("192.168.1.2"))];
+        let found = sort_interfaces(&entries, |_| false);
+        assert!(!found.vpn);
+        assert_eq!(found.tailnet, None);
+        // WireGuard is one.
+        let entries = [entry("wg0", Some("10.8.0.2")), entry("tailscale0", Some("100.78.127.19"))];
+        let found = sort_interfaces(&entries, |_| true);
+        assert!(found.vpn);
+        assert!(found.tailnet.is_some());
+        assert!(found.ipv4.is_empty());
+
+        let sys = |list: &[(&str, &str)]| -> Vec<(String, String)> {
+            list.iter().map(|(n, s)| ((*n).to_owned(), format!("{s}\n"))).collect()
+        };
+        let listed = sys(&[("lo", "unknown"), ("wlp2s0", "up"), ("tailscale0", "unknown")]);
+        assert!(!sys_net_has_vpn(listed.clone(), Some("tailscale0")));
+        assert!(!sys_net_has_vpn(listed, None));
+        assert!(sys_net_has_vpn(sys(&[("tailscale0", "unknown"), ("wg0", "up")]), Some("tailscale0")));
+        assert!(!sys_net_has_vpn(sys(&[("wg0", "down")]), None));
     }
 
     #[test]

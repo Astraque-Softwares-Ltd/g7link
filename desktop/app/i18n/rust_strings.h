@@ -268,6 +268,10 @@ static const char *const g7link_rust_strings[] = {
     QT_TRANSLATE_NOOP("Doctor", "%1 · %2 ms"), // desktop/app/src/doctor.rs
     QT_TRANSLATE_NOOP("Doctor", "A VPN is on"), // desktop/app/src/doctor.rs
     QT_TRANSLATE_NOOP("Doctor", "A firewall rule blocks incoming G7 Link connections. Allow it, and your phone can connect."), // desktop/app/src/doctor.rs
+    QT_TRANSLATE_NOOP("Doctor", "At %1."), // desktop/app/src/doctor.rs
+    QT_TRANSLATE_NOOP("Doctor", "Away from home your phone reaches this PC at %1. Allow G7 Link on %2 once here."), // desktop/app/src/doctor.rs
+    QT_TRANSLATE_NOOP("Doctor", "Away from home your phone reaches this PC at %1. Allow UDP port %3 on %2 in your firewall."), // desktop/app/src/doctor.rs
+    QT_TRANSLATE_NOOP("Doctor", "Away from home, your phone reaches this PC through Tailscale"), // desktop/app/src/doctor.rs
     QT_TRANSLATE_NOOP("Doctor", "Calls and alerts can't play sound yet"), // desktop/app/src/linux/doctor.rs
     QT_TRANSLATE_NOOP("Doctor", "Connect it to the same Wi-Fi or wired network as your phone."), // desktop/app/src/doctor.rs
     QT_TRANSLATE_NOOP("Doctor", "Connected to %1"), // desktop/app/src/doctor.rs
@@ -303,6 +307,7 @@ static const char *const g7link_rust_strings[] = {
     QT_TRANSLATE_NOOP("Doctor", "The firewall blocks G7 Link"), // desktop/app/src/doctor.rs
     QT_TRANSLATE_NOOP("Doctor", "The firewall is off for this network"), // desktop/app/src/doctor.rs
     QT_TRANSLATE_NOOP("Doctor", "The firewall lets your phone connect"), // desktop/app/src/doctor.rs
+    QT_TRANSLATE_NOOP("Doctor", "The firewall may block your phone on Tailscale"), // desktop/app/src/doctor.rs
     QT_TRANSLATE_NOOP("Doctor", "The touchpad and keyboard on your phone need the desktop portal (xdg-desktop-portal) or access to /dev/uinput."), // desktop/app/src/linux/doctor.rs
     QT_TRANSLATE_NOOP("Doctor", "This PC can see %1 announce itself on the network, but the router is blocking devices from talking directly to each other (often called AP Isolation, Client Isolation, or Guest Wi-Fi). Move both devices off any Guest Wi-Fi network, turn off AP / Client Isolation in your router's Wi-Fi settings, or connect with a USB cable."), // desktop/app/src/doctor.rs
     QT_TRANSLATE_NOOP("Doctor", "This PC isn't on a network"), // desktop/app/src/doctor.rs

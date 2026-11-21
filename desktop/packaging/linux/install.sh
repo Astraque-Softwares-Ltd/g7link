@@ -454,17 +454,32 @@ firewall_kind() {
     fi
 }
 
-# Tells the app the firewall was opened (it can't read the rules itself).
-remember_firewall() {
+# Tells the app what was opened in the firewall (it can't read the rules
+# itself): writes the line $2 to the file $1 in its data folder, as the user.
+remember() {
     [ -n "$TARGET_HOME" ] || return 0
     dir="${XDG_DATA_HOME:-$TARGET_HOME/.local/share}/G7Link"
     if [ "$(id -u)" -eq 0 ] && [ "$TARGET_USER" != "root" ]; then
         # The user's shell expands these, so a quote in the folder name stays a quote.
         # shellcheck disable=SC2016
-        NL_DIR="$dir" NL_PORT="$DATA_PORT" su -s /bin/sh "$TARGET_USER" \
-            -c 'mkdir -p "$NL_DIR" && printf "%s\n" "$NL_PORT" > "$NL_DIR/firewall_verified"' 2>/dev/null || true
+        NL_DIR="$dir" NL_FILE="$1" NL_LINE="$2" su -s /bin/sh "$TARGET_USER" \
+            -c 'mkdir -p "$NL_DIR" && printf "%s\n" "$NL_LINE" > "$NL_DIR/$NL_FILE"' 2>/dev/null || true
     elif [ "$(id -u)" -ne 0 ]; then
-        if mkdir -p "$dir"; then printf '%s\n' "$DATA_PORT" > "$dir/firewall_verified" || true; fi
+        if mkdir -p "$dir"; then printf '%s\n' "$2" > "$dir/$1" || true; fi
+    fi
+}
+
+remember_firewall() { remember firewall_verified "$DATA_PORT"; }
+
+# Tailscale's interface, which phones use away from home. Tailscale's own
+# rules may let everything in on it already; then this rule changes nothing.
+allow_tailnet() {
+    [ -e /sys/class/net/tailscale0 ] || return 0
+    if admin ufw allow in on tailscale0 to any port "$DATA_PORT" proto udp; then
+        remember firewall_tailnet "tailscale0 $DATA_PORT"
+        good "Ready: your phone can reach this PC through Tailscale too"
+    else
+        note "Couldn't allow G7 Link on Tailscale; the Connection Doctor in G7 Link can do it later."
     fi
 }
 
@@ -481,6 +496,7 @@ setup_firewall() {
             done || { note "Some rules didn't apply; G7 Link's Settings can fix this later."; return 0; }
             remember_firewall
             good "Ready: phones on your network can reach this PC"
+            allow_tailnet
             ;;
         firewalld)
             say "Opening G7 Link's ports to your local network only"
@@ -602,6 +618,9 @@ uninstall() {
                 # shellcheck disable=SC2086
                 admin $rule || true
             done
+            # The rule for Tailscale, if the installer added it; it may not be there.
+            admin ufw delete allow in on tailscale0 to any port "$DATA_PORT" proto udp || true
+            rm -f "$user_share/G7Link/firewall_tailnet" 2>/dev/null || true
             good "G7 Link's ports are closed again"
             ;;
         firewalld)
