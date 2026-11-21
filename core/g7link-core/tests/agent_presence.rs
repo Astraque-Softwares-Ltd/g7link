@@ -224,7 +224,18 @@ async fn presence_reaches_a_phone_with_agents_on_and_sessions_only_with_agent_se
 
     pc.node.set_device_toggle(phone_id, agent::SESSIONS_TOGGLE, true).unwrap();
     pc.node.agent_presence(said(&[A], &[SESSION])).unwrap();
-    assert_eq!(next_presence(&mut phone, pc_id).await.sessions, [SESSION]);
+    // The toggle can replay the last presence first; the new one carries the session.
+    let got = wait_for(&mut phone, "agent.presence with the session", |e| match e {
+        NodeEvent::AgentPresence { device, presence }
+            if *device == pc_id && !presence.sessions.is_empty() =>
+        {
+            Some(presence.clone())
+        }
+        _ => None,
+    })
+    .await;
+    assert_eq!(got.sessions, [SESSION]);
+    assert_eq!(got.viewing, [A]);
 
     // Made to fit on the PC: no path, four at most, nobody at a locked PC.
     let mut many = said(&["/home/me/g7linux", A, A, B, C, D, "1111"], &[]);
