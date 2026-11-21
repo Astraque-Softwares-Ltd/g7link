@@ -4,7 +4,7 @@ All notable changes to G7 Link. Versions follow
 [semantic versioning](https://semver.org); before 1.0, a minor version may
 change things that need a step from you, and its notes say so.
 
-## 0.1.22 (unreleased)
+## 0.1.22 (2026-11-21)
 
 Talk to your agents and hear back, hand a thread between the PC and the
 phone, and take a photo for an agent with the phone's camera.
