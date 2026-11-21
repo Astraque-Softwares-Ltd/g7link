@@ -507,7 +507,8 @@ Item {
         ble_link: qsTr("Bluetooth link"),
         agents: qsTr("Agents"),
         agent_push: qsTr("Push and open pull requests"),
-        agent_sessions: qsTr("Sessions on this PC")
+        agent_sessions: qsTr("Sessions on this PC"),
+        agent_reply: qsTr("Reply to sessions on this PC")
     })
     readonly property var toggleDetails: ({
         notifications: qsTr("Show on this PC"),
@@ -533,7 +534,8 @@ Item {
         ble_link: qsTr("Its touchpad and keyboard, ringing it, its hotspot and small copied text over Bluetooth. Turn it on on the phone too"),
         agents: qsTr("Start and answer coding agents from this phone"),
         agent_push: qsTr("This phone can push commits and open pull requests from your threads. It asks on the phone each time and tells you here."),
-        agent_sessions: qsTr("See Claude and Codex sessions you started on this PC yourself")
+        agent_sessions: qsTr("See Claude and Codex sessions you started on this PC yourself"),
+        agent_reply: qsTr("Type replies into those sessions' terminal windows. Never while the PC is locked or in use")
     })
     readonly property var toggleTints: ({
         notifications: Theme.tintBlue,
@@ -559,10 +561,11 @@ Item {
         ble_link: Theme.tintBlue,
         agents: Theme.tintLavender,
         agent_push: Theme.tintLavender,
-        agent_sessions: Theme.tintLavender
+        agent_sessions: Theme.tintLavender,
+        agent_reply: Theme.tintLavender
     })
     // Higher-trust access: off until the user turns it on.
-    readonly property var optInKeys: ["remote_input", "remote_files", "pc_mirror", "pc_actions", "commands", "storage", "ble_link", "agents", "agent_push", "agent_sessions"]
+    readonly property var optInKeys: ["remote_input", "remote_files", "pc_mirror", "pc_actions", "commands", "storage", "ble_link", "agents", "agent_push", "agent_sessions", "agent_reply"]
 
     readonly property var toggleIcons: ({
         notifications: Icons.bell,
@@ -588,7 +591,8 @@ Item {
         ble_link: Icons.bluetooth,
         agents: Icons.terminal,
         agent_push: AgentGitGlyphs.up,
-        agent_sessions: Icons.terminal
+        agent_sessions: Icons.terminal,
+        agent_reply: Icons.terminal
     })
 
     FolderDialog {

@@ -5,7 +5,7 @@ import QtQuick.Layouts
 import app.g7link
 
 // The Agents page's setup: the agent service, the agents and how they're
-// signed in, the folders they may work in, each phone's two switches, and
+// signed in, the folders they may work in, each phone's three switches, and
 // following sessions started outside G7. No row has a free-width slot: text
 // takes the room left by fixed controls, paths are one line cut in the
 // middle (the whole path shows on hover), and commands wrap anywhere.
@@ -515,7 +515,7 @@ Column {
         }
     }
 
-    // ---- Phones: each one's two switches ----
+    // ---- Phones: each one's three switches ----
     Column {
         visible: DeviceList.count > 0
         width: parent.width
@@ -550,7 +550,33 @@ Column {
                         onToggled: (on) => AppController.setDeviceToggle(phone.deviceId, "agent_sessions", on)
                     }
                 }
+                Line {
+                    id: replyLine
+                    readonly property bool sessionsOn: phone.agentsOn && area.toggleOn(phone.deviceId, "agent_sessions")
+                    indent: 30
+                    title: qsTr("%1 can reply to sessions on this PC").arg(phone.name)
+                    description: qsTr("Brings the session's terminal window forward, pastes the reply and presses Enter. Never while the PC is locked or in use.")
+                    Toggle {
+                        enabled: replyLine.sessionsOn
+                        label: qsTr("%1 can reply to sessions on this PC").arg(phone.name)
+                        checked: replyLine.sessionsOn && area.toggleOn(phone.deviceId, "agent_reply")
+                        onToggled: (on) => AppController.setDeviceToggle(phone.deviceId, "agent_reply", on)
+                    }
+                }
             }
+        }
+        // Replies need the companion extension's PRIMARY write and window
+        // states, and the virtual keyboard.
+        Line {
+            visible: area.setup.reply === "extension" || area.setup.reply === "keyboard"
+            indent: 30
+            iconPath: Icons.info
+            title: area.setup.reply === "keyboard"
+                ? qsTr("Replies from phones can't type on this PC")
+                : qsTr("Replies from phones need the G7 Linux Companion 1.5")
+            description: area.setup.reply === "keyboard"
+                ? qsTr("G7 Link can't make its virtual keyboard here. Allow it to use /dev/uinput.")
+                : qsTr("Update or turn on the GNOME Shell extension. Until then, phones can read sessions but not reply to them.")
         }
     }
 

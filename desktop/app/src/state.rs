@@ -296,6 +296,9 @@ pub struct AppState {
     /// Phone asking to see sessions started on this PC for the first time
     /// while `agent_sessions` is off (`agents` on).
     pub agent_sessions_prompt: Option<DeviceId>,
+    /// Phone asking to reply into sessions started on this PC for the first
+    /// time while `agent_reply` is off (`agents` and `agent_sessions` on).
+    pub agent_reply_prompt: Option<DeviceId>,
     /// Phone asking to use Bluetooth with this PC while `ble_link` is off.
     pub ble_prompt: Option<DeviceId>,
     /// Phone asking to view this PC's screen while `pc_mirror` is off.
@@ -419,6 +422,10 @@ impl AppState {
                 }
                 if self.agent_sessions_prompt == Some(*id) {
                     self.agent_sessions_prompt = None;
+                    changes |= Changes::REMOTE;
+                }
+                if self.agent_reply_prompt == Some(*id) {
+                    self.agent_reply_prompt = None;
                     changes |= Changes::REMOTE;
                 }
                 if self.ble_prompt == Some(*id) {
@@ -548,6 +555,13 @@ impl AppState {
                     return Changes::NONE;
                 }
                 self.agent_sessions_prompt = Some(*device);
+                Changes::REMOTE
+            }
+            NodeEvent::AgentReplyRequested { device } => {
+                if self.agent_reply_prompt == Some(*device) {
+                    return Changes::NONE;
+                }
+                self.agent_reply_prompt = Some(*device);
                 Changes::REMOTE
             }
             NodeEvent::BleLinkRequested { device } => {
@@ -1378,6 +1392,19 @@ mod tests {
         assert_eq!(s.agents_prompt, None, "its own prompt, not the first one");
         assert!(s.apply(&NodeEvent::DeviceRemoved(id)).intersects(Changes::REMOTE));
         assert_eq!(s.agent_sessions_prompt, None);
+    }
+
+    #[test]
+    fn the_reply_prompt_appears_once_and_clears_on_unpair() {
+        let mut s = AppState::default();
+        s.apply(&NodeEvent::DeviceAdded(paired(7, 10)));
+        let id = DeviceId([7; 32]);
+        assert_eq!(s.apply(&NodeEvent::AgentReplyRequested { device: id }), Changes::REMOTE);
+        assert_eq!(s.agent_reply_prompt, Some(id));
+        assert_eq!(s.apply(&NodeEvent::AgentReplyRequested { device: id }), Changes::NONE, "once");
+        assert_eq!(s.agent_sessions_prompt, None, "its own prompt, not the sessions one");
+        assert!(s.apply(&NodeEvent::DeviceRemoved(id)).intersects(Changes::REMOTE));
+        assert_eq!(s.agent_reply_prompt, None);
     }
 
     #[test]

@@ -103,6 +103,10 @@ pub mod qobject {
         /// this PC while its `agent_sessions` toggle is off ("" when none).
         #[qproperty(QString, agent_sessions_prompt_device_id)]
         #[qproperty(QString, agent_sessions_prompt_device_name)]
+        /// Device ID and name of a phone asking to reply into sessions started
+        /// on this PC while its `agent_reply` toggle is off ("" when none).
+        #[qproperty(QString, agent_reply_prompt_device_id)]
+        #[qproperty(QString, agent_reply_prompt_device_name)]
         /// Device ID and name of a phone asking to view this PC's screen
         /// while `pc_mirror` is off ("" when none), plus active sharing indicator.
         #[qproperty(QString, pc_mirror_prompt_device_id)]
@@ -234,6 +238,13 @@ pub mod qobject {
         /// Closes the sessions prompt without allowing it.
         #[qinvokable]
         fn dismiss_agent_sessions_prompt(self: Pin<&mut AppController>);
+        /// Lets the phone in the reply prompt type replies into sessions on
+        /// this PC (turns its `agent_reply` toggle on), then closes the prompt.
+        #[qinvokable]
+        fn allow_agent_reply_prompt(self: Pin<&mut AppController>);
+        /// Closes the reply prompt without allowing it.
+        #[qinvokable]
+        fn dismiss_agent_reply_prompt(self: Pin<&mut AppController>);
         /// Lets a paired phone use Bluetooth with this PC (from its prompt sheet).
         #[qinvokable]
         fn allow_ble_link(self: Pin<&mut AppController>, device: &QString);
@@ -515,6 +526,8 @@ pub struct AppControllerRust {
     agents_prompt_device_name: QString,
     agent_sessions_prompt_device_id: QString,
     agent_sessions_prompt_device_name: QString,
+    agent_reply_prompt_device_id: QString,
+    agent_reply_prompt_device_name: QString,
     pc_mirror_prompt_device_id: QString,
     pc_mirror_prompt_device_name: QString,
     pc_mirror_active: bool,
@@ -1251,6 +1264,7 @@ impl qobject::AppController {
             remote_prompt,
             agents_prompt,
             agent_sessions_prompt,
+            agent_reply_prompt,
             ble_prompt,
             pc_mirror_prompt,
             pc_mirror_peer_name,
@@ -1272,6 +1286,10 @@ impl qobject::AppController {
                 (id.to_string(), name)
             });
             let agent_sessions_prompt = s.agent_sessions_prompt.map(|id| {
+                let name = s.name_of(&id).unwrap_or_else(|| id.short());
+                (id.to_string(), name)
+            });
+            let agent_reply_prompt = s.agent_reply_prompt.map(|id| {
                 let name = s.name_of(&id).unwrap_or_else(|| id.short());
                 (id.to_string(), name)
             });
@@ -1319,6 +1337,7 @@ impl qobject::AppController {
                 remote_prompt,
                 agents_prompt,
                 agent_sessions_prompt,
+                agent_reply_prompt,
                 ble_prompt,
                 pc_mirror_prompt,
                 pc_mirror_peer_name,
@@ -1360,6 +1379,9 @@ impl qobject::AppController {
         let (sessions_prompt_id, sessions_prompt_name) = agent_sessions_prompt.unwrap_or_default();
         self.as_mut().set_agent_sessions_prompt_device_id(QString::from(&sessions_prompt_id));
         self.as_mut().set_agent_sessions_prompt_device_name(QString::from(&sessions_prompt_name));
+        let (reply_prompt_id, reply_prompt_name) = agent_reply_prompt.unwrap_or_default();
+        self.as_mut().set_agent_reply_prompt_device_id(QString::from(&reply_prompt_id));
+        self.as_mut().set_agent_reply_prompt_device_name(QString::from(&reply_prompt_name));
         let (ble_prompt_id, ble_prompt_name) = ble_prompt.unwrap_or_default();
         self.as_mut().set_ble_prompt_device_id(QString::from(&ble_prompt_id));
         self.as_mut().set_ble_prompt_device_name(QString::from(&ble_prompt_name));
@@ -1734,6 +1756,24 @@ impl qobject::AppController {
         });
     }
 
+    pub fn allow_agent_reply_prompt(mut self: Pin<&mut Self>) {
+        let Some(id) = core_host::host().hub.read(|s| s.agent_reply_prompt) else { return };
+        self.as_mut().set_device_toggle(
+            &QString::from(&id.to_string()),
+            &QString::from(g7link_core::session_reply::TOGGLE),
+            true,
+        );
+        core_host::host()
+            .hub
+            .update(|s| if s.agent_reply_prompt.take().is_some() { Changes::REMOTE } else { Changes::NONE });
+    }
+
+    pub fn dismiss_agent_reply_prompt(self: Pin<&mut Self>) {
+        core_host::host()
+            .hub
+            .update(|s| if s.agent_reply_prompt.take().is_some() { Changes::REMOTE } else { Changes::NONE });
+    }
+
     pub fn allow_ble_link(mut self: Pin<&mut Self>, device: &QString) {
         self.as_mut().set_device_toggle(device, &QString::from(g7link_core::BLE_LINK_TOGGLE), true);
     }
@@ -1865,6 +1905,16 @@ impl qobject::AppController {
             core_host::host().hub.update(|s| {
                 if s.agent_sessions_prompt == Some(id) {
                     s.agent_sessions_prompt = None;
+                    Changes::REMOTE
+                } else {
+                    Changes::NONE
+                }
+            });
+        }
+        if name_str == g7link_core::session_reply::TOGGLE && on {
+            core_host::host().hub.update(|s| {
+                if s.agent_reply_prompt == Some(id) {
+                    s.agent_reply_prompt = None;
                     Changes::REMOTE
                 } else {
                     Changes::NONE

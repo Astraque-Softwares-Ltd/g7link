@@ -206,6 +206,11 @@ pub fn compute_capabilities(node: Option<&Node>) -> Vec<String> {
         if crate::agents::offers_control() {
             caps.push(g7link_core::agent::CONTROL.into());
         }
+        // Replies typed into sessions here, while the window backend and the
+        // virtual keyboard can do it (§9).
+        if crate::agents::reply::offered() {
+            caps.push(g7link_core::session_reply::CAP.into());
+        }
     }
     caps
 }

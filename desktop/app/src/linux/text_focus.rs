@@ -14,6 +14,11 @@
 //! phone is told. Chromium and Electron apps publish their windows but build
 //! the rest only when asked: while a phone watches, the app that has the
 //! focus is asked once ([`wake`]), unless the user turned that off.
+//!
+//! For a phone's reply into a session (`agents::reply`), it also reads the
+//! text of a terminal app's one exposed terminal per window, bounded in
+//! size and time, to prove which session is on screen. That text is
+//! compared and dropped: never kept, logged or sent.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -99,6 +104,21 @@ const WINDOW_GRACE: Duration = Duration::from_millis(150);
 /// cutting to the protocol's byte limits.
 const READ_BEFORE: i32 = 2048;
 const READ_AFTER: i32 = 512;
+/// A terminal's text read for a reply's proof: at most this many bytes of
+/// its end, the windows looked at, the objects walked, and how long it may
+/// all take.
+const TERMINAL_TEXT_BYTES: usize = 64 * 1024;
+const TERMINAL_TEXT_CHARS: i32 = 64 * 1024;
+const TERMINAL_FRAMES: usize = 16;
+const TERMINAL_NODES: usize = 4000;
+const TERMINAL_DEPTH: usize = 40;
+const TERMINAL_TIME: Duration = Duration::from_millis(500);
+/// Each call of that look: an app that takes longer isn't waited for.
+const TERMINAL_CALL: Duration = Duration::from_millis(150);
+/// Terminals looked at in one window (GNOME Terminal keeps every tab's).
+const TERMINALS_SEEN: usize = 32;
+/// Between looks for the focused terminal of a window just brought forward.
+const TERMINAL_RETRY: Duration = Duration::from_millis(100);
 
 /// The object that has the focus.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -219,6 +239,18 @@ struct Bursts {
 }
 
 impl Bursts {
+    /// Whether input at `activity` was the phone's: while it types, or in
+    /// the time around its last burst.
+    fn holds(&self, activity: Instant) -> bool {
+        if self.active > 0 {
+            return true;
+        }
+        match (self.started, self.ended) {
+            (Some(started), Some(ended)) => activity + OURS_BEFORE >= started && activity <= ended + OURS_FOR,
+            _ => false,
+        }
+    }
+
     /// Whether the PC's last input, at `activity`, was someone at the PC
     /// rather than the phone, when the phone has watched since `since`.
     fn someone_else(&self, activity: Instant, since: Option<Instant>) -> bool {
@@ -231,6 +263,24 @@ impl Bursts {
         };
         !ours
     }
+}
+
+/// Whether someone used this PC's own keyboard or mouse within `within`,
+/// not counting a phone's input; `None` when the desktop doesn't say how
+/// long it has been idle.
+pub fn someone_at_pc(within: Duration) -> Option<bool> {
+    let idle = Duration::from_millis(super::input::idle_ms()?);
+    if idle >= within {
+        return Some(false);
+    }
+    let Some(activity) = Instant::now().checked_sub(idle) else { return Some(true) };
+    let bursts = *BURSTS.lock().unwrap_or_else(|e| e.into_inner());
+    Some(!bursts.holds(activity))
+}
+
+/// Whether a phone's input is being typed now.
+pub fn phone_typing() -> bool {
+    BURSTS.lock().unwrap_or_else(|e| e.into_inner()).active > 0
 }
 
 /// While this lives, the phone's input is being typed.
@@ -307,16 +357,17 @@ pub fn watch(editable: fn(bool), state: fn(RemoteTextState), keep_icon: fn(Strin
 
 /// The accessibility bus, which is separate from the session bus.
 fn a11y_bus() -> Option<zbus::blocking::Connection> {
+    a11y_bus_waiting(CALL_TIMEOUT)
+}
+
+/// [`a11y_bus`], where an app has `timeout` to answer each call.
+fn a11y_bus_waiting(timeout: Duration) -> Option<zbus::blocking::Connection> {
     let session = zbus::blocking::Connection::session().ok()?;
     let reply = session
         .call_method(Some("org.a11y.Bus"), "/org/a11y/bus", Some("org.a11y.Bus"), "GetAddress", &())
         .ok()?;
     let address: String = reply.body().deserialize().ok()?;
-    zbus::blocking::connection::Builder::address(address.as_str())
-        .ok()?
-        .method_timeout(CALL_TIMEOUT)
-        .build()
-        .ok()
+    zbus::blocking::connection::Builder::address(address.as_str()).ok()?.method_timeout(timeout).build().ok()
 }
 
 /// The reading connection, made again after it failed. It's also the one
@@ -1206,6 +1257,147 @@ fn property<T: TryFrom<OwnedValue>>(
     T::try_from(value).ok()
 }
 
+/// A window of a terminal app with one exposed terminal (in Ptyxis, the
+/// selected tab's): its title, whether it's the app's active window, and
+/// the end of the terminal's text. Compared, then dropped; never logged.
+#[derive(Clone, PartialEq, Eq)]
+pub struct TerminalFrame {
+    pub title: String,
+    pub active: bool,
+    pub text: String,
+}
+
+impl std::fmt::Debug for TerminalFrame {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TerminalFrame")
+            .field("active", &self.active)
+            .field("text_len", &self.text.len())
+            .finish()
+    }
+}
+
+/// Each window of the app with `pid` that shows exactly one terminal, read
+/// without bringing any forward. `None` when the app isn't on the
+/// accessibility bus or the look ran out of time.
+pub fn terminal_frames(pid: u32) -> Option<Vec<TerminalFrame>> {
+    let deadline = Instant::now() + TERMINAL_TIME;
+    super::non_tokio(move || {
+        let conn = a11y_bus_waiting(TERMINAL_CALL)?;
+        let app = app_of(&conn, pid)?;
+        let mut frames = Vec::new();
+        for frame in children(&conn, &app)?.into_iter().take(TERMINAL_FRAMES) {
+            if Instant::now() > deadline {
+                return None;
+            }
+            let Some(found) = one_terminal(&conn, &frame, deadline) else { continue };
+            let states = call::<Vec<u32>>(&conn, &frame, ACCESSIBLE, "GetState", &()).unwrap_or_default();
+            let Some(text) = terminal_tail(&conn, &found.terminal) else { continue };
+            let title = property::<String>(&conn, &frame, ACCESSIBLE, "Name").unwrap_or_default();
+            frames.push(TerminalFrame { title, active: has_state(&states, STATE_ACTIVE), text });
+        }
+        Some(frames)
+    })
+}
+
+/// The end of the text of the focused terminal in the active window of the
+/// app with `pid`, at most 64 KiB, within 500 ms. `None` when no window of
+/// it is active, the active one doesn't show exactly one terminal, the
+/// keyboard isn't in it, or it can't be read.
+pub fn focused_terminal_text(pid: u32) -> Option<String> {
+    let deadline = Instant::now() + TERMINAL_TIME;
+    super::non_tokio(move || {
+        let conn = a11y_bus_waiting(TERMINAL_CALL)?;
+        let app = app_of(&conn, pid)?;
+        // A window just brought forward tells its toolkit a moment later.
+        loop {
+            if let Some(text) = focused_terminal_in(&conn, &app, deadline) {
+                return Some(text);
+            }
+            if Instant::now() + TERMINAL_RETRY > deadline {
+                return None;
+            }
+            std::thread::sleep(TERMINAL_RETRY);
+        }
+    })
+}
+
+fn focused_terminal_in(conn: &zbus::blocking::Connection, app: &Object, deadline: Instant) -> Option<String> {
+    let frame = children(conn, app)?.into_iter().take(TERMINAL_FRAMES).find(|frame| {
+        call::<Vec<u32>>(conn, frame, ACCESSIBLE, "GetState", &())
+            .is_some_and(|states| has_state(&states, STATE_ACTIVE))
+    })?;
+    let found = one_terminal(conn, &frame, deadline)?;
+    has_state(&found.states, STATE_FOCUSED).then_some(())?;
+    terminal_tail(conn, &found.terminal)
+}
+
+/// The accessibility bus root of the app with `pid`.
+fn app_of(conn: &zbus::blocking::Connection, pid: u32) -> Option<Object> {
+    if pid == 0 {
+        return None;
+    }
+    let dbus = zbus::blocking::fdo::DBusProxy::new(conn).ok()?;
+    let name = dbus.list_names().ok()?.into_iter().find(|name| {
+        name.starts_with(':') && dbus.get_connection_unix_process_id(name.inner().clone()).ok() == Some(pid)
+    })?;
+    let root = Object { sender: name.to_string(), path: ROOT_PATH.into() };
+    (role(conn, &root) == Some(ROLE_APPLICATION)).then_some(root)
+}
+
+#[derive(Debug)]
+struct FoundTerminal {
+    terminal: Object,
+    states: Vec<u32>,
+}
+
+/// The one terminal `frame` shows, with its states: the only terminal under
+/// it, or of several (GNOME Terminal's tabs), the only one showing. `None`
+/// for none, two showing, or a walk that ran out of objects or time.
+fn one_terminal(
+    conn: &zbus::blocking::Connection,
+    frame: &Object,
+    deadline: Instant,
+) -> Option<FoundTerminal> {
+    let mut found: Vec<FoundTerminal> = Vec::new();
+    let mut stack = vec![(frame.clone(), 0usize)];
+    let mut seen = 0;
+    while let Some((object, depth)) = stack.pop() {
+        seen += 1;
+        if seen > TERMINAL_NODES || Instant::now() > deadline {
+            return None;
+        }
+        if role(conn, &object) == Some(ROLE_TERMINAL) {
+            if found.len() >= TERMINALS_SEEN {
+                return None;
+            }
+            let states = call::<Vec<u32>>(conn, &object, ACCESSIBLE, "GetState", &()).unwrap_or_default();
+            found.push(FoundTerminal { terminal: object, states });
+            continue;
+        }
+        if depth < TERMINAL_DEPTH
+            && let Some(kids) = children(conn, &object)
+        {
+            stack.extend(kids.into_iter().rev().map(|kid| (kid, depth + 1)));
+        }
+    }
+    shown_terminal(found)
+}
+
+fn shown_terminal(mut found: Vec<FoundTerminal>) -> Option<FoundTerminal> {
+    if found.len() > 1 {
+        found.retain(|t| has_state(&t.states, STATE_SHOWING));
+    }
+    if found.len() == 1 { found.pop() } else { None }
+}
+
+/// The last characters of a terminal's text, cut to [`TERMINAL_TEXT_BYTES`].
+fn terminal_tail(conn: &zbus::blocking::Connection, terminal: &Object) -> Option<String> {
+    let count = property::<i32>(conn, terminal, TEXT, "CharacterCount")?.max(0);
+    let from = count.saturating_sub(TERMINAL_TEXT_CHARS).max(0);
+    let text: String = call(conn, terminal, TEXT, "GetText", &(from, count))?;
+    Some(cut_front(&text, TERMINAL_TEXT_BYTES).0)
+}
+
 /// `text` cut to at most `max` bytes, on a character boundary.
 fn cut(text: &str, max: usize) -> String {
     let end = (0..=max.min(text.len())).rev().find(|&i| text.is_char_boundary(i)).unwrap_or(0);
@@ -1261,6 +1453,44 @@ mod tests {
         assert!(!burst.someone_else(at(1400), since), "a key a busy compositor handled late");
         assert!(burst.someone_else(at(1500), since));
         assert!(burst.someone_else(at(900), since), "well before it");
+    }
+
+    #[test]
+    fn a_reply_tells_the_phones_input_from_someone_at_the_pc() {
+        let t0 = Instant::now();
+        let at = |ms: u64| t0 + Duration::from_millis(ms);
+        let quiet = Bursts { active: 0, started: None, ended: None };
+        assert!(!quiet.holds(at(100)));
+        let typing = Bursts { active: 1, started: Some(at(1000)), ended: None };
+        assert!(typing.holds(at(5000)));
+        let burst = Bursts { active: 0, started: Some(at(1000)), ended: Some(at(1040)) };
+        assert!(burst.holds(at(960)) && burst.holds(at(1020)) && burst.holds(at(1400)));
+        assert!(!burst.holds(at(1500)));
+        assert!(!burst.holds(at(900)));
+    }
+
+    #[test]
+    fn a_window_shows_one_terminal() {
+        let terminal = |path: &str, showing: bool| FoundTerminal {
+            terminal: Object { sender: ":1.5".into(), path: path.into() },
+            states: if showing { vec![1 << STATE_SHOWING] } else { vec![0] },
+        };
+        let path = |t: Option<FoundTerminal>| t.map(|t| t.terminal.path);
+        // Ptyxis: the selected tab's only, whatever its states say.
+        assert_eq!(path(shown_terminal(vec![terminal("/a", false)])), Some("/a".into()));
+        // GNOME Terminal: every tab's, one showing.
+        let tabs = vec![terminal("/a", false), terminal("/b", true), terminal("/c", false)];
+        assert_eq!(path(shown_terminal(tabs)), Some("/b".into()));
+        assert_eq!(path(shown_terminal(vec![terminal("/a", true), terminal("/b", true)])), None, "split");
+        assert_eq!(path(shown_terminal(vec![terminal("/a", false), terminal("/b", false)])), None);
+        assert_eq!(path(shown_terminal(Vec::new())), None);
+    }
+
+    #[test]
+    fn a_terminal_frame_shows_no_text_in_logs() {
+        let frame = TerminalFrame { title: "claude".into(), active: true, text: "my secret".into() };
+        let shown = format!("{frame:?}");
+        assert!(!shown.contains("secret") && !shown.contains("claude"), "{shown}");
     }
 
     #[test]

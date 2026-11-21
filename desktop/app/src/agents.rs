@@ -56,6 +56,7 @@ mod history_page;
 #[cfg(test)]
 mod history_tests;
 mod presence;
+pub(crate) mod reply;
 mod rows;
 pub(crate) mod source;
 mod source_relay;
@@ -1444,6 +1445,7 @@ pub fn host_installed() -> bool {
 pub fn start() {
     core_host::spawn(run());
     presence::start();
+    reply::watch_setup();
     source::load_prefs();
     core_host::spawn(async {
         let read = tokio::task::spawn_blocking(|| {
@@ -3084,6 +3086,11 @@ async fn run_request(from: DeviceId, request: AgentRequest) -> Result<AgentReply
         | AgentRequest::PrCreate { .. }
         | AgentRequest::PrList { .. }
         | AgentRequest::Ask { .. }) => return source_relay::phone(from, &client, request).await,
+        // Reply on the PC (§9): into the session's own window, never through the host.
+        AgentRequest::SessionReply { session: session_id, text, confirm } => {
+            let folder = lock().sessions.iter().find(|s| s.id == session_id).map(|s| s.folder_label.clone());
+            return reply::phone(from, &client, folder, session_id, text, confirm).await;
+        }
     })
 }
 
@@ -3564,6 +3571,9 @@ fn setup_json(s: &BridgeState, home: Option<&std::path::Path>) -> String {
         "followUp": word(&s.prefs.follow_up),
         "history": s.history,
         "undo": s.undo,
+        // Replies from phones into sessions here: "ready", "extension" (the
+        // companion is missing or older than 1.5), "keyboard", or "" (not asked).
+        "reply": reply::setup(),
         "store": s.store.map_or_else(|| json!({}), |i| json!({
             "threads": i.threads,
             "archived": i.archived,

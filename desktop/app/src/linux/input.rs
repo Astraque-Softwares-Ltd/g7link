@@ -1319,6 +1319,65 @@ fn session_locked_cached() -> bool {
 /// Why typing from a phone didn't happen.
 pub const LOCKED: &str = "this PC is locked";
 
+/// Whether this session is locked, asked of logind now; `None` when it
+/// didn't say. A phone's reply into a session takes that as locked.
+pub(crate) fn lock_state() -> Option<bool> {
+    super::non_tokio(|| {
+        let conn = zbus::blocking::Connection::system().ok()?;
+        let session = zbus::blocking::Proxy::new(
+            &conn,
+            "org.freedesktop.login1",
+            "/org/freedesktop/login1/session/auto",
+            "org.freedesktop.login1.Session",
+        )
+        .ok()?;
+        session.get_property::<bool>("LockedHint").ok()
+    })
+}
+
+/// A key a phone's reply into a session presses (`agents::reply`): the
+/// paste chord and Enter, nothing else.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReplyKey {
+    /// Shift+Insert: VTE terminals paste PRIMARY.
+    Paste,
+    Enter,
+}
+
+const KEY_INSERT: u16 = 110;
+
+/// The evdev key and modifiers of a reply's key.
+fn reply_chord(key: ReplyKey) -> (u16, &'static [u16]) {
+    const SHIFT: &[u16] = &[42];
+    match key {
+        ReplyKey::Paste => (KEY_INSERT, SHIFT),
+        ReplyKey::Enter => (KEY_ENTER, &[]),
+    }
+}
+
+/// Makes the virtual keyboard a reply presses its keys with, waiting for the
+/// desktop to take it; false when this PC can't have one.
+pub fn reply_keyboard() -> bool {
+    with_uinput(|_| true)
+}
+
+/// Whether a reply's virtual keyboard can be made: `/dev/uinput` is writable.
+pub fn reply_keyboard_possible() -> bool {
+    uinput_writable()
+}
+
+/// Presses a reply's key through the virtual keyboard only: never the
+/// portal or a helper program, and never while this PC is locked or logind
+/// doesn't say.
+pub fn press_reply(key: ReplyKey) -> bool {
+    if lock_state() != Some(false) {
+        tracing::debug!("not pressing a reply's key: this PC is locked");
+        return false;
+    }
+    let (code, mods) = reply_chord(key);
+    with_uinput(|u| u.key_combo(code, mods))
+}
+
 /// A pause after each character typed through uinput, so the desktop reads
 /// every key before the next (a burst can overflow its buffer and lose
 /// keys), and a longer one after a character typed by its code, which the
@@ -2003,6 +2062,10 @@ mod tests {
     #[test]
     fn maps_evdev_keys_and_unicode_keysyms() {
         assert_eq!(evdev_key_for_sym("Return"), Some(28));
+        // A reply's keys: Shift+Insert and Enter, nothing else.
+        assert_eq!(reply_chord(ReplyKey::Paste), (110, &[evdev_key_for_mod(KeyMod::Shift)][..]));
+        assert_eq!(reply_chord(ReplyKey::Paste).0, evdev_key_for_sym("Insert").unwrap());
+        assert_eq!(reply_chord(ReplyKey::Enter), (28, &[][..]));
         assert_eq!(evdev_key_for_sym("Escape"), Some(1));
         assert_eq!(evdev_key_for_sym("F5"), Some(63));
         assert_eq!(evdev_key_for_sym("XF86AudioPlay"), Some(164));

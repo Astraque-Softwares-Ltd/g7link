@@ -4,6 +4,10 @@
 //! write reaches the clipboard, and a copy is seen, only while a G7 Link
 //! window has the focus. The extension sets the clipboard from inside the
 //! shell and tells of every copy (`ClipboardChanged`), focus or not.
+//!
+//! From companion 1.5 it also writes the PRIMARY selection alone, for a
+//! phone's reply into a terminal (`agents::reply`): the clipboard the owner
+//! copies with, and its listeners, never see it.
 
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -29,6 +33,14 @@ static AVAILABLE: Mutex<Option<(Instant, bool)>> = Mutex::new(None);
 /// When the extension last turned down its private write: before 1.5 it has
 /// none. Asked again after [`RECHECK`], as it may have been updated.
 static NO_PRIVATE_WRITE: Mutex<Option<Instant>> = Mutex::new(None);
+/// Whether the extension has `SetPrimaryText` and `ClearPrimaryText`, and when that was asked.
+static PRIMARY_WRITE: Mutex<Option<(Instant, bool)>> = Mutex::new(None);
+const INTROSPECTABLE: &str = "org.freedesktop.DBus.Introspectable";
+/// The most PRIMARY takes from here: a reply is at most 8 KiB.
+const MAX_PRIMARY_BYTES: usize = 64 * 1024;
+/// A missing PRIMARY write is asked about again sooner: the extension is
+/// off while the screen is locked, and back on unlock.
+const RECHECK_MISSING: Duration = Duration::from_secs(5);
 
 fn session() -> Option<zbus::blocking::Connection> {
     zbus::blocking::connection::Builder::session().ok()?.method_timeout(CALL_TIMEOUT).build().ok()
@@ -110,6 +122,75 @@ pub fn clear() -> bool {
 /// Puts a PNG image on the clipboard.
 pub fn write_png(png: &[u8]) -> bool {
     png.len() <= MAX_BYTES && available() && call("SetContentBinary", &(png, "image/png"))
+}
+
+/// Whether the extension's interface, as `Introspect` gives it, has both
+/// PRIMARY methods.
+fn writes_primary(xml: &str) -> bool {
+    let interface = format!(r#"<interface name="{INTERFACE}">"#);
+    let Some(start) = xml.find(&interface) else { return false };
+    let body = &xml[start..];
+    let body = &body[..body.find("</interface>").unwrap_or(body.len())];
+    ["SetPrimaryText", "ClearPrimaryText"].iter().all(|m| body.contains(&format!(r#"<method name="{m}">"#)))
+}
+
+/// Whether the extension writes PRIMARY alone (1.5 and later), asked by
+/// introspection at most every [`RECHECK`].
+pub fn has_primary() -> bool {
+    if let Some((at, known)) = *PRIMARY_WRITE.lock().unwrap_or_else(|e| e.into_inner())
+        && at.elapsed() < if known { RECHECK } else { RECHECK_MISSING }
+    {
+        return known;
+    }
+    let known = super::non_tokio(|| {
+        session()
+            .and_then(|conn| {
+                conn.call_method(Some(SHELL), PATH, Some(INTROSPECTABLE), "Introspect", &()).ok()
+            })
+            .and_then(|reply| reply.body().deserialize::<String>().ok())
+            .is_some_and(|xml| writes_primary(&xml))
+    });
+    *PRIMARY_WRITE.lock().unwrap_or_else(|e| e.into_inner()) = Some((Instant::now(), known));
+    known
+}
+
+/// Puts `text` on the PRIMARY selection, and only there. False when nothing
+/// was written: the extension refused or isn't there, and a paste would
+/// paste whatever was selected before.
+pub fn set_primary(text: &str) -> bool {
+    if text.is_empty() || text.len() > MAX_PRIMARY_BYTES || !has_primary() {
+        return false;
+    }
+    match send("SetPrimaryText", &(text,)) {
+        Some(Ok(())) => true,
+        Some(Err(error)) => {
+            // Never the text: the error names the method only.
+            tracing::info!(error = error_name(&error), "the shell didn't set PRIMARY");
+            *PRIMARY_WRITE.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            false
+        }
+        None => false,
+    }
+}
+
+/// Empties PRIMARY if it still holds `expected` from here; a selection made
+/// since stays. Whether it was cleared isn't told.
+pub fn clear_primary(expected: &str) {
+    if expected.is_empty() || expected.len() > MAX_PRIMARY_BYTES {
+        return;
+    }
+    if let Some(Err(error)) = send("ClearPrimaryText", &(expected,)) {
+        tracing::debug!(error = error_name(&error), "the shell didn't clear PRIMARY");
+    }
+}
+
+/// A D-Bus error's name, which carries nothing that was sent.
+fn error_name(error: &zbus::Error) -> String {
+    match error {
+        zbus::Error::MethodError(name, _, _) => name.to_string(),
+        zbus::Error::InputOutput(_) => "io".into(),
+        _ => "other".into(),
+    }
 }
 
 /// Follows copies made in any app through the extension, from when it
@@ -328,6 +409,39 @@ mod tests {
         assert_eq!(shell_signal(&owner(SHELL, ":1.9")), Some(Signal::Owner(Some(":1.9".into()))));
         assert_eq!(shell_signal(&owner(SHELL, "")), Some(Signal::Owner(None)));
         assert_eq!(shell_signal(&owner("org.example", ":1.9")), None);
+    }
+
+    #[test]
+    fn primary_writes_are_found_by_introspection() {
+        let interface = |methods: &str| {
+            format!(
+                r#"<node><interface name="org.freedesktop.DBus.Introspectable"><method name="Introspect"/></interface><interface name="{INTERFACE}"><method name="SetContent"><arg type="s" direction="in" name="content"/></method>{methods}</interface></node>"#
+            )
+        };
+        let both = r#"<method name="SetPrimaryText"><arg type="s" direction="in" name="text"/></method><method name="ClearPrimaryText"><arg type="s" direction="in" name="expected"/></method>"#;
+        assert!(writes_primary(&interface(both)));
+        let one = r#"<method name="SetPrimaryText"><arg type="s" direction="in" name="text"/></method>"#;
+        assert!(!writes_primary(&interface(one)), "both or none");
+        assert!(!writes_primary(&interface("")), "before 1.5");
+        // On another interface of the same object.
+        let elsewhere = format!(
+            r#"<node><interface name="org.example.Other">{both}</interface><interface name="{INTERFACE}"></interface></node>"#
+        );
+        assert!(!writes_primary(&elsewhere));
+        assert!(!writes_primary("not xml"));
+    }
+
+    #[test]
+    fn primary_writes_carry_no_text_into_logs() {
+        let error = zbus::Error::MethodError(
+            zbus::names::OwnedErrorName::try_from("org.freedesktop.DBus.Error.InvalidArgs").unwrap(),
+            Some("my secret reply".into()),
+            zbus::Message::method_call("/", "X").unwrap().build(&()).unwrap(),
+        );
+        assert_eq!(error_name(&error), "org.freedesktop.DBus.Error.InvalidArgs");
+        // Nothing is asked of the shell for what it wouldn't take.
+        assert!(!set_primary(""));
+        assert!(!set_primary(&"a".repeat(MAX_PRIMARY_BYTES + 1)));
     }
 
     #[test]

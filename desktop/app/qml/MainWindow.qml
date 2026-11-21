@@ -1128,6 +1128,54 @@ NativeWindow {
     }
 
     Sheet {
+        id: agentReplyPromptSheet
+        opened: AppController.agentReplyPromptDeviceId.length > 0
+        cardWidth: 440
+        onOpenedChanged: {
+            if (!opened && AppController.agentReplyPromptDeviceId.length > 0)
+                AppController.dismissAgentReplyPrompt()
+        }
+        Column {
+            width: parent.width
+            spacing: 16
+            Avatar {
+                anchors.horizontalCenter: parent.horizontalCenter
+                width: 56; height: 56
+                iconPath: Icons.terminal
+                emphasized: true
+            }
+            Txt {
+                width: parent.width
+                horizontalAlignment: Text.AlignHCenter
+                text: qsTr("Let %1 type replies into Claude and Codex sessions on this PC?").arg(AppController.agentReplyPromptDeviceName)
+                role: "headline"
+                wrapMode: Text.WordWrap
+            }
+            Txt {
+                width: parent.width
+                horizontalAlignment: Text.AlignHCenter
+                text: qsTr("When you send a reply from the phone, G7 brings the session's terminal window forward, pastes your message and presses Enter. It won't while the PC is locked or someone is using it, and it asks on the phone the first time for each window.")
+                role: "body"
+                muted: true
+                wrapMode: Text.WordWrap
+            }
+            Row {
+                anchors.right: parent.right
+                spacing: 10
+                Button {
+                    variant: "text"
+                    text: qsTr("Not now")
+                    onClicked: AppController.dismissAgentReplyPrompt()
+                }
+                Button {
+                    text: qsTr("Allow")
+                    onClicked: AppController.allowAgentReplyPrompt()
+                }
+            }
+        }
+    }
+
+    Sheet {
         id: blePromptSheet
         opened: AppController.blePromptDeviceId.length > 0
         cardWidth: 440
