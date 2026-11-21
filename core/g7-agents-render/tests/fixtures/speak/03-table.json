@@ -1,0 +1,6 @@
+{
+  "in": "Results:\n\n| Test | Result |\n|---|---|\n| sync | ok |\n| login | failed |\n\nOne test failed",
+  "max": 200,
+  "note": "A table says nothing.",
+  "out": "Results: One test failed"
+}

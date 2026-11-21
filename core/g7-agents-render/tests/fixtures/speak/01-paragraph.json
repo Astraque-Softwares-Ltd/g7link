@@ -1,0 +1,6 @@
+{
+  "in": "I fixed the retry loop in `queue.rs`.\nThe tests pass now.",
+  "max": 200,
+  "note": "A paragraph is read as it shows: inline code says its text, a line break is a space.",
+  "out": "I fixed the retry loop in queue.rs. The tests pass now."
+}

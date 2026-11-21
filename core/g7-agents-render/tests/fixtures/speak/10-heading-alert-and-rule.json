@@ -1,0 +1,6 @@
+{
+  "in": "## Summary\n\n> [!NOTE]\n> The cache was stale\n\n---\n\nAll set!",
+  "max": 200,
+  "note": "A heading and an alert are sentences; the alert's marker and the rule say nothing.",
+  "out": "Summary. The cache was stale. All set!"
+}

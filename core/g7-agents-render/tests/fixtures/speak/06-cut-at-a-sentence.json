@@ -1,0 +1,6 @@
+{
+  "in": "I found the cause of the lost rows. The sync queue dropped a batch whenever the phone went offline in the middle of a retry, because the retry loop reset its cursor before the batch was written. I changed the loop to keep the cursor until the write is confirmed, and added a test that goes offline halfway through. All 42 tests pass.",
+  "max": 200,
+  "note": "Past 200 characters, the text ends after the last sentence that fits.",
+  "out": "I found the cause of the lost rows. The sync queue dropped a batch whenever the phone went offline in the middle of a retry, because the retry loop reset its cursor before the batch was written."
+}

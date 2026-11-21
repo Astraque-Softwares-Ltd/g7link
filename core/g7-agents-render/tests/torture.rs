@@ -11,7 +11,7 @@ use g7_agents_render::{
     ItemKind, Link, Mark, MarkKind, NoteKind, NoticeKind, Phase, PlanState, QuestionIn, QuestionState, Row,
     RowKind, Span, ThreadState, Timeline, ToolClass, ToolIn, ToolStatus, TurnFileIn, TurnFileStatus, TurnIn,
     Via, apply, diff, guess, highlight, languages, live_thought_line, markdown, mentions, output_lines,
-    snippet, summary, tool_label, trigger,
+    snippet, speakable, summary, tool_label, trigger,
 };
 
 /// Inputs per run, sized to finish well inside 20 s in a debug build
@@ -26,6 +26,8 @@ const HIGHLIGHT_EVERY: usize = 2;
 const TIMELINE_EVERY: usize = 10;
 /// Inputs between language guesses and output marks (each scans the input).
 const GUESS_EVERY: usize = 3;
+/// Inputs between words-to-read-aloud checks (each parses the input twice).
+const SPEAK_EVERY: usize = 2;
 /// Inputs per grammar in `torture_every_grammar`.
 const GRAMMAR_INPUTS: usize = 2;
 
@@ -350,6 +352,20 @@ fn check_guess_and_output(input: &str, n: usize) {
         let total: u32 = line.toks.iter().map(|t| t.len).sum();
         assert_eq!(total as usize, line.text.encode_utf16().count(), "output toks cover the line");
         assert!(clean(&line.text), "output line not cleaned");
+    }
+}
+
+/// Words to read aloud: within their max, on one line, cleaned, trimmed,
+/// and the same text cut shorter is never longer.
+fn check_speakable(input: &str, n: usize) {
+    let max = [0u32, 1, 7, 40, 200, 4_000, u32::MAX][n % 7];
+    let words = speakable(input, max);
+    let units = words.encode_utf16().count();
+    assert!(units <= (max as usize).min(MAX_SPEAKABLE_UNITS), "speakable: {units} over {max}");
+    assert!(clean(&words) && !words.contains('\n') && !words.contains('\t'), "speakable: one clean line");
+    assert_eq!(words.trim(), words, "speakable: trimmed");
+    if max > 1 {
+        assert!(speakable(input, max / 2).encode_utf16().count() <= units, "speakable: shorter max");
     }
 }
 
@@ -736,6 +752,9 @@ fn run(seed: u64, inputs: usize, code: bool) {
         }
         check_composer(&input, n);
         check_snippet(&input, n);
+        if n % SPEAK_EVERY == 0 {
+            check_speakable(&input, n / SPEAK_EVERY);
+        }
         if n % GUESS_EVERY == 0 {
             check_guess_and_output(&input, n / GUESS_EVERY);
         }

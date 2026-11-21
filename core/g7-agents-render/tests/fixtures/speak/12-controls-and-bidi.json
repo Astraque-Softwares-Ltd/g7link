@@ -1,0 +1,6 @@
+{
+  "in": "Fixed \u202eexe.txt\u202c and the \u0007bell.",
+  "max": 200,
+  "note": "Controls and bidi controls are dropped.",
+  "out": "Fixed exe.txt and the bell."
+}

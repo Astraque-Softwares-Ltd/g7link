@@ -73,6 +73,9 @@ pub const MAX_DETECT_LINES: usize = 64;
 pub const MAX_PLACES_PER_LINE: usize = 16;
 /// A turn's files that inline code is matched against; later ones are not.
 pub const MAX_PATH_HINTS: usize = 500;
+/// Words to read aloud, in UTF-16 units (Android's `TextToSpeech` takes at
+/// most 4,000 characters); a larger `max_chars` is read as this.
+pub const MAX_SPEAKABLE_UNITS: usize = 4_000;
 
 /// Whether `c` is removed from every input: C0 and C1 controls except `\n`
 /// and `\t`, and the bidi controls. The same set the host strips.

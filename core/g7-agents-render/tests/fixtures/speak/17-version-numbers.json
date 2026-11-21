@@ -1,0 +1,6 @@
+{
+  "in": "Version 1.2 is out. Upgrade with care",
+  "max": 18,
+  "note": "A stop inside a number ends nothing.",
+  "out": "Version 1.2 is…"
+}

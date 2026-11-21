@@ -1,0 +1,6 @@
+{
+  "in": "See [the pull request](https://github.com/example/repo/pull/12), [the docs][d] and ![the diagram](diagram.png).\n\n[d]: https://example.com/docs",
+  "max": 200,
+  "note": "A link says its text, never its target; an image says its alt text.",
+  "out": "See the pull request, the docs and the diagram."
+}

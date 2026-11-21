@@ -1,0 +1,6 @@
+{
+  "in": "It said \"done.\" Then it stopped working on the rest of the queue",
+  "max": 30,
+  "note": "A closing quote after a stop still ends the sentence.",
+  "out": "It said \"done.\""
+}

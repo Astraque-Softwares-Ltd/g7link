@@ -9,7 +9,7 @@ mod common;
 use common::{CtxJ, ItemJ, ToolJ, blessing, first_difference, fixtures, load, save, text_input};
 use g7_agents_render::{
     GuardEvent, Timeline, TypingGuard, apply, diff, guess, live_thought_line, markdown, mentions,
-    output_lines, snippet, summary, tool_label, trigger,
+    output_lines, snippet, speakable, summary, tool_label, trigger,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -99,6 +99,19 @@ fn snippets() {
             .unwrap_or_else(|e| panic!("{}: marks: {e}", path.display()));
         let got = serde_json::to_value(snippet(&text, &marks)).expect("snippets serialize");
         check(&path, fixture, "parts", got);
+    }
+}
+
+/// `{in, max}` → `out`: the words to read aloud of a message.
+#[test]
+fn speak() {
+    for path in fixtures("speak") {
+        let fixture = load(&path);
+        let text = text_input(&fixture["in"]);
+        let max = fixture["max"].as_u64().and_then(|m| u32::try_from(m).ok()).expect("a max");
+        let got = speakable(&text, max);
+        assert!(got.encode_utf16().count() <= max as usize, "{}: longer than its max", path.display());
+        check(&path, fixture, "out", json!(got));
     }
 }
 

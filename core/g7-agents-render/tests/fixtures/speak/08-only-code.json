@@ -1,0 +1,6 @@
+{
+  "in": "```sh\ncargo test --locked\n```\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n---",
+  "max": 200,
+  "note": "Code, a table and a rule: no words.",
+  "out": ""
+}

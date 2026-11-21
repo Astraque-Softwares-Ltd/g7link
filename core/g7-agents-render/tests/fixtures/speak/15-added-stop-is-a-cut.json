@@ -1,0 +1,6 @@
+{
+  "in": "# Summary\n\nThe sync queue dropped a batch whenever the phone went offline in the middle of a retry",
+  "max": 40,
+  "note": "The stop put between two blocks ends a sentence for the cut too.",
+  "out": "Summary."
+}

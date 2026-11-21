@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 //! G7 Agents rendering: a thread's items into rows, Markdown into blocks,
-//! code into classed tokens, diffs into numbered rows with word marks, and
-//! search snippets into parts with the matches marked.
+//! code into classed tokens, diffs into numbered rows with word marks,
+//! search snippets into parts with the matches marked, and a message into
+//! words to read aloud.
 //!
 //! Pure functions over untrusted text: no file, network, clock, thread or
 //! environment access; every function is total and bounded by [`bounds`].
@@ -22,6 +23,7 @@ mod label;
 mod markdown;
 mod output;
 mod snippet;
+mod speak;
 mod stream;
 mod timeline;
 
@@ -37,6 +39,7 @@ pub use markdown::{
 };
 pub use output::output_lines;
 pub use snippet::{SnippetPart, snippet};
+pub use speak::speakable;
 pub use timeline::{
     Act, Acts, Checkpoint, CheckpointWhy, Ctx, DetailOf, FileStat, ItemIn, ItemKind, LiveLabel, Mark,
     MarkKind, NoteKind, NoticeKind, Phase, PlanState, QuestionIn, QuestionState, Row, RowKind, RowStatus,

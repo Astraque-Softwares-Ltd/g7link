@@ -1,0 +1,6 @@
+{
+  "in": "修好了。测试都通过了。",
+  "max": 8,
+  "note": "A full-width stop ends a sentence with no space after it.",
+  "out": "修好了。"
+}

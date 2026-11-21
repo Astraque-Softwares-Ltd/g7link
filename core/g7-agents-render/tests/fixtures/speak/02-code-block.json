@@ -1,0 +1,6 @@
+{
+  "in": "Here is the fix:\n\n```rust\nfn retry() -> Result<()> {\n    Ok(())\n}\n```\n\nRun it again.",
+  "max": 200,
+  "note": "A code block says nothing.",
+  "out": "Here is the fix: Run it again."
+}

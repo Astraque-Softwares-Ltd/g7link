@@ -1,0 +1,6 @@
+{
+  "in": "**Fixed** the _flaky_ test in `two_devices.rs` ~~yesterday~~ today.",
+  "max": 200,
+  "note": "Emphasis reads as plain words; struck-out words are not read.",
+  "out": "Fixed the flaky test in two_devices.rs today."
+}

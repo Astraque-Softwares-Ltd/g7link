@@ -1,0 +1,6 @@
+{
+  "in": "Line one<br>line two\n\n<details>\n<summary>More</summary>\n\nHidden text\n\n</details>",
+  "max": 200,
+  "note": "HTML tags say nothing, but the words on either side stay apart.",
+  "out": "Line one line two. Hidden text"
+}

@@ -1,0 +1,6 @@
+{
+  "in": "The phone kept the old token because the refresh ran on a thread that the settings screen had already closed and nothing ever told the store that a newer token existed so every request after that one used the token that the server had revoked an hour before",
+  "max": 200,
+  "note": "No sentence ends within 200 characters: cut after the last whole word, with an ellipsis.",
+  "out": "The phone kept the old token because the refresh ran on a thread that the settings screen had already closed and nothing ever told the store that a newer token existed so every request after that one…"
+}

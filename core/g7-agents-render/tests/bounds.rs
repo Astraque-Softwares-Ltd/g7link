@@ -8,7 +8,7 @@ use g7_agents_render::{
     BlockKind, Checkpoint, Ctx, GuardEvent, Hints, ItemIn, ItemKind, Link, NoteKind, Phase, Row, RowKind,
     ThreadState, Timeline, TokClass, ToolClass, ToolIn, ToolStatus, TurnFileIn, TurnFileStatus, TurnIn,
     TypingGuard, Via, changed_files, diff, guess, highlight, live_thought_line, markdown, markdown_with,
-    mentions, output_lines, snippet, tool_label, trigger,
+    mentions, output_lines, snippet, speakable, tool_label, trigger,
 };
 
 fn item<'a>(seq: u64, id: &'a str, kind: ItemKind, text: &'a str) -> ItemIn<'a> {
@@ -527,4 +527,17 @@ fn max_path_hints() {
     };
     assert!(marked(MAX_PATH_HINTS - 1));
     assert!(!marked(MAX_PATH_HINTS));
+}
+
+#[test]
+fn max_speakable_units() {
+    let words = "word ".repeat(MAX_SPEAKABLE_UNITS);
+    let at = speakable(&words, u32::try_from(MAX_SPEAKABLE_UNITS).unwrap());
+    let over = speakable(&words, u32::MAX);
+    assert_eq!(at, over, "a larger max reads as the bound");
+    assert!(over.encode_utf16().count() <= MAX_SPEAKABLE_UNITS);
+    assert!(over.encode_utf16().count() > MAX_SPEAKABLE_UNITS - 10, "{}", over.len());
+    assert!(over.ends_with("word…"));
+    let short = "Done.".to_owned();
+    assert_eq!(speakable(&short, u32::MAX), short);
 }

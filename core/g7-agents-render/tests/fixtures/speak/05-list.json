@@ -1,0 +1,6 @@
+{
+  "in": "Done:\n\n1. Fixed the parser\n2. Added a test\n   - with a nested case\n3. Updated the docs.\n\n- [x] Build\n- [ ] Deploy",
+  "max": 200,
+  "note": "Each list item is a sentence; numbers, bullets and check boxes say nothing.",
+  "out": "Done: Fixed the parser. Added a test. with a nested case. Updated the docs. Build. Deploy"
+}
