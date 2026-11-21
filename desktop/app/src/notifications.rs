@@ -993,6 +993,18 @@ pub fn on_toast(event: ToastEvent) {
     }
 }
 
+/// Whether what [`on_toast`] does with `event` shows a window of this app,
+/// which takes the click's activation token. Buttons act without one, and
+/// so do the hotspot offer and a link's prompt when they're clicked.
+pub fn opens_window(event: &ToastEvent) -> bool {
+    match event {
+        ToastEvent::Opened { device, .. } => {
+            device != crate::hotspot::TOAST_GROUP && device != crate::links::PROMPT_GROUP
+        }
+        ToastEvent::Action { .. } | ToastEvent::Reply { .. } | ToastEvent::Dismissed { .. } => false,
+    }
+}
+
 /// Sets what an app's notifications do on this PC. Pop-ups it no longer
 /// gets are taken away.
 pub fn set_app_rule(app: &str, rule: AppRule) {
@@ -1068,6 +1080,35 @@ mod tests {
     use g7link_core::NotificationLive;
 
     use super::*;
+
+    #[test]
+    fn only_a_click_that_shows_a_window_keeps_its_token_for_it() {
+        let opened = |device: &str| ToastEvent::Opened { device: device.into(), key: "k".into() };
+        let action = |device: &str, action: &str| ToastEvent::Action {
+            device: device.into(),
+            key: "k".into(),
+            action: action.into(),
+        };
+        // The phone app's window or the main one, a received file, a photo, a call.
+        for device in
+            ["0123abcd", crate::transfers::TOAST_GROUP, crate::photos::TOAST_GROUP, crate::calls::TOAST_GROUP]
+        {
+            assert!(opens_window(&opened(device)), "{device}");
+        }
+        assert!(!opens_window(&opened(crate::hotspot::TOAST_GROUP)));
+        assert!(!opens_window(&opened(crate::links::PROMPT_GROUP)));
+        // Mark as read, Copy, Answer: nothing opens.
+        assert!(!opens_window(&action("0123abcd", "mark_read")));
+        assert!(!opens_window(&action(crate::photos::TOAST_GROUP, crate::photos::ACTION_COPY)));
+        assert!(!opens_window(&action(crate::calls::TOAST_GROUP, crate::sys::toast::CALL_ANSWER)));
+        let reply = ToastEvent::Reply {
+            device: "0123abcd".into(),
+            key: "k".into(),
+            action: "r".into(),
+            text: "t".into(),
+        };
+        assert!(!opens_window(&reply));
+    }
 
     #[test]
     fn the_oldest_pictures_go_first_once_over_the_caps() {

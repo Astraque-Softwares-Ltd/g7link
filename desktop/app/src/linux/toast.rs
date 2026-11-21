@@ -120,6 +120,11 @@ struct Toaster {
     activation: Option<(u32, String)>,
     /// The token of a notification that was just opened, for the window that opens.
     window_token: Option<String>,
+    /// The token of a click that opens no window: the desktop is told the
+    /// click is done, or it shows a busy pointer until it gives up.
+    done_token: Option<String>,
+    /// Whether what a click does shows a window of ours, which takes its token.
+    opens_window: fn(&ToastEvent) -> bool,
 }
 
 impl Toaster {
@@ -134,6 +139,8 @@ impl Toaster {
             next_fallback_id: 100_000,
             activation: None,
             window_token: None,
+            done_token: None,
+            opens_window: crate::notifications::opens_window,
         }
     }
 
@@ -190,6 +197,12 @@ impl Toaster {
         ids
     }
 
+    /// The activation token the desktop gave for a click on notification `id`.
+    /// A token is used once.
+    fn clicked(&mut self, id: u32) -> Option<String> {
+        self.activation.take().filter(|(clicked, _)| *clicked == id).map(|(_, t)| t)
+    }
+
     fn handle_signal(&mut self, signal: MonitorSignal) -> Option<ToastEvent> {
         match signal {
             MonitorSignal::ActivationToken { id, token } => {
@@ -198,18 +211,26 @@ impl Toaster {
                 None
             }
             MonitorSignal::ActionInvoked { id, action_key } => {
-                let token = self.activation.take().filter(|(clicked, _)| *clicked == id).map(|(_, t)| t);
-                let (device, key) = self.id_to_target.get(&id)?.clone();
-                if action_key == "default" || action_key.is_empty() {
-                    // Opening shows a window, which takes the token. A button
-                    // (Mark as read...) shows none, so its token is dropped.
+                let token = self.clicked(id);
+                let event = self.id_to_target.get(&id).cloned().map(|(device, key)| {
+                    if action_key == "default" || action_key.is_empty() {
+                        ToastEvent::Opened { device, key }
+                    } else {
+                        ToastEvent::Action { device, key, action: action_key }
+                    }
+                });
+                // Opening shows a window, which takes the token. A button
+                // (Mark as read...) shows none: the desktop hears the click
+                // is done instead.
+                if event.as_ref().is_some_and(self.opens_window) {
                     self.window_token = token;
-                    Some(ToastEvent::Opened { device, key })
                 } else {
-                    Some(ToastEvent::Action { device, key, action: action_key })
+                    self.done_token = token;
                 }
+                event
             }
             MonitorSignal::NotificationReplied { id, text } => {
+                self.done_token = self.clicked(id);
                 let (device, key) = self.id_to_target.get(&id)?.clone();
                 let action =
                     self.reply_actions.get(&id).cloned().unwrap_or_else(|| "inline-reply".to_string());
@@ -865,21 +886,27 @@ fn monitor_loop() {
                 break;
             };
             if let Some(signal) = parse_dbus_signal(&msg) {
-                let (event, token, callback) = TOASTER
+                let (event, token, done, callback) = TOASTER
                     .get()
                     .and_then(|mutex| {
                         let mut guard = mutex.lock().ok()?;
                         let ev = guard.handle_signal(signal);
                         let token = guard.window_token.take();
+                        let done = guard.done_token.take();
                         let cb = guard.on_event.clone();
-                        Some((ev, token, cb))
+                        Some((ev, token, done, cb))
                     })
-                    .unwrap_or((None, None, None));
+                    .unwrap_or((None, None, None, None));
                 // Before the event: the window it opens is then shown with the
                 // token, so it gets the focus and the desktop stops waiting for
                 // one (GNOME shows a busy pointer until then, or for 15 seconds).
                 if let Some(token) = token {
                     crate::bridge::native::ffi::linux_set_activation_token(&token);
+                }
+                // A click that opens no window ends the wait at once, with no
+                // window raised.
+                if let Some(token) = done {
+                    super::launch_feedback::done(token);
                 }
                 if let (Some(event), Some(cb)) = (event, callback) {
                     cb(event);
@@ -1177,10 +1204,12 @@ mod tests {
     fn a_button_or_another_notification_never_gets_the_token() {
         let mut toaster = toaster_showing(77);
 
-        // A button opens no window: the token is dropped, not kept for the next window.
+        // A button opens no window: the token isn't kept for the next window,
+        // the desktop is told the click is done.
         toaster.handle_signal(token_for(77, TOKEN));
         toaster.handle_signal(invoked(77, "archive"));
         assert_eq!(toaster.window_token, None);
+        assert_eq!(toaster.done_token.take().as_deref(), Some(TOKEN));
         assert_eq!(toaster.activation, None);
 
         // A token for a notification that isn't ours is ignored.
@@ -1192,5 +1221,35 @@ mod tests {
         toaster.handle_signal(token_for(77, TOKEN));
         toaster.handle_signal(invoked(78, "default"));
         assert_eq!(toaster.window_token, None);
+        assert_eq!(toaster.done_token, None);
+    }
+
+    #[test]
+    fn a_click_that_opens_no_window_ends_the_desktops_wait() {
+        // The hotspot offer, clicked, turns the hotspot on and shows nothing.
+        let mut toaster = Toaster::new(PathBuf::from("/tmp/icon.png"), None);
+        let hotspot = crate::hotspot::TOAST_GROUP.to_string();
+        toaster.record_shown(hotspot.clone(), "offer".to_string(), 90, plain_snapshot());
+        toaster.handle_signal(token_for(90, TOKEN));
+        assert_eq!(
+            toaster.handle_signal(invoked(90, "default")),
+            Some(ToastEvent::Opened { device: hotspot, key: "offer".to_string() })
+        );
+        assert_eq!(toaster.window_token, None);
+        assert_eq!(toaster.done_token.take().as_deref(), Some(TOKEN));
+
+        // A reply typed into the notification opens nothing either.
+        let mut toaster = toaster_showing(77);
+        toaster.handle_signal(token_for(77, TOKEN));
+        toaster.handle_signal(MonitorSignal::NotificationReplied { id: 77, text: "On my way".to_string() });
+        assert_eq!(toaster.done_token.take().as_deref(), Some(TOKEN));
+
+        // The notification closed between the token and the click: nothing
+        // of ours opens, and the desktop isn't left waiting.
+        let mut toaster = toaster_showing(77);
+        toaster.handle_signal(token_for(77, TOKEN));
+        toaster.handle_signal(MonitorSignal::NotificationClosed { id: 77, reason: 3 });
+        assert_eq!(toaster.handle_signal(invoked(77, "archive")), None);
+        assert_eq!(toaster.done_token.take().as_deref(), Some(TOKEN));
     }
 }
