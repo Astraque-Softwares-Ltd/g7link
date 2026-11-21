@@ -14,8 +14,9 @@ use std::{
 use g7_agents_render as render;
 
 use crate::{
-    AgentItem, AgentItemKind, AgentItemPhase, AgentPlanState, AgentQuestionOutcome, AgentThreadState,
-    AgentToolClass, AgentToolStatus, AgentVia,
+    AgentCheckpoint, AgentFileStatus, AgentItem, AgentItemKind, AgentItemPhase, AgentNotice, AgentPlanState,
+    AgentQuestionOutcome, AgentThreadState, AgentToolClass, AgentToolStatus, AgentTurn, AgentTurnFile,
+    AgentTurnPaths, AgentVia,
 };
 
 /// `Debug` for a record that prints only the fields named, never its text.
@@ -56,6 +57,9 @@ pub struct AgentBlock {
     pub spans: Vec<AgentSpan>,
     /// A code block's language word, lowercased; empty otherwise.
     pub lang: String,
+    /// A code block's `lang` is a guess, not the fence's word.
+    #[uniffi(default = false)]
+    pub lang_guessed: bool,
     /// A code block's coloured lines; empty when it isn't coloured (show
     /// `text` plain).
     pub lines: Vec<AgentCodeLine>,
@@ -64,7 +68,7 @@ pub struct AgentBlock {
     pub open: bool,
 }
 
-quiet_debug!(AgentBlock { kind, depth, quote, marker, open });
+quiet_debug!(AgentBlock { kind, depth, quote, marker, lang_guessed, open });
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
 pub enum AgentBlockKind {
@@ -118,6 +122,9 @@ pub struct AgentStyle {
     /// The alt text of an image, kept as a link to it: put the image glyph
     /// before it. The image is never loaded.
     pub image: bool,
+    /// Inline code that names a file the turn changed: draw it as a path.
+    #[uniffi(default = false)]
+    pub path: bool,
 }
 
 /// A link: `Web` and `Mail` show their target before opening; `Shown`'s
@@ -194,6 +201,18 @@ pub enum AgentTokClass {
     Attribute,
     Inserted,
     Deleted,
+    /// The folder part of a path, through its last separator.
+    Dir,
+    /// A path's file name.
+    File,
+    /// `:line:col` after a path.
+    Pos,
+    /// A line of output that reports an error.
+    Error,
+    /// A line of output that warns.
+    Warn,
+    /// A line of output that reports a pass.
+    Ok,
 }
 
 // ---- Diff ----
@@ -217,9 +236,31 @@ pub struct AgentDiffFile {
     pub adds: u32,
     pub dels: u32,
     pub rows: Vec<AgentDiffRow>,
+    /// What its rows don't show: "Binary file", or that it was cut short
+    /// ("Showing the first 1 MB"). Null when they show it all.
+    #[uniffi(default = None)]
+    pub note: Option<AgentDiffNote>,
 }
 
-quiet_debug!(AgentDiffFile { adds, dels, rows });
+quiet_debug!(AgentDiffFile { adds, dels, rows, note });
+
+/// What a diff file's rows don't show.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum AgentDiffNote {
+    /// Git called it binary: no rows ("Binary file").
+    Binary,
+    /// Its text stops short ("Showing the first 1 MB").
+    Truncated,
+}
+
+impl From<render::DiffNote> for AgentDiffNote {
+    fn from(note: render::DiffNote) -> Self {
+        match note {
+            render::DiffNote::Binary => Self::Binary,
+            render::DiffNote::Truncated => Self::Truncated,
+        }
+    }
+}
 
 #[derive(Clone, PartialEq, Eq, uniffi::Record)]
 pub struct AgentDiffRow {
@@ -304,9 +345,109 @@ pub struct AgentRow {
     pub depth: u8,
     pub item_id: String,
     pub seq: u64,
+    /// What may be done from the row (your message, a turn's final answer);
+    /// null when nothing is offered.
+    #[uniffi(default = None)]
+    pub acts: Option<AgentActs>,
 }
 
-quiet_debug!(AgentRow { key, kind, turn, depth, seq });
+quiet_debug!(AgentRow { key, kind, turn, depth, seq, acts });
+
+/// The actions of a message. Show an `On` one, show one with a reason
+/// disabled with that reason, leave out a `Hidden` one. Copy is the app's own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Record)]
+pub struct AgentActs {
+    /// "Fork from here": your message and the final answer.
+    pub fork: AgentAct,
+    /// "Rewind to here": your message.
+    pub rewind: AgentAct,
+    /// "Edit from here": your message.
+    pub edit: AgentAct,
+    /// The files part of a rewind: on only where G7 Link on the PC can put
+    /// files back; never on a phone.
+    pub restore: AgentAct,
+}
+
+/// One action of [`AgentActs`], as a word.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum AgentAct {
+    Hidden,
+    On,
+    /// "%1 can only be forked from its latest message." (`%1` the agent.)
+    LatestOnly,
+    /// "No restore point for this turn."
+    NoRestorePoint,
+    /// "This isn't a git repository, so G7 can't undo file changes here."
+    NotGit,
+}
+
+impl From<render::Act> for AgentAct {
+    fn from(act: render::Act) -> Self {
+        match act {
+            render::Act::Hidden => Self::Hidden,
+            render::Act::On => Self::On,
+            render::Act::LatestOnly => Self::LatestOnly,
+            render::Act::NoRestorePoint => Self::NoRestorePoint,
+            render::Act::NotGit => Self::NotGit,
+        }
+    }
+}
+
+impl AgentActs {
+    /// The row's actions; `None` when every one is hidden.
+    fn of(acts: render::Acts) -> Option<Self> {
+        (!acts.is_hidden()).then(|| Self {
+            fork: acts.fork.into(),
+            rewind: acts.rewind.into(),
+            edit: acts.edit.into(),
+            restore: acts.restore.into(),
+        })
+    }
+}
+
+/// What a `ChangesNote` row says.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum AgentChangesNote {
+    /// "Recording changes…".
+    Recording,
+    /// "Changes weren't recorded for this turn." and the reason of `why`.
+    Missing,
+    /// "This restore point is no longer kept."
+    Expired,
+    /// "%n files weren't recorded (too large)." (`count`).
+    Unrecorded,
+}
+
+/// Why a turn's restore point is missing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum AgentCheckpointWhy {
+    /// "Git was busy."
+    Busy,
+    /// "It took too long."
+    Slow,
+    /// "Too many large new files."
+    Large,
+    /// "Git refused."
+    Refused,
+    /// "Restore points are off for this folder."
+    Off,
+    /// "It ran before G7 kept restore points."
+    Before,
+}
+
+impl From<render::CheckpointWhy> for AgentCheckpointWhy {
+    fn from(why: render::CheckpointWhy) -> Self {
+        use render::CheckpointWhy as W;
+        match why {
+            W::Busy => Self::Busy,
+            W::Slow => Self::Slow,
+            W::Large => Self::Large,
+            W::Refused => Self::Refused,
+            W::Off => Self::Off,
+            W::Before => Self::Before,
+        }
+    }
+}
 
 /// What a row shows. No sentences: the app words the labels.
 #[derive(Clone, PartialEq, Eq, uniffi::Enum)]
@@ -314,20 +455,10 @@ pub enum AgentRowKind {
     /// Your message, or one from `from` (a phone's name; empty for the PC).
     /// `deny_of`: you denied a request with it ("You denied it and said").
     /// `via`: sent while the agent worked ("Sent while it worked").
-    User {
-        text: String,
-        from: String,
-        deny_of: bool,
-        via: Option<AgentVia>,
-    },
+    User { text: String, from: String, deny_of: bool, via: Option<AgentVia> },
     /// One Markdown block of an answer; `index` from 0, `last` for the
     /// message's last block (its "Copy message").
-    Block {
-        block: AgentBlock,
-        index: u16,
-        last: bool,
-        phase: Option<AgentItemPhase>,
-    },
+    Block { block: AgentBlock, index: u16, last: bool, phase: Option<AgentItemPhase> },
     /// A step. `adds` and `dels`: an edit's lines added and removed ("+a −d");
     /// `ms`: how long it ran once it ended, else 0 (shown from 1 s up).
     Tool {
@@ -341,71 +472,49 @@ pub enum AgentRowKind {
         ms: i64,
     },
     /// Under an open tool row: its command, its edit or its output.
-    Detail {
-        of: AgentDetailOf,
-    },
+    Detail { of: AgentDetailOf },
     /// A run of steps in one line; `failed` when one of them failed or was denied.
-    Group {
-        summary: AgentSummary,
-        count: u16,
-        failed: bool,
-        open: bool,
-    },
+    Group { summary: AgentSummary, count: u16, failed: bool, open: bool },
     /// What the agent thought: "Thought", "Thought %n times", or the preview.
-    Thought {
-        preview: String,
-        count: u16,
-        has_text: bool,
-        open: bool,
-    },
+    Thought { preview: String, count: u16, has_text: bool, open: bool },
     /// A finished turn's fold: "Worked for %1"; `hidden` rows behind it.
-    Fold {
-        worked_ms: i64,
-        hidden: u16,
-        open: bool,
-    },
+    Fold { worked_ms: i64, hidden: u16, open: bool },
     /// The files the turn changed: "%n files changed", +adds −dels.
+    /// `recorded`: from the turn's restore point; it opens the turn's diff
+    /// (`agent_diff_files`). Otherwise from its edits, and a file opens the
+    /// edits under it.
     Changes {
         files: Vec<AgentFileStat>,
         adds: u32,
         dels: u32,
         more: u16,
+        #[uniffi(default = false)]
+        recorded: bool,
     },
+    /// One line in place of, or under, a turn's `Changes`: `why` with
+    /// `Missing` when the PC said, `count` with `Unrecorded`.
+    ChangesNote { note: AgentChangesNote, why: Option<AgentCheckpointWhy>, count: u32 },
     /// A request's state under its step.
-    Mark {
-        kind: AgentMarkKind,
-        by: String,
-    },
+    Mark { kind: AgentMarkKind, by: String },
+    /// A line the PC wrote; `notice` says which one when the app acts on it
+    /// (Undo on `Rewound` and `EditFromHere` while the thread's `undo` is set).
     Notice {
         text: String,
+        #[uniffi(default = None)]
+        notice: Option<AgentNotice>,
     },
     /// The head of a plan's card ("Plan"); `shown` of its blocks follow as
     /// `Block` rows, and `more` are left out until it's opened (its key).
     /// A `Replaced` one shows this row only until opened.
-    Plan {
-        state: AgentPlanState,
-        shown: u16,
-        more: u16,
-        open: bool,
-    },
+    Plan { state: AgentPlanState, shown: u16, more: u16, open: bool },
     /// The agent's questions, one line: "Asked you a question" / "Asked you
     /// %n questions" (`count`, 0 when not known), "You answered", "Answered
     /// on %1" (`by`), "Not answered". Opened, the answers follow as `Block`
     /// rows when the item has them (`has_text`).
-    Question {
-        state: AgentQuestionState,
-        count: u8,
-        by: String,
-        has_text: bool,
-        open: bool,
-    },
+    Question { state: AgentQuestionState, count: u8, by: String, has_text: bool, open: bool },
     /// The working line, last: "Starting…" or "Thinking", with the thought
     /// so far when there is one, since `since_ms`.
-    Live {
-        label: AgentLiveLabel,
-        thought: String,
-        since_ms: i64,
-    },
+    Live { label: AgentLiveLabel, thought: String, since_ms: i64 },
 }
 
 /// Names the row kind only.
@@ -420,6 +529,7 @@ impl std::fmt::Debug for AgentRowKind {
             Self::Thought { .. } => "Thought",
             Self::Fold { .. } => "Fold",
             Self::Changes { .. } => "Changes",
+            Self::ChangesNote { .. } => "ChangesNote",
             Self::Mark { .. } => "Mark",
             Self::Notice { .. } => "Notice",
             Self::Plan { .. } => "Plan",
@@ -456,31 +566,39 @@ pub enum AgentRowStatus {
 /// What an open tool row, or an open file of a `Changes` row, shows under it.
 #[derive(Clone, PartialEq, Eq, uniffi::Enum)]
 pub enum AgentDetailOf {
+    /// The whole command; `lines`: its shell colours, empty when it's too
+    /// long to colour (show `text` plain).
     Command {
         text: String,
+        #[uniffi(default = [])]
+        lines: Vec<AgentCodeLine>,
     },
     /// An edit. Under a `Changes` file: edit `edit` of `edits`, from 1 ("Edit
     /// %1 of %2" when `edits` > 1); both 0 under a tool row.
-    Diff {
-        doc: AgentDiffDoc,
-        edit: u16,
-        edits: u16,
-    },
+    Diff { doc: AgentDiffDoc, edit: u16, edits: u16 },
     /// The tail of what it printed; `cut`: the start was left out.
+    /// `lines`: what reports an error, a warning or a pass, and places,
+    /// marked; empty when nothing is (show `text` plain).
     Output {
         text: String,
         cut: bool,
+        #[uniffi(default = [])]
+        lines: Vec<AgentCodeLine>,
     },
 }
 
 impl std::fmt::Debug for AgentDetailOf {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Command { .. } => f.write_str("Command"),
+            Self::Command { lines, .. } => {
+                f.debug_struct("Command").field("lines", lines).finish_non_exhaustive()
+            }
             Self::Diff { doc, edit, edits } => {
                 f.debug_struct("Diff").field("doc", doc).field("edit", edit).field("edits", edits).finish()
             }
-            Self::Output { cut, .. } => f.debug_struct("Output").field("cut", cut).finish_non_exhaustive(),
+            Self::Output { cut, lines, .. } => {
+                f.debug_struct("Output").field("cut", cut).field("lines", lines).finish_non_exhaustive()
+            }
         }
     }
 }
@@ -492,9 +610,14 @@ pub struct AgentToolLabel {
     pub tool_class: AgentToolClass,
     pub target: String,
     pub more: u16,
+    /// Coloured runs over `target`, covering it exactly; empty for plain. A
+    /// command as shell, a path as `Dir`, `File` and `Pos`, a search term as
+    /// `String`, a web address's host as `File` and the rest as `Dir`.
+    #[uniffi(default = [])]
+    pub toks: Vec<AgentTok>,
 }
 
-quiet_debug!(AgentToolLabel { tool_class, more });
+quiet_debug!(AgentToolLabel { tool_class, more, toks });
 
 /// A group's line: its first one or two clauses and how many other actions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Record)]
@@ -544,6 +667,7 @@ impl From<render::Block> for AgentBlock {
             text: b.text,
             spans: b.spans.into_iter().map(Into::into).collect(),
             lang: b.lang,
+            lang_guessed: b.lang_guessed,
             lines: b.lines.into_iter().map(Into::into).collect(),
             table: b.table.map(Into::into),
             open: b.open,
@@ -609,6 +733,7 @@ impl From<render::Style> for AgentStyle {
                 render::Link::Shown => AgentLink::Shown,
             },
             image: style.image,
+            path: style.path,
         }
     }
 }
@@ -643,14 +768,13 @@ impl From<render::Table> for AgentTable {
 
 impl From<render::CodeLine> for AgentCodeLine {
     fn from(line: render::CodeLine) -> Self {
-        AgentCodeLine {
-            text: line.text,
-            toks: line
-                .toks
-                .into_iter()
-                .map(|tok| AgentTok { len: tok.len, tok_class: tok.class.into() })
-                .collect(),
-        }
+        AgentCodeLine { text: line.text, toks: line.toks.into_iter().map(Into::into).collect() }
+    }
+}
+
+impl From<render::Tok> for AgentTok {
+    fn from(tok: render::Tok) -> Self {
+        AgentTok { len: tok.len, tok_class: tok.class.into() }
     }
 }
 
@@ -673,6 +797,12 @@ impl From<render::TokClass> for AgentTokClass {
             T::Attribute => Self::Attribute,
             T::Inserted => Self::Inserted,
             T::Deleted => Self::Deleted,
+            T::Dir => Self::Dir,
+            T::File => Self::File,
+            T::Pos => Self::Pos,
+            T::Error => Self::Error,
+            T::Warn => Self::Warn,
+            T::Ok => Self::Ok,
         }
     }
 }
@@ -688,6 +818,7 @@ impl From<render::DiffDoc> for AgentDiffDoc {
                     adds: file.adds,
                     dels: file.dels,
                     rows: file.rows.into_iter().map(Into::into).collect(),
+                    note: file.note.map(Into::into),
                 })
                 .collect(),
             adds: doc.adds,
@@ -808,6 +939,7 @@ impl From<render::Row> for AgentRow {
             depth: row.depth,
             item_id: row.item_id,
             seq: row.seq,
+            acts: AgentActs::of(row.acts),
         }
     }
 }
@@ -847,7 +979,7 @@ impl From<render::RowKind> for AgentRowKind {
             K::Fold { worked_ms, hidden, open } => {
                 Self::Fold { worked_ms: signed_ms(worked_ms), hidden, open }
             }
-            K::Changes { files, adds, dels, more } => Self::Changes {
+            K::Changes { files, adds, dels, more, recorded } => Self::Changes {
                 files: files
                     .into_iter()
                     .map(|f| AgentFileStat { path: f.path, adds: f.adds, dels: f.dels, open: f.open })
@@ -855,9 +987,20 @@ impl From<render::RowKind> for AgentRowKind {
                 adds,
                 dels,
                 more,
+                recorded,
+            },
+            K::ChangesNote { note, why, count } => Self::ChangesNote {
+                note: match note {
+                    render::NoteKind::Recording => AgentChangesNote::Recording,
+                    render::NoteKind::Missing => AgentChangesNote::Missing,
+                    render::NoteKind::Expired => AgentChangesNote::Expired,
+                    render::NoteKind::Unrecorded => AgentChangesNote::Unrecorded,
+                },
+                why: why.map(Into::into),
+                count,
             },
             K::Mark { kind, by } => Self::Mark { kind: kind.into(), by },
-            K::Notice { text } => Self::Notice { text },
+            K::Notice { text, notice } => Self::Notice { text, notice: notice.map(Into::into) },
             K::Plan { state, shown, more, open } => Self::Plan { state: state.into(), shown, more, open },
             K::Question { state, count, by, has_text, open } => {
                 Self::Question { state: state.into(), count, by, has_text, open }
@@ -874,12 +1017,38 @@ impl From<render::RowKind> for AgentRowKind {
     }
 }
 
+impl From<render::NoticeKind> for AgentNotice {
+    fn from(kind: render::NoticeKind) -> Self {
+        match kind {
+            render::NoticeKind::Rewound => Self::Rewound,
+            render::NoticeKind::EditFromHere => Self::EditFromHere,
+            render::NoticeKind::FilesRestored => Self::FilesRestored,
+            render::NoticeKind::Forked => Self::Forked,
+        }
+    }
+}
+
+impl From<AgentNotice> for render::NoticeKind {
+    fn from(notice: AgentNotice) -> Self {
+        match notice {
+            AgentNotice::Rewound => Self::Rewound,
+            AgentNotice::EditFromHere => Self::EditFromHere,
+            AgentNotice::FilesRestored => Self::FilesRestored,
+            AgentNotice::Forked => Self::Forked,
+        }
+    }
+}
+
 impl From<render::DetailOf> for AgentDetailOf {
     fn from(of: render::DetailOf) -> Self {
         match of {
-            render::DetailOf::Command { text } => Self::Command { text },
+            render::DetailOf::Command { text, lines } => {
+                Self::Command { text, lines: lines.into_iter().map(Into::into).collect() }
+            }
             render::DetailOf::Diff { doc, edit, edits } => Self::Diff { doc: doc.into(), edit, edits },
-            render::DetailOf::Output { text, cut } => Self::Output { text, cut },
+            render::DetailOf::Output { text, cut, lines } => {
+                Self::Output { text, cut, lines: lines.into_iter().map(Into::into).collect() }
+            }
         }
     }
 }
@@ -899,7 +1068,12 @@ impl From<render::RowStatus> for AgentRowStatus {
 
 impl From<render::ToolLabel> for AgentToolLabel {
     fn from(label: render::ToolLabel) -> Self {
-        AgentToolLabel { tool_class: label.class.into(), target: label.object, more: label.more }
+        AgentToolLabel {
+            tool_class: label.class.into(),
+            target: label.object,
+            more: label.more,
+            toks: label.toks.into_iter().map(Into::into).collect(),
+        }
     }
 }
 
@@ -1208,8 +1382,12 @@ impl AgentTimeline {
     /// in place of an `Allowed` passed for it. A `Question` item's state is
     /// its `question`'s; a mark on it wins (`Waiting` asked, `Allowed`
     /// answered by `by`, `Denied` dismissed, `Expired` not answered). `open`:
-    /// the keys of the rows the user opened.
+    /// the keys of the rows the user opened. `turns`: the thread's turns
+    /// (`agent_turns`, `Event.AgentTurn`), for each turn's `Changes` and the
+    /// messages' `acts`; empty from a PC without them. `turn_files`: the
+    /// first files of the turns whose `agent_diff_files` were read.
     #[allow(clippy::too_many_arguments)]
+    #[uniffi::method(default(turns = [], turn_files = []))]
     pub fn rows(
         &self,
         items: Vec<AgentItem>,
@@ -1219,18 +1397,73 @@ impl AgentTimeline {
         now_ms: i64,
         marks: Vec<AgentMark>,
         open: Vec<String>,
+        turns: Vec<AgentTurn>,
+        turn_files: Vec<AgentTurnPaths>,
     ) -> Vec<AgentRow> {
         let inputs = inputs(&items, &streaming);
         let marks = marks_for(&items, marks);
+        let paths: Vec<(u32, Vec<render::TurnFileIn<'_>>)> =
+            turn_files.iter().map(|t| (t.turn, t.files.iter().map(turn_file_in).collect())).collect();
+        let turns: Vec<render::TurnIn<'_>> = turns.iter().map(|t| turn_in(t, &paths)).collect();
         let ctx = render::Ctx {
             state: thread_state(state),
             state_since_ms: unix_ms(state_since_ms),
             now_ms: unix_ms(now_ms),
             marks: &marks,
             open: &open,
+            turns: &turns,
         };
         let rows = self.timeline.lock().unwrap_or_else(|e| e.into_inner()).rows(&inputs, &ctx);
         rows.into_iter().map(Into::into).collect()
+    }
+}
+
+/// A turn as the timeline takes it. A phone never puts files back, so
+/// `can_restore` is never set here; a restore point in a word this build
+/// doesn't know reads as missing.
+fn turn_in<'a>(t: &AgentTurn, paths: &'a [(u32, Vec<render::TurnFileIn<'a>>)]) -> render::TurnIn<'a> {
+    render::TurnIn {
+        turn: t.turn,
+        checkpoint: match t.checkpoint {
+            Some(AgentCheckpoint::Pending) => render::Checkpoint::Pending,
+            Some(AgentCheckpoint::Ready) => render::Checkpoint::Ready,
+            Some(AgentCheckpoint::NotGit) => render::Checkpoint::NotGit,
+            Some(AgentCheckpoint::Expired) => render::Checkpoint::Expired,
+            Some(AgentCheckpoint::Missing) | None => render::Checkpoint::Missing,
+        },
+        why: t.why.map(|why| match why {
+            AgentCheckpointWhy::Busy => render::CheckpointWhy::Busy,
+            AgentCheckpointWhy::Slow => render::CheckpointWhy::Slow,
+            AgentCheckpointWhy::Large => render::CheckpointWhy::Large,
+            AgentCheckpointWhy::Refused => render::CheckpointWhy::Refused,
+            AgentCheckpointWhy::Off => render::CheckpointWhy::Off,
+            AgentCheckpointWhy::Before => render::CheckpointWhy::Before,
+        }),
+        ended_ms: t.ended_ms.map(unix_ms),
+        files: t.files,
+        adds: t.adds,
+        dels: t.dels,
+        skipped: t.skipped,
+        paths: paths.iter().find(|(turn, _)| *turn == t.turn).map_or(&[][..], |(_, files)| files.as_slice()),
+        can_fork: t.can_fork,
+        can_rewind: t.can_rewind,
+        can_restore: false,
+    }
+}
+
+fn turn_file_in(f: &AgentTurnFile) -> render::TurnFileIn<'_> {
+    render::TurnFileIn {
+        path: &f.path,
+        status: match f.status {
+            Some(AgentFileStatus::Added) => render::TurnFileStatus::Added,
+            Some(AgentFileStatus::Deleted) => render::TurnFileStatus::Deleted,
+            Some(AgentFileStatus::Renamed) => render::TurnFileStatus::Renamed,
+            Some(AgentFileStatus::TypeChanged) => render::TurnFileStatus::Type,
+            Some(AgentFileStatus::Unrecorded) => render::TurnFileStatus::Unrecorded,
+            Some(AgentFileStatus::Modified) | None => render::TurnFileStatus::Modified,
+        },
+        adds: f.adds,
+        dels: f.dels,
     }
 }
 
@@ -1310,6 +1543,7 @@ fn inputs<'a>(items: &'a [AgentItem], streaming: &'a [AgentStreaming]) -> Vec<re
                 via: via(item.via),
                 plan_state: item.plan_state.map(Into::into),
                 question: question_in(item, text),
+                notice: item.notice.map(Into::into),
             }
         })
         .collect();
@@ -1342,6 +1576,7 @@ fn inputs<'a>(items: &'a [AgentItem], streaming: &'a [AgentStreaming]) -> Vec<re
             via: render::Via::Turn,
             plan_state: None,
             question: None,
+            notice: None,
         });
     }
     inputs.sort_by_key(|input| input.seq);
@@ -1371,6 +1606,7 @@ mod tests {
             images: Vec::new(),
             plan_state: None,
             question: None,
+            notice: None,
         }
     }
 
@@ -1411,7 +1647,17 @@ mod tests {
     fn a_finished_turn_folds_behind_its_answer_as_the_render_crate_says() {
         let timeline = AgentTimeline::new();
         let rows = |open: Vec<String>| {
-            timeline.rows(finished_turn(), vec![], AgentThreadState::Done, 9_000, 10_000, vec![], open)
+            timeline.rows(
+                finished_turn(),
+                vec![],
+                AgentThreadState::Done,
+                9_000,
+                10_000,
+                vec![],
+                open,
+                vec![],
+                vec![],
+            )
         };
         let closed = rows(vec![]);
         assert_eq!(keys(&closed), ["i:i1", "f:1", "b:i4:0", "b:i4:1", "c:1"]);
@@ -1465,6 +1711,7 @@ mod tests {
                 now_ms: 10_000,
                 marks: &[],
                 open: &["f:1".to_owned(), "g:i2".to_owned()],
+                turns: &[],
             },
         );
         assert_eq!(open, direct.into_iter().map(AgentRow::from).collect::<Vec<_>>());
@@ -1474,8 +1721,17 @@ mod tests {
     fn text_still_arriving_shows_as_an_open_block_and_the_live_line_waits_for_it() {
         let timeline = AgentTimeline::new();
         let prompt = vec![item(1, AgentItemKind::User, "Fix the test.")];
-        let starting =
-            timeline.rows(prompt.clone(), vec![], AgentThreadState::Working, 1_000, 3_000, vec![], vec![]);
+        let starting = timeline.rows(
+            prompt.clone(),
+            vec![],
+            AgentThreadState::Working,
+            1_000,
+            3_000,
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+        );
         assert_eq!(keys(&starting), ["i:i1", "live"]);
         assert!(matches!(
             starting[1].kind,
@@ -1494,6 +1750,8 @@ mod tests {
             AgentThreadState::Working,
             1_000,
             3_000,
+            vec![],
+            vec![],
             vec![],
             vec![],
         );
@@ -1520,7 +1778,17 @@ mod tests {
             ..item(2, AgentItemKind::Tool, "")
         });
         let marks = vec![AgentMark { item_id: "i2".into(), kind: AgentMarkKind::Waiting, by: String::new() }];
-        let rows = timeline.rows(items, vec![], AgentThreadState::Waiting, 1_000, 3_000, marks, vec![]);
+        let rows = timeline.rows(
+            items,
+            vec![],
+            AgentThreadState::Waiting,
+            1_000,
+            3_000,
+            marks,
+            vec![],
+            vec![],
+            vec![],
+        );
         assert_eq!(keys(&rows), ["i:i1", "i:i2", "m:i2"]);
         assert!(matches!(rows[1].kind, AgentRowKind::Tool { status: AgentRowStatus::Asking, .. }));
         assert!(matches!(rows[2].kind, AgentRowKind::Mark { kind: AgentMarkKind::Waiting, .. }));
@@ -1545,6 +1813,8 @@ mod tests {
             10_000,
             allowed_on_pc,
             open,
+            vec![],
+            vec![],
         );
         let marks: Vec<(&str, AgentMarkKind)> = rows
             .iter()
@@ -1593,6 +1863,8 @@ mod tests {
             3_000,
             vec![],
             vec![],
+            vec![],
+            vec![],
         );
         assert!(rows.iter().all(|r| r.item_id != "i2"), "the plan file makes no row: {rows:?}");
         assert!(rows.iter().any(|r| matches!(r.kind, AgentRowKind::User { via: Some(AgentVia::Steer), .. })));
@@ -1617,6 +1889,8 @@ mod tests {
             AgentThreadState::Done,
             1_000,
             9_000,
+            vec![],
+            vec![],
             vec![],
             vec![],
         );
@@ -1650,8 +1924,17 @@ mod tests {
             item(1, AgentItemKind::User, "Fix the test."),
             AgentItem { end_ms: None, ..item(2, AgentItemKind::Reasoning, "") },
         ];
-        let rows =
-            AgentTimeline::new().rows(items, vec![], AgentThreadState::Working, 1_000, 3_000, vec![], vec![]);
+        let rows = AgentTimeline::new().rows(
+            items,
+            vec![],
+            AgentThreadState::Working,
+            1_000,
+            3_000,
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+        );
         assert_eq!(keys(&rows), ["i:i1", "live"]);
         assert!(matches!(rows[1].kind, AgentRowKind::Live { label: AgentLiveLabel::Thinking, .. }));
     }
@@ -1716,6 +1999,8 @@ mod tests {
             10_000,
             vec![],
             vec!["f:1".into(), "g:i2".into(), "i:i2".into(), "i:i3".into(), "c:1:0".into()],
+            vec![],
+            vec![],
         );
         assert!(rows.len() > 10, "{rows:?}");
         assert!(
@@ -1731,5 +2016,199 @@ mod tests {
         let doc = agent_diff("+secret".into());
         assert_eq!(round_trip(doc.clone()), doc);
         assert!(!format!("{doc:?}").contains("secret"));
+    }
+
+    #[test]
+    fn acts_restore_point_notes_and_diff_notes_reach_the_app() {
+        let row = |kind: render::RowKind, acts: render::Acts| {
+            AgentRow::from(render::Row {
+                key: "k".into(),
+                kind,
+                turn: 2,
+                depth: 0,
+                item_id: "i1".into(),
+                seq: 1,
+                acts,
+            })
+        };
+        let notice = || render::RowKind::Notice { text: "x".into(), notice: None };
+        assert_eq!(row(notice(), render::Acts::default()).acts, None, "all hidden: nothing offered");
+        let acts = render::Acts {
+            fork: render::Act::On,
+            rewind: render::Act::NoRestorePoint,
+            edit: render::Act::LatestOnly,
+            restore: render::Act::NotGit,
+        };
+        assert_eq!(
+            row(notice(), acts).acts,
+            Some(AgentActs {
+                fork: AgentAct::On,
+                rewind: AgentAct::NoRestorePoint,
+                edit: AgentAct::LatestOnly,
+                restore: AgentAct::NotGit,
+            })
+        );
+        let recorded =
+            render::RowKind::Changes { files: Vec::new(), adds: 3, dels: 1, more: 0, recorded: true };
+        assert!(matches!(
+            row(recorded, render::Acts::default()).kind,
+            AgentRowKind::Changes { recorded: true, .. }
+        ));
+        let note = render::RowKind::ChangesNote {
+            note: render::NoteKind::Missing,
+            why: Some(render::CheckpointWhy::Large),
+            count: 0,
+        };
+        assert!(matches!(
+            row(note, render::Acts::default()).kind,
+            AgentRowKind::ChangesNote {
+                note: AgentChangesNote::Missing,
+                why: Some(AgentCheckpointWhy::Large),
+                count: 0
+            }
+        ));
+        let unrecorded =
+            render::RowKind::ChangesNote { note: render::NoteKind::Unrecorded, why: None, count: 4 };
+        assert!(matches!(
+            row(unrecorded, render::Acts::default()).kind,
+            AgentRowKind::ChangesNote { note: AgentChangesNote::Unrecorded, why: None, count: 4 }
+        ));
+
+        let binary =
+            agent_diff("diff --git a/x.png b/x.png\nBinary files a/x.png and b/x.png differ\n".into());
+        assert_eq!(binary.files.first().and_then(|f| f.note), Some(AgentDiffNote::Binary));
+        let cut = agent_diff("--- a/x.rs\n+++ b/x.rs\n@@ -1,3 +1,3 @@\n a\n-b\n".into());
+        assert_eq!(cut.files.first().and_then(|f| f.note), Some(AgentDiffNote::Truncated));
+        let whole = agent_diff("--- a/x.rs\n+++ b/x.rs\n@@ -1 +1 @@\n-a\n+b\n".into());
+        assert_eq!(whole.files.first().and_then(|f| f.note), None);
+    }
+
+    #[test]
+    fn a_turns_restore_point_and_verdicts_reach_its_rows() {
+        let turn = AgentTurn {
+            turn: 1,
+            prompt_seq: 1,
+            last_seq: Some(4),
+            started_ms: 1_000,
+            ended_ms: Some(9_000),
+            ended: None,
+            checkpoint: Some(crate::AgentCheckpoint::Ready),
+            why: None,
+            files: 1,
+            adds: 2,
+            dels: 1,
+            more_files: false,
+            skipped: 0,
+            can_fork: true,
+            can_rewind: true,
+        };
+        let files = AgentTurnPaths {
+            turn: 1,
+            files: vec![crate::AgentTurnFile {
+                path: "src/lib.rs".into(),
+                status: Some(crate::AgentFileStatus::Modified),
+                from: None,
+                adds: 2,
+                dels: 1,
+                binary: false,
+            }],
+        };
+        let rows = AgentTimeline::new().rows(
+            finished_turn(),
+            vec![],
+            AgentThreadState::Done,
+            9_000,
+            10_000,
+            vec![],
+            vec![],
+            vec![turn.clone()],
+            vec![files],
+        );
+        assert!(
+            rows.iter()
+                .any(|r| matches!(r.kind, AgentRowKind::Changes { recorded: true, adds: 2, dels: 1, .. }))
+        );
+        let user = rows.iter().find(|r| matches!(r.kind, AgentRowKind::User { .. })).expect("the message");
+        let acts = user.acts.expect("acts on the message");
+        assert_eq!((acts.fork, acts.rewind), (AgentAct::On, AgentAct::On));
+        assert_ne!(acts.restore, AgentAct::On, "a phone never puts files back");
+
+        let missing = AgentTurn {
+            checkpoint: Some(crate::AgentCheckpoint::Missing),
+            why: Some(AgentCheckpointWhy::Busy),
+            ..turn
+        };
+        let rows = AgentTimeline::new().rows(
+            finished_turn(),
+            vec![],
+            AgentThreadState::Done,
+            9_000,
+            10_000,
+            vec![],
+            vec![],
+            vec![missing],
+            vec![],
+        );
+        assert!(rows.iter().any(|r| matches!(
+            r.kind,
+            AgentRowKind::ChangesNote {
+                note: AgentChangesNote::Missing,
+                why: Some(AgentCheckpointWhy::Busy),
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn the_colours_of_labels_commands_output_and_paths_reach_the_app() {
+        let tok = |len, class| render::Tok { len, class };
+        let label = AgentToolLabel::from(render::ToolLabel {
+            class: render::ToolClass::Edit,
+            object: "src/secret.rs:4".into(),
+            more: 0,
+            toks: vec![
+                tok(4, render::TokClass::Dir),
+                tok(9, render::TokClass::File),
+                tok(2, render::TokClass::Pos),
+            ],
+        });
+        let classes: Vec<AgentTokClass> = label.toks.iter().map(|t| t.tok_class).collect();
+        assert_eq!(classes, [AgentTokClass::Dir, AgentTokClass::File, AgentTokClass::Pos]);
+        assert_eq!(label.toks.iter().map(|t| t.len).sum::<u32>(), 15, "the runs cover the target");
+
+        let line = |text: &str, class| render::CodeLine { text: text.into(), toks: vec![tok(4, class)] };
+        let command = AgentDetailOf::from(render::DetailOf::Command {
+            text: "echo secret".into(),
+            lines: vec![line("echo secret", render::TokClass::Function)],
+        });
+        assert!(matches!(&command, AgentDetailOf::Command { lines, .. } if lines.len() == 1));
+        let output = AgentDetailOf::from(render::DetailOf::Output {
+            text: "error: secret\nwarning: x\nok".into(),
+            cut: false,
+            lines: vec![
+                line("error: secret", render::TokClass::Error),
+                line("warning: x", render::TokClass::Warn),
+                line("ok", render::TokClass::Ok),
+            ],
+        });
+        let AgentDetailOf::Output { lines, .. } = &output else { panic!("{output:?}") };
+        let classes: Vec<AgentTokClass> = lines.iter().map(|l| l.toks[0].tok_class).collect();
+        assert_eq!(classes, [AgentTokClass::Error, AgentTokClass::Warn, AgentTokClass::Ok]);
+        let plain =
+            AgentDetailOf::from(render::DetailOf::Output { text: "x".into(), cut: true, lines: Vec::new() });
+        assert!(matches!(&plain, AgentDetailOf::Output { lines, cut: true, .. } if lines.is_empty()));
+
+        let style = AgentStyle::from(render::Style { code: true, path: true, ..Default::default() });
+        assert!(style.code && style.path);
+        let block = AgentBlock::from(render::Block {
+            lang: "rust".into(),
+            lang_guessed: true,
+            text: "fn secret() {}".into(),
+            ..Default::default()
+        });
+        assert!(block.lang_guessed);
+
+        let shown = format!("{label:?} {command:?} {output:?} {block:?}");
+        assert!(!shown.contains("secret") && !shown.contains("warning"), "{shown}");
     }
 }

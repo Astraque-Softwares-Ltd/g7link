@@ -7,6 +7,7 @@
 //! `docs/protocol/v1.md`.
 
 pub mod ble;
+pub mod chat_identity;
 mod datagram;
 mod envelope;
 mod error;

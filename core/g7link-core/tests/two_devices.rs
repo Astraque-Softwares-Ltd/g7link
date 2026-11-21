@@ -90,6 +90,8 @@ struct RecordingPlatform {
     photo_barrier: Mutex<Option<Arc<std::sync::Barrier>>>,
     /// While set, `contacts` waits for it to open.
     contacts_gate: Mutex<Option<Arc<Gate>>>,
+    /// While set, `dismiss_notification` waits for it to open (after recording the key).
+    dismiss_gate: Mutex<Option<Arc<Gate>>>,
     remote_inputs: Mutex<Vec<g7link_core::RemoteInput>>,
     phone_toggles: Mutex<Vec<(String, g7link_core::PhoneToggleValue)>>,
     deck_presses: Mutex<Vec<String>>,
@@ -151,6 +153,10 @@ impl Platform for RecordingPlatform {
     }
     fn dismiss_notification(&self, key: &str) -> Result<(), NotificationError> {
         self.dismissed.lock().unwrap().push(key.to_owned());
+        let gate = self.dismiss_gate.lock().unwrap().clone();
+        if let Some(gate) = gate {
+            gate.pass();
+        }
         Ok(())
     }
     fn run_notification_action(
@@ -793,6 +799,8 @@ impl Platform for RecordingPlatform {
             AgentRequest::ImageThumb { id, .. } if id == AGENT_IMAGE => Ok(AgentReply::Thumb(jpeg(9_000))),
             AgentRequest::ImageThumb { id, .. } if id == BIG_IMAGE => Ok(AgentReply::Thumb(jpeg(200 * 1024))),
             AgentRequest::ImageThumb { .. } => Err(AgentFailure::NotFound),
+            // History and undo (§6): tests/agent_history.rs has its own host.
+            _ => Err(AgentFailure::Unsupported),
         }
     }
     fn set_pc_audio(
@@ -6181,6 +6189,7 @@ async fn messaging_style_notifications_populate_unified_chat_threads_and_reply()
     wa_note.when = now_ms - 60_000;
     wa_note.conversation = Some(NotificationConversation {
         v: 1,
+        id: None,
         title: "Maya Lin".into(),
         group: false,
         avatar: Some(vec![0xff, 0xd8, 1, 2]),
@@ -6250,19 +6259,228 @@ async fn messaging_style_notifications_populate_unified_chat_threads_and_reply()
     assert_eq!(msgs[0].text, "Give me 5 minutes!");
     assert!(msgs[0].self_sent);
 
-    // Removing the notification disables inline reply while keeping local history.
-    phone.node.notification_removed("wa|maya".into()).await;
-    wait_for(&mut pc, "notification removed", |e| match e {
-        NodeEvent::NotificationRemoved { device, key } if *device == phone_id && key == "wa|maya" => Some(()),
+    // A second chat, never replied to from the PC.
+    let mut sam_note = note("wa|sam", "com.whatsapp", "Sam", false);
+    sam_note.app_name = "WhatsApp".into();
+    sam_note.conversation = Some(NotificationConversation {
+        v: 1,
+        id: None,
+        title: "Sam".into(),
+        group: false,
+        avatar: None,
+        messages: vec![NotificationChatMessage {
+            sender: Some("Sam".into()),
+            text: "Lunch?".into(),
+            time: now_ms,
+            self_sent: false,
+            avatar: None,
+        }],
+    });
+    phone.node.notification_posted(sam_note).await;
+    wait_for(&mut pc, "the second chat", |e| match e {
+        NodeEvent::SmsChanged { device, thread: Some(tid) }
+            if *device == phone_id && *tid != changed_thread =>
+        {
+            Some(())
+        }
         _ => None,
     })
     .await;
+    assert_eq!(pc.node.chat_threads(phone_id).len(), 2);
+
+    // Their notifications leave the phone: the replied-to chat is kept, without
+    // a reply box; the other leaves the list.
+    for key in ["wa|maya", "wa|sam"] {
+        phone.node.notification_removed(key.into()).await;
+        wait_for(&mut pc, "notification removed", |e| match e {
+            NodeEvent::NotificationRemoved { device, key: removed }
+                if *device == phone_id && removed == key =>
+            {
+                Some(())
+            }
+            _ => None,
+        })
+        .await;
+    }
+    let listed: Vec<String> = pc.node.chat_threads(phone_id).into_iter().map(|t| t.thread_id).collect();
+    assert_eq!(listed, [changed_thread.as_str()]);
     let after_removed = pc.node.chat_thread(phone_id, &changed_thread).unwrap();
+    assert!(after_removed.kept && !after_removed.active);
     assert!(!after_removed.can_reply());
     assert!(matches!(
         pc.node.reply_chat_thread(phone_id, &changed_thread, "Still there?".into()).await,
         Err(Error::NotFound)
     ));
+}
+
+/// A WhatsApp chat notification, as the phone's app wrote it.
+fn chat_note(key: &str, id: Option<&str>, title: &str, messages: &[(&str, &str, i64)]) -> Notification {
+    let mut n = note(key, "com.whatsapp", title, false);
+    n.app_name = "WhatsApp".into();
+    n.when = messages.last().map_or(n.when, |m| m.2);
+    n.conversation = Some(g7link_core::NotificationConversation {
+        v: 1,
+        id: id.map(Into::into),
+        title: title.into(),
+        group: true,
+        avatar: None,
+        messages: messages
+            .iter()
+            .map(|(sender, text, time)| g7link_core::NotificationChatMessage {
+                sender: Some((*sender).into()),
+                text: (*text).into(),
+                time: *time,
+                self_sent: false,
+                avatar: None,
+            })
+            .collect(),
+    });
+    n
+}
+
+fn listed_chats(dev: &TestDevice, phone: g7link_core::DeviceId) -> Vec<String> {
+    let mut ids: Vec<String> = dev.node.chat_threads(phone).into_iter().map(|t| t.thread_id).collect();
+    ids.sort();
+    ids
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_chat_cleared_while_the_pc_was_away_is_gone_after_reconnect() {
+    let mut pc = device("Desktop", DeviceKind::Desktop).await;
+    let mut phone = device("Pixel", DeviceKind::Phone).await;
+    pair_qr(&mut pc, &mut phone).await;
+    let phone_id = phone.node.device_id();
+    grant_notification_access(&phone).await;
+    let t0 = 1_760_000_000_000i64;
+    phone
+        .node
+        .notifications_reset(vec![
+            chat_note(
+                "wa|club",
+                Some("g1"),
+                "Book Club (2 messages)",
+                &[("Ana", "Hi", t0), ("Ben", "Yo", t0 + 1)],
+            ),
+            chat_note("wa|maya", None, "Maya", &[("Maya", "Lunch?", t0)]),
+        ])
+        .await;
+    wait_for(&mut pc, "the snapshot", |e| match e {
+        NodeEvent::NotificationsReset { device, items } if *device == phone_id && items.len() == 2 => {
+            Some(())
+        }
+        _ => None,
+    })
+    .await;
+    assert_eq!(listed_chats(&pc, phone_id), ["chat:com.whatsapp:i:g1", "chat:com.whatsapp:t:maya"]);
+
+    apart(&pc, &phone).await;
+    phone.node.notification_removed("wa|club".into()).await;
+    together(&pc, &phone).await;
+    wait_for(&mut pc, "the snapshot after reconnecting", |e| match e {
+        NodeEvent::NotificationsReset { device, items } if *device == phone_id && items.len() == 1 => {
+            Some(())
+        }
+        _ => None,
+    })
+    .await;
+    assert_eq!(listed_chats(&pc, phone_id), ["chat:com.whatsapp:t:maya"]);
+    let club = pc.node.chat_thread(phone_id, "chat:com.whatsapp:i:g1").expect("stored for the grace");
+    assert!(!club.active && club.retired_ms.is_some() && club.unread == 0);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_group_whose_title_counts_up_stays_one_thread_end_to_end() {
+    let mut pc = device("Desktop", DeviceKind::Desktop).await;
+    let mut phone = device("Pixel", DeviceKind::Phone).await;
+    pair_qr(&mut pc, &mut phone).await;
+    let phone_id = phone.node.device_id();
+    grant_notification_access(&phone).await;
+    let t0 = 1_760_000_000_000i64;
+    let said = [("Ana", "Hi", t0), ("Ben", "Yo", t0 + 1), ("Cy", "Late", t0 + 2), ("Ana", "Go", t0 + 3)];
+    for (n, id) in [(2, Some("g1")), (3, Some("g1")), (4, Some("g1")), (2, None), (3, None)] {
+        let (key, title) = if id.is_some() { ("wa|club", "Book Club") } else { ("wa|hike", "Hiking") };
+        phone
+            .node
+            .notification_posted(chat_note(key, id, &format!("{title} ({n} messages)"), &said[..n]))
+            .await;
+        wait_for(&mut pc, "posted", |e| match e {
+            NodeEvent::NotificationPosted { device, notification }
+                if *device == phone_id && notification.key == key =>
+            {
+                Some(())
+            }
+            _ => None,
+        })
+        .await;
+    }
+    let threads = pc.node.chat_threads(phone_id);
+    let mut seen: Vec<(String, String, u32)> =
+        threads.into_iter().map(|t| (t.thread_id, t.title, t.unread)).collect();
+    seen.sort();
+    assert_eq!(
+        seen,
+        [
+            ("chat:com.whatsapp:i:g1".to_owned(), "Book Club".to_owned(), 4),
+            ("chat:com.whatsapp:t:hiking".to_owned(), "Hiking".to_owned(), 3),
+        ]
+    );
+    assert_eq!(pc.node.chat_messages(phone_id, "chat:com.whatsapp:i:g1", 50).len(), 4);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn removing_a_chat_on_the_pc_dismisses_it_on_the_phone() {
+    let mut pc = device("Desktop", DeviceKind::Desktop).await;
+    let mut phone = device("Pixel", DeviceKind::Phone).await;
+    pair_qr(&mut pc, &mut phone).await;
+    let phone_id = phone.node.device_id();
+    grant_notification_access(&phone).await;
+    let t0 = 1_760_000_000_000i64;
+    let (club, maya, sam) = ("chat:com.whatsapp:i:g1", "chat:com.whatsapp:t:maya", "chat:com.whatsapp:i:s1");
+    phone.node.notification_posted(chat_note("wa|club", Some("g1"), "Book Club", &[("Ana", "Hi", t0)])).await;
+    phone.node.notification_posted(chat_note("wa|maya", None, "Maya", &[("Maya", "Lunch?", t0)])).await;
+    until("both chats on the PC", || pc.node.chat_threads(phone_id).len() == 2).await;
+
+    // A live chat: gone here, and its notification dismissed on the phone.
+    with_timeout("remove", pc.node.remove_chat_thread(phone_id, club)).await.expect("removed");
+    assert!(pc.node.chat_thread(phone_id, club).is_none());
+    assert!(pc.node.chat_messages(phone_id, club, 10).is_empty());
+    assert_eq!(*phone.platform.dismissed.lock().unwrap(), ["wa|club"]);
+
+    // A kept chat whose notification already left: removed here only.
+    assert!(pc.node.set_chat_kept(phone_id, maya, true));
+    phone.node.notification_removed("wa|maya".into()).await;
+    wait_for(&mut pc, "removed", |e| match e {
+        NodeEvent::NotificationRemoved { device, key } if *device == phone_id && key == "wa|maya" => Some(()),
+        _ => None,
+    })
+    .await;
+    assert_eq!(listed_chats(&pc, phone_id), [maya]);
+    with_timeout("remove kept", pc.node.remove_chat_thread(phone_id, maya)).await.expect("removed");
+    assert!(pc.node.chat_threads(phone_id).is_empty());
+    with_timeout("remove again", pc.node.remove_chat_thread(phone_id, maya))
+        .await
+        .expect("already gone is fine");
+    assert_eq!(*phone.platform.dismissed.lock().unwrap(), ["wa|club"], "nothing more sent");
+
+    // Cancelled while the phone dismisses, and the PC closes: the delete stands.
+    phone.node.notification_posted(chat_note("wa|sam", Some("s1"), "Sam", &[("Sam", "Hey", t0)])).await;
+    until("the third chat on the PC", || pc.node.chat_thread(phone_id, sam).is_some()).await;
+    let gate = Arc::new(Gate::default());
+    *phone.platform.dismiss_gate.lock().unwrap() = Some(gate.clone());
+    let remove = {
+        let node = pc.node.clone();
+        tokio::spawn(async move { node.remove_chat_thread(phone_id, sam).await })
+    };
+    until("the dismiss on the phone", || gate.held() == 1).await;
+    remove.abort();
+    let pc_dir = pc.dir;
+    pc.node.shutdown().await;
+    drop(pc.node);
+    gate.open();
+    let pc = start_in(pc_dir, "Desktop", DeviceKind::Desktop).await;
+    assert!(pc.node.chat_thread(phone_id, sam).is_none(), "deleted before the dismiss was awaited");
+    assert!(pc.node.chat_messages(phone_id, sam, 10).is_empty());
+    assert_eq!(*phone.platform.dismissed.lock().unwrap(), ["wa|club", "wa|sam"]);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -6685,6 +6903,7 @@ async fn data_retention_counts_and_clear_all_local_data_preserves_pairing_and_se
         live: None,
         conversation: Some(NotificationConversation {
             v: 1,
+            id: None,
             title: "Sam Rivera".into(),
             group: false,
             avatar: None,
@@ -9359,7 +9578,11 @@ fn agent_catalog() -> g7link_core::AgentCatalog {
             auth: Some("subscription".into()),
             ..Default::default()
         }],
-        folders: vec![g7link_core::AgentCatalogFolder { id: AGENT_FOLDER.into(), label: "g7linux".into() }],
+        folders: vec![g7link_core::AgentCatalogFolder {
+            id: AGENT_FOLDER.into(),
+            label: "g7linux".into(),
+            checkpoints: true,
+        }],
         modes: vec!["supervised".into(), "auto_edit".into()],
     }
 }
@@ -9492,6 +9715,7 @@ async fn a_phone_lists_starts_and_follows_a_thread() {
                 effort: None,
                 images: Vec::new(),
                 custom_model: false,
+                key: None
             }
         )
     );
@@ -11165,6 +11389,7 @@ async fn an_older_phone_gets_what_it_got_before() {
         text: "Go on".into(),
         dispatch: Some("steer".into()),
         images: Vec::new(),
+        key: None,
     };
     refused_with(phone.node.debug_agent_request(pc_id, "agent.send", &steer).await, "UNSUPPORTED");
     assert_eq!(requests(&pc), before);
@@ -11207,6 +11432,7 @@ async fn a_phone_with_control_keeps_to_what_an_older_pc_does() {
         text: "Go on".into(),
         dispatch: Some("queue".into()),
         images: Vec::new(),
+        key: None,
     };
     assert!(matches!(phone.node.agent_send_with(pc_id, steer).await, Err(Error::Unsupported)));
     assert!(matches!(
@@ -11264,6 +11490,7 @@ async fn a_phone_steers_queues_and_edits_the_queue() {
         text: String::new(),
         dispatch: Some("steer".into()),
         images: vec![image.id.clone()],
+        key: None,
     };
     with_timeout("steer", phone.node.agent_send_with(pc_id, steer)).await.unwrap();
     assert_eq!(
@@ -11272,7 +11499,8 @@ async fn a_phone_steers_queues_and_edits_the_queue() {
             thread: AGENT_THREAD.into(),
             text: String::new(),
             dispatch: Some("steer".into()),
-            images: vec![image.id.clone()]
+            images: vec![image.id.clone()],
+            key: None
         }
     );
     let change = |op: &str, text: Option<&str>| AgentQueueChange {
@@ -11303,6 +11531,7 @@ async fn a_phone_steers_queues_and_edits_the_queue() {
         text: "look".into(),
         dispatch: None,
         images: (0..5).map(|i| format!("{i:032x}")).collect(),
+        key: None,
     };
     assert!(matches!(phone.node.agent_send_with(pc_id, five.clone()).await, Err(Error::Protocol(_))));
     refused_with(phone.node.debug_agent_request(pc_id, "agent.send", &five).await, "BAD_MESSAGE");

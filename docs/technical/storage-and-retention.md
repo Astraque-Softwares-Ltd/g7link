@@ -10,7 +10,7 @@ G7 Link persists all relational state in an embedded SQLite database (`g7link.db
 ```text
 <data_dir>/
 ├── identity.key                  Ed25519 secret key (NLK1 header + Secret Service/Keystore ciphertext)
-├── g7link.db                 SQLite database (WAL mode, schema v8)
+├── g7link.db                     SQLite database (WAL mode, schema v11)
 ├── clipboard_history.enc         KeyProtector-encrypted clipboard index (NLCB\x01 header)
 ├── clipboard_images/
 │   └── <clip_id>.enc             KeyProtector-encrypted PNG/image payloads (NLCI\x01 header)
@@ -23,9 +23,9 @@ G7 Link persists all relational state in an embedded SQLite database (`g7link.db
 └── api-token.json                256-bit Bearer token for opt-in localhost HTTP API (desktop)
 ```
 
-## SQLite Schema (`SCHEMA_VERSION = 7`)
+## SQLite Schema (`PRAGMA user_version = 11`)
 
-Configured in `core/g7link-core/src/store.rs` with `PRAGMA journal_mode = WAL`, `PRAGMA foreign_keys = ON`, and `PRAGMA user_version = 7`. All 7 tables use SQLite `STRICT` typing:
+Configured in `core/g7link-core/src/store.rs` with `PRAGMA journal_mode = WAL`, `PRAGMA foreign_keys = ON`, and `PRAGMA user_version` set to the number of entries in `MIGRATIONS` (11). `peers`, `peer_toggles`, `timeline` and `meta` use SQLite `STRICT` typing; `chat_threads`, `chat_messages` and `send_queue` do not:
 
 | Table | Primary Key | Purpose | Retention & Bounding Policy |
 |---|---|---|---|
@@ -33,24 +33,64 @@ Configured in `core/g7link-core/src/store.rs` with `PRAGMA journal_mode = WAL`, 
 | `peers` | `id BLOB` | Paired devices (32-byte Ed25519 `id`, `name`, `kind`, `paired_at_ms`, `last_seen_ms`, `last_addrs`) | Removed immediately upon `unpair` (`ON DELETE CASCADE` cleans child rows) |
 | `peer_toggles` | `(peer, toggle)` | Per-device capability toggle overrides (`peer BLOB`, `toggle TEXT`, `enabled INTEGER`) | Cascade-deleted when parent `peers` row is removed |
 | `timeline` | `id INTEGER` | Unified cross-device activity log (`ts_ms`, `peer BLOB`, `kind`, `direction`, `summary`, `payload BLOB`) | Indexed by `ts_ms DESC`; supports substring filtering (`search_timeline`) and clear actions |
-| `chat_threads` | `(peer, thread_id)` | Unified `MessagingStyle` notification conversations (`app_pkg`, `app_name`, `conv_key`, `title`, `is_group`, `last_sender`, `last_text`, `last_ts_ms`, `unread_count`, `reply_notif_id`, `updated_at_ms`) | Pruned after 90 days (`CHAT_RETENTION_MS`) and capped at `MAX_CHAT_THREADS_PER_PEER = 200` |
-| `chat_messages` | `id INTEGER` | Individual messages within `chat_threads` (`peer BLOB`, `thread_id`, `msg_key`, `sender`, `is_self`, `text`, `ts_ms`, `notif_id`) | Unique on `(peer, thread_id, msg_key)`; capped at `MAX_CHAT_MESSAGES_PER_THREAD = 200` and pruned with parent thread |
+| `chat_threads` | `(peer TEXT, thread_id TEXT)` | App chats from `MessagingStyle` notifications, one row per conversation; see [Unified Conversations](#unified-conversations-chat_threads--chat_messages) | Live while the notification is on the phone; a cleared chat goes after 24 hours unless kept, a kept one after 30 idle days; at most `MAX_CHAT_THREADS_PER_PEER = 200` per phone |
+| `chat_messages` | `id INTEGER` | The messages of a `chat_threads` row (`peer`, `thread_id`, `sender`, `text`, `time_ms`, `self_sent`, `avatar`) | At most `MAX_CHAT_MESSAGES_PER_THREAD = 200` per thread; deleted with their thread |
 | `send_queue` | `id TEXT` | Persistent bidirectional FIFO outbound delivery queue (`seq`, `peer BLOB`, `kind`, `status`, `created_at_ms`, `expires_at_ms`, `retry_count`, `next_retry_ms`, `last_error`, `total_bytes`, `sent_bytes`, `transfer_id`, `summary`, `payload_json`) | Active items capped at `200` items / `10 GiB`; terminal history pruned at `100` rows (`MAX_QUEUE_HISTORY_ITEMS`) |
 
 ### Schema Migrations (`Store::migrate`)
 
-`Store::open` inspects `PRAGMA user_version` inside a transaction and applies incremental migrations (`v1` → … → `v8`) non-destructively using `CREATE TABLE IF NOT EXISTS` and column checks before setting `PRAGMA user_version = 8`. Version 8 added `peers.install_id`: a salted hash of the other device's Android ID or Linux `/etc/machine-id`, used only to replace the old entry when the same device is paired again (`cleanup_peers` merges by install ID and device kind, never by name).
+`Store::open` reads `PRAGMA user_version` and applies each missing entry of `MIGRATIONS` (`v1` → … → `v11`) in its own transaction, setting `user_version` in the same transaction. It refuses a database from a newer version. Version 8 added `peers.install_id`: a salted hash of the other device's Android ID or Linux `/etc/machine-id`, used only to replace the old entry when the same device is paired again (`cleanup_peers` merges by install ID and device kind, never by name). Version 10 added the sealed `peers.link_secret`. Version 11 keys chats by conversation; see below.
 
 ## Unified Conversations (`chat_threads` & `chat_messages`)
 
-When an Android notification uses `Notification.MessagingStyle` (such as WhatsApp, Signal, Telegram, Messages, Discord, or Slack), `NotificationReader.kt` extracts the conversation metadata, participant messages, and `RemoteInput` reply capability.
+When an Android notification uses `Notification.MessagingStyle` (WhatsApp, Signal, Telegram, Google Messages, Discord, Slack and others), `NotificationReader.kt` sends its conversation with the notification: the conversation's hashed ID when the app gave it one, its title, whether it's a group, up to 25 messages, and the reply action (see [notifications §2.3, §2.4](../protocol/notifications.md)). The PC stores it in `chat_threads` and `chat_messages`. SMS is not stored here: the PC reads SMS threads from the phone's provider when it shows them.
 
-- `Store::upsert_chat_from_notification` upserts the thread header in `chat_threads` and deduplicates message turns in `chat_messages` by `(peer, thread_id, msg_key)`.
-- When the user replies from the desktop **Conversations** view (`chat.send`), the outgoing reply is appended with `is_self = 1` and routed to the Android `RemoteInput` pending intent.
-- Automatic maintenance (`prune_chat_tables`) enforces:
-  - **Age limit**: `CHAT_RETENTION_MS = 90 * 86_400 * 1,000` (90 days).
-  - **Thread cap**: `MAX_CHAT_THREADS_PER_PEER = 200` most recent threads per device.
-  - **Message cap**: `MAX_CHAT_MESSAGES_PER_THREAD = 200` most recent messages per thread.
+### Columns
+
+`chat_threads`, primary key `(peer, thread_id)`:
+
+| Column | Meaning |
+|---|---|
+| `peer` | The phone's device ID (text) |
+| `thread_id` | `chat:<app>:i:<conversation ID>`, or `chat:<app>:t:<title without its count, lowercased>` (`chat_thread_id`) |
+| `app`, `app_name` | Package name and the app's name |
+| `notification_key` | The newest notification of the conversation; used to retire it, never as its identity |
+| `reply_action_id` | The notification's reply action, if it has one |
+| `title` | The conversation's title without a message count; the newest one wins, so a renamed group stays one row |
+| `is_group`, `snippet`, `last_sender`, `updated_ms` | From the newest notification (`updated_ms` is the phone's message time) |
+| `unread` | Incoming messages stored since the chat was last opened, replied to or retired on the PC |
+| `active` | 1 while the notification is on the phone ("live") |
+| `avatar`, `app_icon` | Pictures, kept from earlier notifications when a newer one has none |
+| `conv_id` | The phone's conversation ID, when it sent one (v11) |
+| `kept` | 1 once replied to from this PC, or pinned (v11) |
+| `retired_ms` | When the notification left the phone, on this PC's clock; NULL exactly while `active = 1` (v11) |
+
+`chat_messages` holds each message once per thread: `peer`, `thread_id`, `sender` (NULL when sent from the phone's side), `text`, `time_ms`, `self_sent`, `avatar`.
+
+### How a chat is stored
+
+- `Store::upsert_chat_notification` (each `notify.posted`) and `Store::apply_chat_snapshot` (each `notify.snapshot`, in one transaction) store a conversation under its thread, insert the messages it doesn't have yet, and make it live (`active = 1`, `retired_ms = NULL`). `unread` grows by the incoming messages newly inserted, so a re-post adds nothing; a chat first seen in a snapshot counts at most the messages its notification lists. `kept` is never changed here.
+- A thread first stored by its title takes its conversation ID when a notification first brings one: the row and its messages move to the `i:` thread, with `kept`.
+- `notify.removed` retires every live row with that notification key (`Store::mark_chat_notification_removed`): `active = 0`, `unread = 0`, `retired_ms = now`.
+- A snapshot that isn't `truncated` also retires every live row whose notification key is in none of its items. Notifications turned off for this PC send an empty snapshot, which retires everything.
+- A reply sent from the PC (`append_chat_reply`) is stored as a `self_sent` message and sets `kept = 1`; `Node::set_chat_kept` pins and unpins. A message sent on the phone that shows in the notification doesn't keep a chat.
+- `Node::remove_chat_thread` deletes the thread and its messages, then dismisses its notification on the phone when it was live. `Node::chat_threads` lists rows with `active = 1 OR kept = 1`; `Node::chat_thread` finds any stored row.
+
+### Lifetime (`prune_chat_conn`)
+
+Runs after each stored notification, removal and snapshot, and once at startup (`Store::prune_chats`), on this PC's clock:
+
+| State | Listed | Deleted when |
+|---|---|---|
+| live (`active = 1`) | yes | never by age |
+| retired, not kept | no | 24 hours after `retired_ms` (`CHAT_RETIRED_GRACE_SECS`) |
+| retired, kept | yes | 30 days after the later of `updated_ms` and `retired_ms` (`CHAT_KEPT_IDLE_SECS`) |
+
+The 24 hours only let a notification listener that rebinds (an empty snapshot, then a full one) bring a chat back with its messages. Beyond these, the PC keeps at most `MAX_CHAT_THREADS_PER_PEER = 200` threads per phone (the newest by `updated_ms`) and at most `MAX_CHAT_MESSAGES_PER_THREAD = 200` messages per thread, applied as each thread is stored. A thread's messages are deleted in the same transaction as the thread.
+
+### Migration to v11
+
+v11 adds `conv_id`, `kept`, `retired_ms` and an index on `(peer, notification_key)`, then, in the same transaction, `merge_chat_rows`: rows of one phone, app and title without its count become one `chat:<app>:t:<title>` row with the newest row's header, the newest avatar and icon, and every message of the group, exact duplicates (same sender, text, time and `self_sent`) stored once. A group is kept when it holds a `self_sent` message (v10 couldn't tell a reply from the PC from one sent on the phone). The merge checks that the messages left are exactly the distinct ones it started with, and that no two groups share a thread; if not, it is undone and the rows stay as they were. Either way every row is then retired with `unread = 0`, so the first snapshot after updating brings back the chats that are on the phone. It writes nothing outside `chat_threads` and `chat_messages`.
 
 ## Desktop Notification History (`desktop/app/src/notification_store.rs`)
 

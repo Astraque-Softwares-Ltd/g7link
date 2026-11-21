@@ -19,9 +19,11 @@ use tokio::{runtime::Runtime, sync::broadcast::error::RecvError};
 uniffi::setup_scaffolding!();
 
 mod agent_control;
+mod agent_history;
 pub mod agent_rows;
 
 pub use agent_control::*;
+pub use agent_history::*;
 
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(3);
 
@@ -603,13 +605,19 @@ pub struct NotificationConversation {
     pub avatar: Option<Vec<u8>>,
     /// Chronological messages in the notification (oldest first).
     pub messages: Vec<NotificationChatMessage>,
+    /// What names the conversation on the wire, when the app gave it an ID:
+    /// a hash of that ID, never the ID itself (1 to 64 bytes of
+    /// `[A-Za-z0-9_-]`; the core drops anything else).
+    #[uniffi(default = None)]
+    pub id: Option<String>,
 }
 
-/// Never prints conversation title or messages (protocol v1 §11).
+/// Never prints conversation title, ID or messages (protocol v1 §11).
 impl std::fmt::Debug for NotificationConversation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("NotificationConversation")
             .field("v", &self.v)
+            .field("has_id", &self.id.is_some())
             .field("group", &self.group)
             .field("messages_len", &self.messages.len())
             .finish_non_exhaustive()
@@ -1155,8 +1163,13 @@ pub enum Event {
         height: u32,
     },
     /// An encoded video frame arrived from a paired PC's screen stream.
+    /// `seq` counts packets from 0 after each `PcMirrorConfig`, one up per
+    /// packet: a gap means one was lost on the way to the decoder. `time_us`
+    /// is the PC's monotonic clock when the picture reached its app (see
+    /// `pc_mirror_clock`).
     PcMirrorFrame {
         id: String,
+        seq: u64,
         keyframe: bool,
         time_us: u64,
         data: Vec<u8>,
@@ -1164,6 +1177,12 @@ pub enum Event {
     /// A paired PC's screen stream ended.
     PcMirrorEnded {
         id: String,
+    },
+    /// A paired PC says something about sharing its screen with this phone
+    /// (`mirror.notice`).
+    PcMirrorNotice {
+        id: String,
+        notice: PcMirrorNoticeKind,
     },
     /// A PC this phone asked for a screenshot or a recording shows its
     /// screen-sharing dialog: someone there has to answer it (phones only).
@@ -1304,6 +1323,33 @@ pub enum Event {
         id: String,
         key: String,
         rev: u64,
+    },
+    /// A turn of a thread started, ended, or its restore point settled:
+    /// replace that turn (`agent_turns` has the rest).
+    AgentTurn {
+        id: String,
+        thread: String,
+        turn: AgentTurn,
+    },
+    /// Messages `from_seq` to `to_seq` left a thread (a rewind): drop them;
+    /// `restored` (its undo): read the thread again.
+    AgentCut {
+        id: String,
+        thread: String,
+        from_seq: u64,
+        to_seq: u64,
+        restored: bool,
+    },
+    /// How an import of sessions found on a PC goes.
+    AgentImport {
+        id: String,
+        progress: AgentImportProgress,
+    },
+    /// This phone's held messages for a PC changed: all of them, in the
+    /// order written.
+    AgentOutbox {
+        id: String,
+        held: Vec<AgentHeld>,
     },
 }
 
@@ -1710,6 +1756,12 @@ pub struct AgentInfo {
     /// Its usage windows as its CLI last reported them. Added with `agent.control`.
     #[uniffi(default = [])]
     pub limits: Vec<AgentLimit>,
+    /// It forks a thread from its latest message ("Fork from here" on the last turn).
+    #[uniffi(default = false)]
+    pub can_fork: bool,
+    /// It forks, rewinds and edits from an earlier message too.
+    #[uniffi(default = false)]
+    pub can_fork_at: bool,
 }
 
 impl std::fmt::Debug for AgentInfo {
@@ -1727,6 +1779,9 @@ impl std::fmt::Debug for AgentInfo {
 pub struct AgentFolder {
     pub id: String,
     pub label: String,
+    /// The PC keeps a restore point for each turn in it.
+    #[uniffi(default = false)]
+    pub checkpoints: bool,
 }
 
 impl std::fmt::Debug for AgentFolder {
@@ -1775,10 +1830,16 @@ impl From<core::AgentCatalog> for AgentCatalog {
                     auth: a.auth,
                     models: a.models.into_iter().map(Into::into).collect(),
                     can: a.can.iter().filter_map(|c| AgentCan::from_wire(c)).collect(),
+                    can_fork: a.can.iter().any(|c| c == core::agent::can::FORK),
+                    can_fork_at: a.can.iter().any(|c| c == core::agent::can::FORK_AT),
                     limits: a.limits.into_iter().map(Into::into).collect(),
                 })
                 .collect(),
-            folders: c.folders.into_iter().map(|f| AgentFolder { id: f.id, label: f.label }).collect(),
+            folders: c
+                .folders
+                .into_iter()
+                .map(|f| AgentFolder { id: f.id, label: f.label, checkpoints: f.checkpoints })
+                .collect(),
             // A mode this build doesn't know can't be started from here.
             modes: c.modes.iter().filter_map(|m| AgentMode::from_wire(m)).collect(),
             can_say_why: false,
@@ -1844,6 +1905,33 @@ pub struct AgentThread {
     /// Questions waiting for an answer (not counted in `asks`).
     #[uniffi(default = 0)]
     pub asking: u32,
+    /// In the "Pinned" section.
+    #[uniffi(default = false)]
+    pub pinned: bool,
+    /// On the "Archived" shelf.
+    #[uniffi(default = false)]
+    pub archived: bool,
+    /// Its title in the primary weight.
+    #[uniffi(default = false)]
+    pub unread: bool,
+    /// Out of the main list until then: "Snoozed until %1".
+    #[uniffi(default = None)]
+    pub snoozed_until_ms: Option<i64>,
+    /// The newest turn's number; 0 when none.
+    #[uniffi(default = 0)]
+    pub turns: u32,
+    /// "Fork of %1".
+    #[uniffi(default = None)]
+    pub forked_from: Option<AgentForkedFrom>,
+    /// "Brought in".
+    #[uniffi(default = false)]
+    pub found: bool,
+    /// It can be read but not continued: no composer.
+    #[uniffi(default = None)]
+    pub readonly: Option<AgentReadonly>,
+    /// The last rewind can be undone until then.
+    #[uniffi(default = None)]
+    pub undo: Option<AgentUndo>,
 }
 
 /// A plan step's state.
@@ -1928,6 +2016,15 @@ impl AgentThread {
                 need_login: m.need_login,
             }),
             asking: t.asking,
+            pinned: t.pinned,
+            archived: t.archived,
+            unread: t.unread,
+            snoozed_until_ms: t.snoozed_until_ms.map(ms),
+            turns: t.turns,
+            forked_from: t.forked_from.map(Into::into),
+            found: t.found,
+            readonly: t.readonly.as_deref().and_then(AgentReadonly::from_wire),
+            undo: t.undo.map(Into::into),
         })
     }
 }
@@ -2002,6 +2099,10 @@ pub struct AgentItem {
     /// A `Question` item: how many it asked and how it ended.
     #[uniffi(default = None)]
     pub question: Option<AgentItemQuestion>,
+    /// A `Notice` item: which notice, for those the app acts on (Undo on
+    /// "Rewound to here" while the thread's `undo` is set); null for the rest.
+    #[uniffi(default = None)]
+    pub notice: Option<AgentNotice>,
 }
 
 /// Never prints the text or the ids it names (protocol v1 §11).
@@ -2049,6 +2150,7 @@ impl AgentItem {
             images: i.images.into_iter().map(Into::into).collect(),
             plan_state: i.plan_state.as_deref().and_then(AgentPlanState::from_wire),
             question: i.question.map(Into::into),
+            notice: i.notice.as_deref().and_then(AgentNotice::from_wire),
         })
     }
 }
@@ -2453,6 +2555,84 @@ pub enum PhoneToggleValue {
     Bool { on: bool },
     Level { level: u8 },
     Mode { mode: String },
+}
+
+/// How a request to see a PC's screen (`start_pc_mirror`) went.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum PcMirrorStart {
+    /// The PC agreed: the picture follows (after GNOME's dialog, if it asks:
+    /// `PcMirrorNotice` `Prompt`).
+    Started,
+    /// The PC doesn't share its screen with this phone (its "See this screen"
+    /// is off for it), or this phone may not see it.
+    Denied,
+    /// The PC can't share its screen (no way to capture or encode it).
+    Unsupported,
+}
+
+/// How `mirror.start` went, for `start_pc_mirror`: a refusal is an answer,
+/// not an error.
+fn pc_mirror_start(result: core::Result<()>) -> Result<PcMirrorStart> {
+    match result {
+        Ok(()) => Ok(PcMirrorStart::Started),
+        Err(core::Error::Denied | core::Error::Declined) => Ok(PcMirrorStart::Denied),
+        Err(core::Error::Unsupported) => Ok(PcMirrorStart::Unsupported),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// What a PC says about sharing its screen with this phone (`mirror.notice`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum PcMirrorNoticeKind {
+    /// GNOME asks someone at the PC to choose the screen to share; the
+    /// picture comes once they do.
+    Prompt,
+    /// Play on phone ended: the player's window is gone.
+    NoWindow,
+}
+
+impl PcMirrorNoticeKind {
+    /// The notice `code` a PC sent about mirroring `session`, if it's one for
+    /// a phone (about the PC's screen).
+    fn from_code(session: u32, code: &str) -> Option<Self> {
+        // docs/protocol/mirror.md §2 (`mirror::NOTICE_PROMPT`, `NOTICE_NO_WINDOW`).
+        match (session, code) {
+            (core::MIRROR_SCREEN, "prompt") => Some(Self::Prompt),
+            (core::MIRROR_SCREEN, "no_window") => Some(Self::NoWindow),
+            _ => None,
+        }
+    }
+}
+
+/// A PC's clock against this phone's, for the time its screen's pictures
+/// take to arrive (`pc_mirror_clock`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Record)]
+pub struct PcMirrorClock {
+    /// The PC's monotonic clock minus this phone's `CLOCK_MONOTONIC`
+    /// (`System.nanoTime() / 1000`), in microseconds: a frame's `time_us`
+    /// less this is when it reached the PC's app, on the phone's clock.
+    pub offset_us: i64,
+    /// The round trip the estimate was timed over, in microseconds: its
+    /// error is at most half of it.
+    pub rtt_us: u32,
+}
+
+/// The newest clock estimate of each PC whose screen this phone shows.
+#[derive(Debug, Default)]
+struct PcMirrorClocks(std::sync::Mutex<std::collections::HashMap<String, PcMirrorClock>>);
+
+impl PcMirrorClocks {
+    fn get(&self, id: &str) -> Option<PcMirrorClock> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).get(id).copied()
+    }
+
+    fn set(&self, id: &str, clock: Option<PcMirrorClock>) {
+        let mut clocks = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        match clock {
+            Some(clock) => clocks.insert(id.to_owned(), clock),
+            None => clocks.remove(id),
+        };
+    }
 }
 
 /// What a mirroring video packet holds (docs/protocol/mirror.md).
@@ -3716,6 +3896,7 @@ impl From<core::NotificationConversation> for NotificationConversation {
             group: c.group,
             avatar: c.avatar,
             messages: c.messages.into_iter().map(Into::into).collect(),
+            id: c.id,
         }
     }
 }
@@ -3724,6 +3905,7 @@ impl From<NotificationConversation> for core::NotificationConversation {
     fn from(c: NotificationConversation) -> Self {
         core::NotificationConversation {
             v: c.v,
+            id: c.id,
             title: c.title,
             group: c.group,
             avatar: c.avatar,
@@ -3988,10 +4170,13 @@ impl Event {
             | NodeEvent::CameraCaptureReceived { .. }
             | NodeEvent::CameraCaptureCancelled { .. }
             | NodeEvent::PcMirrorRequested { .. }
-            // Shown on PCs only.
-            | NodeEvent::MirrorNotice { .. }
             // A phone's microphone arrives on PCs only.
             | NodeEvent::Mic { .. } => return None,
+            // What a PC says about sharing its screen; the rest is for PCs.
+            NodeEvent::MirrorNotice { device, session, code } => Event::PcMirrorNotice {
+                id: device.to_string(),
+                notice: PcMirrorNoticeKind::from_code(session, &code)?,
+            },
             NodeEvent::RemoteInputRequested { device } => {
                 Event::RemoteInputRequested { id: device.to_string() }
             }
@@ -4080,6 +4265,22 @@ impl Event {
             }
             NodeEvent::AgentSessionItem { device, session, item } => {
                 Event::AgentSessionItem { id: device.to_string(), session, item: AgentItem::from_core(item)? }
+            }
+            NodeEvent::AgentTurn { device, thread, turn } => {
+                Event::AgentTurn { id: device.to_string(), thread, turn: turn.into() }
+            }
+            NodeEvent::AgentCut { device, cut } => Event::AgentCut {
+                id: device.to_string(),
+                thread: cut.thread,
+                from_seq: cut.from_seq,
+                to_seq: cut.to_seq,
+                restored: cut.restored,
+            },
+            NodeEvent::AgentImport { device, progress } => {
+                Event::AgentImport { id: device.to_string(), progress: progress.into() }
+            }
+            NodeEvent::AgentOutbox { device, held } => {
+                Event::AgentOutbox { id: device.to_string(), held: held.into_iter().map(Into::into).collect() }
             }
             // Shown on PCs only.
             NodeEvent::AgentsRequested { .. } | NodeEvent::AgentSessionsRequested { .. } => return None,
@@ -4394,6 +4595,9 @@ pub trait EventListener: Send + Sync {
 struct FfiMirrorSink {
     id: String,
     listener: Arc<dyn EventListener>,
+    /// The next packet's `seq`: 0 after each config.
+    seq: std::sync::atomic::AtomicU64,
+    clocks: Arc<PcMirrorClocks>,
 }
 
 impl std::fmt::Debug for FfiMirrorSink {
@@ -4402,8 +4606,18 @@ impl std::fmt::Debug for FfiMirrorSink {
     }
 }
 
+impl FfiMirrorSink {
+    /// A sink for a new stream from PC `id`: its clock isn't known until timed again.
+    fn new(id: String, listener: Arc<dyn EventListener>, clocks: Arc<PcMirrorClocks>) -> Self {
+        clocks.set(&id, None);
+        Self { id, listener, seq: std::sync::atomic::AtomicU64::new(0), clocks }
+    }
+}
+
 impl core::MirrorSink for FfiMirrorSink {
     fn config(&self, config: core::MirrorConfig) {
+        // The core hands one stream's packets over in order, from one task.
+        self.seq.store(0, std::sync::atomic::Ordering::Relaxed);
         self.listener.on_event(Event::PcMirrorConfig {
             id: self.id.clone(),
             codec: config.codec,
@@ -4413,15 +4627,20 @@ impl core::MirrorSink for FfiMirrorSink {
     }
 
     fn packet(&self, keyframe: bool, time_us: u64, data: Vec<u8>) {
-        self.listener.on_event(Event::PcMirrorFrame { id: self.id.clone(), keyframe, time_us, data });
+        let seq = self.seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.listener.on_event(Event::PcMirrorFrame { id: self.id.clone(), seq, keyframe, time_us, data });
     }
 
     fn ended(&self) {
         self.listener.on_event(Event::PcMirrorEnded { id: self.id.clone() });
     }
+
+    fn clock(&self, offset_us: i64, rtt_us: u32) {
+        self.clocks.set(&self.id, Some(PcMirrorClock { offset_us, rtt_us }));
+    }
 }
 
-struct PlatformAdapter(Arc<dyn Platform>, Arc<dyn EventListener>);
+struct PlatformAdapter(Arc<dyn Platform>, Arc<dyn EventListener>, Arc<PcMirrorClocks>);
 
 impl std::fmt::Debug for PlatformAdapter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -4831,7 +5050,7 @@ impl core::Platform for PlatformAdapter {
         if session != core::MIRROR_SCREEN {
             return None;
         }
-        Some(Arc::new(FfiMirrorSink { id: peer.to_string(), listener: self.1.clone() }))
+        Some(Arc::new(FfiMirrorSink::new(peer.to_string(), self.1.clone(), self.2.clone())))
     }
 }
 
@@ -4937,6 +5156,8 @@ pub enum RelayEditResult {
 pub struct G7LinkNode {
     runtime: Runtime,
     node: Node,
+    /// The clocks of PCs whose screens show here (`pc_mirror_clock`).
+    pc_mirror_clocks: Arc<PcMirrorClocks>,
 }
 
 impl std::fmt::Debug for G7LinkNode {
@@ -4991,8 +5212,9 @@ impl G7LinkNode {
         config.usb_port = options.usb_port;
         config.key_protector = Some(Arc::new(KeyProtectorAdapter(key_protector)));
         with_built_in_capabilities(&mut config.capabilities);
-        let node =
-            runtime.block_on(Node::start(config, Arc::new(PlatformAdapter(platform, listener.clone()))))?;
+        let pc_mirror_clocks = Arc::new(PcMirrorClocks::default());
+        let adapter = PlatformAdapter(platform, listener.clone(), pc_mirror_clocks.clone());
+        let node = runtime.block_on(Node::start(config, Arc::new(adapter)))?;
 
         let mut events = node.events();
         let node_for_events = node.clone();
@@ -5036,7 +5258,7 @@ impl G7LinkNode {
                 }
             }
         });
-        Ok(Arc::new(G7LinkNode { runtime, node }))
+        Ok(Arc::new(G7LinkNode { runtime, node, pc_mirror_clocks }))
     }
 
     /// This device's ID (z-base-32).
@@ -6051,11 +6273,31 @@ impl G7LinkNode {
         Ok(self.node.agent_catalog(id).map(|c| AgentCatalog::from_core(c, can_say_why, can_control)))
     }
 
-    /// A PC's threads, newest first (at most 50).
-    pub async fn agent_threads(&self, id: String) -> Result<Vec<AgentThread>> {
+    /// A PC's threads, newest first (at most 50), each saved on this phone
+    /// as it passes. `show`: a shelf (the main list when null); `before_ms`:
+    /// the next page, threads changed before then.
+    #[uniffi::method(default(show = None, before_ms = None))]
+    pub async fn agent_threads(
+        &self,
+        id: String,
+        show: Option<AgentThreadShow>,
+        before_ms: Option<i64>,
+    ) -> Result<Vec<AgentThread>> {
         let id = parse_id(&id)?;
         let node = self.node.clone();
-        let threads = self.run(async move { node.agent_threads(id).await }).await?;
+        let threads = self
+            .run(async move {
+                if show.is_none() && before_ms.is_none() {
+                    node.agent_threads(id).await
+                } else {
+                    let request = core::AgentThreadsRequest {
+                        show: show.map(|s| s.wire().to_owned()),
+                        before_ms: before_ms.and_then(|b| u64::try_from(b).ok()),
+                    };
+                    node.agent_threads_shown(id, request).await
+                }
+            })
+            .await?;
         Ok(threads.into_iter().filter_map(AgentThread::from_core).collect())
     }
 
@@ -6090,6 +6332,7 @@ impl G7LinkNode {
             effort,
             images,
             custom_model,
+            key: None,
         };
         let thread = self.run(async move { node.agent_start(id, start).await }).await?;
         AgentThread::from_core(thread)
@@ -6102,7 +6345,13 @@ impl G7LinkNode {
     /// thread's next state shows where it went); `images` are ids from
     /// `agent_image_send` (at most 4; `text` may then be empty). Without it
     /// those are `Unsupported`, and nothing is sent.
-    #[uniffi::method(default(dispatch = None, images = []))]
+    ///
+    /// `hold`: when the PC can't be reached, the message waits on this phone
+    /// and goes once, in order, when it's back (the answer is then the held
+    /// message; null: it was sent). A message with images is never held: it
+    /// fails offline ("Pictures can't wait. Send when %1 is back."). At most
+    /// 20 wait per PC (`QueueFull`).
+    #[uniffi::method(default(dispatch = None, images = [], hold = false))]
     pub async fn agent_send(
         &self,
         id: String,
@@ -6110,11 +6359,19 @@ impl G7LinkNode {
         text: String,
         dispatch: Option<AgentDispatch>,
         images: Vec<String>,
-    ) -> Result<()> {
+        hold: bool,
+    ) -> Result<Option<AgentHeld>> {
         let id = parse_id(&id)?;
         let node = self.node.clone();
-        let send = core::AgentSend { thread, text, dispatch: agent_control::dispatch_wire(dispatch), images };
-        self.run(async move { Ok(node.agent_send_with(id, send).await?) }).await
+        let send = core::AgentSend {
+            thread,
+            text,
+            dispatch: agent_control::dispatch_wire(dispatch),
+            images,
+            key: None,
+        };
+        let held = self.run(async move { node.agent_send_held(id, send, hold).await }).await?;
+        Ok(held.map(Into::into))
     }
 
     /// Stops a thread's running turn.
@@ -6288,7 +6545,7 @@ impl G7LinkNode {
 
     /// Asks a paired PC to stream its screen to this phone (`mirror.start`, `session == 0`),
     /// or with `watch`, what that PC player plays, with its sound (Play on phone, after the
-    /// PC offered it).
+    /// PC offered it). Says whether the PC agreed; offline and transport failures are errors.
     pub async fn start_pc_mirror(
         &self,
         pc_id: String,
@@ -6296,7 +6553,7 @@ impl G7LinkNode {
         fps: u32,
         bitrate: u32,
         watch: Option<String>,
-    ) -> Result<()> {
+    ) -> Result<PcMirrorStart> {
         let id = parse_id(&pc_id)?;
         let node = self.node.clone();
         let options = core::MirrorStart {
@@ -6311,7 +6568,13 @@ impl G7LinkNode {
             watch,
             sound_only: false,
         };
-        self.run(async move { Ok(node.mirror_start(id, options).await?) }).await
+        self.run(async move { pc_mirror_start(node.mirror_start(id, options).await) }).await
+    }
+
+    /// PC `pc_id`'s clock against this phone's, while its screen shows here:
+    /// `None` until it's first timed, after each new stream starts.
+    pub fn pc_mirror_clock(&self, pc_id: String) -> Option<PcMirrorClock> {
+        self.pc_mirror_clocks.get(&pc_id)
     }
 
     /// Asks a paired PC for a fresh keyframe on its screen stream (`mirror.keyframe`).
@@ -7196,7 +7459,11 @@ mod tests {
                 auth: Some("api_key".into()),
                 ..Default::default()
             }],
-            folders: vec![core::AgentCatalogFolder { id: "f1".into(), label: "g7linux".into() }],
+            folders: vec![core::AgentCatalogFolder {
+                id: "f1".into(),
+                label: "g7linux".into(),
+                checkpoints: true,
+            }],
             modes: vec!["supervised".into(), "plan".into(), "full_access".into()],
         });
         assert_eq!(catalog.modes, vec![AgentMode::Supervised, AgentMode::Plan]);
@@ -7413,6 +7680,30 @@ mod tests {
     }
 
     #[test]
+    fn a_conversation_id_crosses_the_ffi_both_ways_and_stays_out_of_debug() {
+        let conv = NotificationConversation {
+            v: 1,
+            title: "Book Club".into(),
+            group: true,
+            avatar: None,
+            messages: vec![NotificationChatMessage {
+                sender: Some("Ana".into()),
+                text: "Bring snacks".into(),
+                time: 1_760_000_000_000,
+                self_sent: false,
+                avatar: None,
+            }],
+            id: Some("h4sh3d_ID-1".into()),
+        };
+        let core = core::NotificationConversation::from(conv.clone());
+        assert_eq!(core.id.as_deref(), Some("h4sh3d_ID-1"));
+        assert_eq!(NotificationConversation::from(core), conv);
+        assert!(!format!("{conv:?}").contains("h4sh3d"));
+        let none = NotificationConversation { id: None, ..conv };
+        assert_eq!(core::NotificationConversation::from(none).id, None);
+    }
+
+    #[test]
     fn batteries_are_clamped() {
         let b: core::Battery = Battery {
             level: 140,
@@ -7465,6 +7756,94 @@ mod tests {
             modified: 1_700_000_000,
         };
         assert_eq!(entry.kind, "file");
+    }
+
+    /// Keeps what a sink hands the app.
+    #[derive(Debug, Default)]
+    struct Heard(std::sync::Mutex<Vec<Event>>);
+
+    impl EventListener for Heard {
+        fn on_event(&self, event: Event) {
+            self.0.lock().unwrap().push(event);
+        }
+    }
+
+    #[test]
+    fn pc_screen_packets_are_numbered_from_each_config() {
+        use g7link_core::MirrorSink;
+        let heard = Arc::new(Heard::default());
+        let clocks = Arc::new(PcMirrorClocks::default());
+        let sink = FfiMirrorSink::new("pc".into(), heard.clone(), clocks);
+        let config = |width| core::MirrorConfig { codec: "h264".into(), width, height: 768, session: 0 };
+        sink.config(config(1366));
+        sink.packet(true, 10, vec![1]);
+        sink.packet(false, 20, vec![2]);
+        sink.packet(false, 30, vec![3]);
+        // A new format restarts the count; a keyframe follows it.
+        sink.config(config(1280));
+        sink.packet(true, 40, vec![4]);
+        sink.packet(false, 50, vec![5]);
+        let numbered: Vec<(u64, bool, u64)> = heard
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|event| match event {
+                Event::PcMirrorFrame { seq, keyframe, time_us, .. } => Some((*seq, *keyframe, *time_us)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(numbered, [(0, true, 10), (1, false, 20), (2, false, 30), (0, true, 40), (1, false, 50)]);
+        let configs =
+            heard.0.lock().unwrap().iter().filter(|e| matches!(e, Event::PcMirrorConfig { .. })).count();
+        assert_eq!(configs, 2);
+    }
+
+    #[test]
+    fn a_pcs_clock_is_known_once_timed_and_forgotten_by_a_new_stream() {
+        use g7link_core::MirrorSink;
+        let clocks = Arc::new(PcMirrorClocks::default());
+        let heard: Arc<dyn EventListener> = Arc::new(Heard::default());
+        let sink = FfiMirrorSink::new("pc".into(), heard.clone(), clocks.clone());
+        assert_eq!(clocks.get("pc"), None, "not until the first answer");
+        sink.clock(-1_234_567, 3_500);
+        assert_eq!(clocks.get("pc"), Some(PcMirrorClock { offset_us: -1_234_567, rtt_us: 3_500 }));
+        assert_eq!(clocks.get("other"), None);
+        sink.clock(-1_234_000, 2_000);
+        assert_eq!(clocks.get("pc").map(|c| c.rtt_us), Some(2_000), "the newest estimate");
+        // The PC may have restarted since: its clock is timed again.
+        let _next = FfiMirrorSink::new("pc".into(), heard, clocks.clone());
+        assert_eq!(clocks.get("pc"), None);
+    }
+
+    #[test]
+    fn a_pcs_answer_to_see_its_screen_is_a_result_not_an_error() {
+        assert_eq!(pc_mirror_start(Ok(())).unwrap(), PcMirrorStart::Started);
+        assert_eq!(pc_mirror_start(Err(core::Error::Denied)).unwrap(), PcMirrorStart::Denied);
+        assert_eq!(pc_mirror_start(Err(core::Error::Declined)).unwrap(), PcMirrorStart::Denied);
+        assert_eq!(pc_mirror_start(Err(core::Error::Unsupported)).unwrap(), PcMirrorStart::Unsupported);
+        assert!(pc_mirror_start(Err(core::Error::Offline)).is_err(), "offline stays an error");
+        assert!(pc_mirror_start(Err(core::Error::Timeout)).is_err());
+        assert!(pc_mirror_start(Err(core::Error::Network("reset".into()))).is_err());
+    }
+
+    #[test]
+    fn a_pcs_notices_about_its_screen_reach_the_app() {
+        let pc = core::DeviceId([7; 32]);
+        let notice = |session, code: &str| {
+            Event::from_node(NodeEvent::MirrorNotice { device: pc, session, code: code.into() })
+        };
+        assert_eq!(
+            notice(0, "prompt"),
+            Some(Event::PcMirrorNotice { id: pc.to_string(), notice: PcMirrorNoticeKind::Prompt })
+        );
+        assert_eq!(
+            notice(0, "no_window"),
+            Some(Event::PcMirrorNotice { id: pc.to_string(), notice: PcMirrorNoticeKind::NoWindow })
+        );
+        assert_eq!(notice(0, core::MIRROR_NOTICE_LOCKED), None, "a phone's notice, for PCs");
+        assert_eq!(notice(0, "something_new"), None, "codes this build doesn't know");
+        assert_eq!(notice(2, "prompt"), None, "only about the PC's screen");
     }
 }
 

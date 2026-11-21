@@ -1216,6 +1216,7 @@ fn sample_chat_notifications() -> Vec<Notification> {
             live: None,
             conversation: Some(NotificationConversation {
                 v: 1,
+                id: None,
                 title: "Maya Lin".into(),
                 group: false,
                 avatar: None,
@@ -1253,6 +1254,7 @@ fn sample_chat_notifications() -> Vec<Notification> {
             live: None,
             conversation: Some(NotificationConversation {
                 v: 1,
+                id: None,
                 title: "Weekend Hike 🥾".into(),
                 group: true,
                 avatar: None,

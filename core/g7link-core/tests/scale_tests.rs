@@ -275,6 +275,7 @@ async fn scale_5000_timeline_entries_and_200_chat_threads() {
             live: None,
             conversation: Some(NotificationConversation {
                 v: 1,
+                id: None,
                 title: format!("Conversation Thread {t:03}"),
                 group: t % 4 == 0,
                 avatar: None,

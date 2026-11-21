@@ -13,8 +13,9 @@
 use serde::Serialize;
 
 use crate::messages::{
-    AgentCommand, AgentCommands, AgentFileHit, AgentFiles, AgentItem, AgentItems, AgentSession,
-    AgentSessionItems, AgentSessions, AgentThread, AgentThreads, CallLog, CallLogEntry, Contact,
+    AgentCommand, AgentCommands, AgentFileHit, AgentFiles, AgentFound, AgentFoundItems, AgentFoundList,
+    AgentHit, AgentHits, AgentItem, AgentItems, AgentSession, AgentSessionItems, AgentSessions, AgentThread,
+    AgentThreads, AgentTurn, AgentTurnFile, AgentTurnFiles, AgentTurns, CallLog, CallLogEntry, Contact,
     ContactsList, PhoneApp, PhoneApps, PhotoAlbum, PhotoAlbumsList, PhotoItem, PhotoItems, PhotoThumb,
     PhotoThumbsList, SmsMessage, SmsMessages, SmsThread, SmsThreads, StorageEntries, StorageEntry, clip,
     continuity_camera, files, types,
@@ -198,6 +199,19 @@ pub const RPCS: &[RpcOp] = &[
     rpc(types::AGENT_SESSION_CONTINUE, svc::AGENT, "session.continue", false),
     rpc(types::AGENT_DRAFT_GET, svc::AGENT, "draft.get", false),
     rpc(types::AGENT_DRAFT_SET, svc::AGENT, "draft.set", false),
+    rpc(types::AGENT_TURNS, svc::AGENT, "turns", true),
+    rpc(types::AGENT_DIFF_FILES, svc::AGENT, "diff.files", true),
+    rpc(types::AGENT_DIFF_PATCH, svc::AGENT, "diff.patch", true),
+    rpc(types::AGENT_SEARCH, svc::AGENT, "search", true),
+    rpc(types::AGENT_MARK, svc::AGENT, "mark", true),
+    rpc(types::AGENT_RENAME, svc::AGENT, "rename", false),
+    rpc(types::AGENT_FORK, svc::AGENT, "fork", false),
+    rpc(types::AGENT_REWIND_PREVIEW, svc::AGENT, "rewind.preview", false),
+    rpc(types::AGENT_REWIND_APPLY, svc::AGENT, "rewind.apply", false),
+    rpc(types::AGENT_REWIND_UNDO, svc::AGENT, "rewind.undo", false),
+    rpc(types::AGENT_FOUND, svc::AGENT, "found", true),
+    rpc(types::AGENT_FOUND_PREVIEW, svc::AGENT, "found.preview", true),
+    rpc(types::AGENT_IMPORT, svc::AGENT, "import", false),
 ];
 
 /// The RPC operation whose request frame has type `t`.
@@ -244,12 +258,23 @@ pub fn lane_of(t: &str) -> Option<Lane> {
         DECK_LAYOUT | DECK_STATE | DECK_PRESS | DECK_AUDIO_SET => Lane::Service(svc::DECK),
         INPUT_EVENT | INPUT_TEXT_WATCH | INPUT_TEXT_STATE | INPUT_TEXT_FOCUS => Lane::Service(svc::INPUT),
         MIRROR_INPUT | MIRROR_KEYFRAME | MIRROR_RESIZE | MIRROR_SOUND | MIRROR_POWER | MIRROR_NOTICE
-        | MIRROR_STOP => Lane::Service(svc::MIRROR),
+        | MIRROR_STOP | MIRROR_CLOCK => Lane::Service(svc::MIRROR),
         WEBCAM_STOP | WEBCAM_KEYFRAME => Lane::Service(svc::WEBCAM),
         MIC_STOP => Lane::Service(svc::MIC),
         CAMERA_CAPTURE_CANCEL => Lane::Service(svc::CAMERA),
-        AGENT_CATALOG | AGENT_THREAD | AGENT_EVENT | AGENT_ASK | AGENT_ASKED | AGENT_QUESTION
-        | AGENT_QUESTIONED | AGENT_SESSION | AGENT_SESSION_ITEM | AGENT_DRAFT => Lane::Service(svc::AGENT),
+        AGENT_CATALOG
+        | AGENT_THREAD
+        | AGENT_EVENT
+        | AGENT_ASK
+        | AGENT_ASKED
+        | AGENT_QUESTION
+        | AGENT_QUESTIONED
+        | AGENT_SESSION
+        | AGENT_SESSION_ITEM
+        | AGENT_DRAFT
+        | AGENT_TURN
+        | AGENT_CUT
+        | AGENT_IMPORT_PROGRESS => Lane::Service(svc::AGENT),
 
         MEDIA_FILE | MEDIA_FILE_META => Lane::Stream { svc: svc::MEDIA, op: "file" },
         MEDIA_ART | MEDIA_ART_META => Lane::Stream { svc: svc::MEDIA, op: "art" },
@@ -430,6 +455,11 @@ paged!(AgentSessions, AgentSession, sessions);
 paged!(AgentSessionItems, AgentItem, items, keep: session, flag: more_before);
 paged!(AgentFiles, AgentFileHit, files, flag: more);
 paged!(AgentCommands, AgentCommand, commands);
+paged!(AgentTurns, AgentTurn, turns);
+paged!(AgentTurnFiles, AgentTurnFile, files, keep: adds, keep: dels, flag: more);
+paged!(AgentHits, AgentHit, hits, keep: next, flag: titles_only);
+paged!(AgentFoundList, AgentFound, found, keep: next_ms, keep: total, flag: scanning, flag: partial);
+paged!(AgentFoundItems, AgentItem, items);
 
 impl Paged for AgentItems {
     type Item = AgentItem;
@@ -548,10 +578,14 @@ mod tests {
             (PC_WAKE_INFO, svc::PC),
             (TASK_NOTIFY, svc::TASK),
             (MIRROR_STOP, svc::MIRROR),
+            (MIRROR_CLOCK, svc::MIRROR),
             (WEBCAM_KEYFRAME, svc::WEBCAM),
             (CAMERA_CAPTURE_CANCEL, svc::CAMERA),
             (AGENT_SESSION_ITEM, svc::AGENT),
             (AGENT_DRAFT, svc::AGENT),
+            (AGENT_TURN, svc::AGENT),
+            (AGENT_CUT, svc::AGENT),
+            (AGENT_IMPORT_PROGRESS, svc::AGENT),
         ];
         for (t, service) in lanes {
             assert_eq!(lane_of(t), Some(Lane::Service(service)), "{t}");
@@ -559,6 +593,9 @@ mod tests {
         assert_eq!(lane_of(INPUT_CHECK), Some(Lane::Rpc { svc: svc::INPUT, op: "check" }));
         assert_eq!(lane_of(PC_WAKE_RELAY), Some(Lane::Rpc { svc: svc::PC, op: "wake.relay" }));
         assert_eq!(lane_of(AGENT_SESSION_READ), Some(Lane::Rpc { svc: svc::AGENT, op: "session.read" }));
+        assert_eq!(lane_of(AGENT_IMPORT), Some(Lane::Rpc { svc: svc::AGENT, op: "import" }));
+        assert_eq!(lane_of(AGENT_FOUND_PREVIEW), Some(Lane::Rpc { svc: svc::AGENT, op: "found.preview" }));
+        assert_eq!(lane_of(AGENT_REWIND_APPLY), Some(Lane::Rpc { svc: svc::AGENT, op: "rewind.apply" }));
         assert_eq!(lane_of(AGENT_IMAGE), Some(Lane::Stream { svc: svc::AGENT, op: agent_image::OP_UPLOAD }));
         assert_eq!(
             lane_of(AGENT_IMAGE_THUMB),
@@ -585,7 +622,7 @@ mod tests {
             assert_eq!(rpc_by_header(op.svc, op.op), Some(*op));
             assert_ne!(op.op, OP_LANE);
         }
-        assert_eq!(RPCS.len(), 53);
+        assert_eq!(RPCS.len(), 66);
         let paged: Vec<&str> = RPCS.iter().filter(|op| op.paged).map(|op| op.t).collect();
         assert_eq!(
             paged,
@@ -605,6 +642,13 @@ mod tests {
                 types::AGENT_SESSION_READ,
                 types::AGENT_FILES,
                 types::AGENT_COMMANDS,
+                types::AGENT_TURNS,
+                types::AGENT_DIFF_FILES,
+                types::AGENT_DIFF_PATCH,
+                types::AGENT_SEARCH,
+                types::AGENT_MARK,
+                types::AGENT_FOUND,
+                types::AGENT_FOUND_PREVIEW,
             ]
         );
         assert_eq!(rpc_of(types::INPUT_EVENT), None, "a lane message");
@@ -880,6 +924,13 @@ mod tests {
             split_once(AgentSessionItems { session: session("s1"), items: Vec::new(), more_before: false }),
             split_once(AgentFiles::default()),
             split_once(AgentCommands::default()),
+            split_once(AgentTurns::default()),
+            split_once(AgentTurnFiles::default()),
+            split_once(crate::messages::AgentPatch::default()),
+            split_once(AgentHits::default()),
+            split_once(AgentThreads::default()),
+            split_once(AgentFoundList::default()),
+            split_once(AgentFoundItems::default()),
         ];
         assert_eq!(counts.len(), RPCS.iter().filter(|op| op.paged).count());
         assert!(counts.iter().all(|&n| n == 1));

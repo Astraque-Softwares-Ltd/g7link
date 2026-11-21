@@ -669,7 +669,173 @@ rest of this section `UNSUPPORTED`. A phone that offers `agent.control`
 talking to a PC that doesn't sends it nothing of this section and offers
 what that PC's catalog says.
 
-## 6. Implementation notes
+## 6. History and undo
+
+Added in G7 Link 0.1.19. The PC keeps every thread in one store, so a phone
+can read a thread's turns and what each changed, search everything the PC
+holds, pin, archive, mark, snooze and rename threads, fork a thread, rewind
+its conversation (and undo that), and bring in the Claude and Codex sessions
+found on the PC. It's plain protocol v1: no capability, both apps ship
+together. Everything follows the `agents` toggle (§1); `agent/found`,
+`agent/found.preview` and `agent/import` need `agent_sessions` as well (§3),
+with the same prompts and errors. Nothing here travels on Bluetooth.
+
+```
+t = "agent.turn"              b = { thread, turn: AgentTurn }                       PC → phone, agent lane
+t = "agent.cut"               b = { thread, from_seq, to_seq, restored? }           PC → phone, agent lane
+t = "agent.import.progress"   b = { job, done, failed, total, thread? }             PC → phone, agent lane
+
+RPC agent/threads          t = "agent.threads"          b = { show?, before_ms? }                         → ok { threads: [AgentThread] }   paged
+RPC agent/turns            t = "agent.turns"            b = { thread, before?, limit? }                   → ok { turns: [AgentTurn] }   paged
+RPC agent/diff.files       t = "agent.diff.files"       b = { thread, turn? | from? + to? }               → ok { files: [AgentTurnFile], more, adds, dels }   paged
+RPC agent/diff.patch       t = "agent.diff.patch"       b = { thread, turn? | from? + to?, path }         → ok { patch, truncated, binary }   paged
+RPC agent/search           t = "agent.search"           b = { query, limit?, cursor?, archived? }         → ok { hits: [AgentHit], next?, titles_only? }   paged
+RPC agent/mark             t = "agent.mark"             b = { threads: [id], pinned?, archived?, unread?, snooze? }   → ok { threads: [AgentThread] }   paged
+RPC agent/rename           t = "agent.rename"           b = { thread, title }                             → ok AgentThread
+RPC agent/fork             t = "agent.fork"             b = { thread, turn? }                             → ok AgentThread
+RPC agent/rewind.preview   t = "agent.rewind.preview"   b = { thread, turn }                              → ok { token, expires_ms, turns, messages, blocked? }
+RPC agent/rewind.apply     t = "agent.rewind.apply"     b = { token, refill? }                            → ok AgentThread
+RPC agent/rewind.undo      t = "agent.rewind.undo"      b = { thread }                                    → ok AgentThread
+RPC agent/found            t = "agent.found"            b = { query?, agent?, show?, before_ms?, limit? } → ok { found: [AgentFound], next_ms?, total, scanning, partial }   paged
+RPC agent/found.preview    t = "agent.found.preview"    b = { id, limit? }                                → ok { items: [AgentItem] }   paged
+RPC agent/import           t = "agent.import"           b = { ids: [id] } | { cancel: job }               → ok { job, total } | ok
+```
+
+The event is `agent.import.progress`, not `agent.import`: that `t` is the
+`agent/import` RPC's request.
+
+```
+AgentThread += pinned?: bool, archived?: bool, unread?: bool,
+               snoozed_until_ms?: uint,           // hidden from the main list until then
+               turns?: uint,                      // the newest turn's number
+               forked_from?: { thread, turn?, title },
+               found?: bool,                      // brought in from a session on the PC
+               readonly?: text,                   // "outside_folders" | "folder_missing"
+               undo?: { until_ms: uint, files: bool }   // files: only the PC can undo it
+AgentCatalog.folders[] += checkpoints: bool       // restore points are kept for it
+AgentCatalog.agents[].can += "fork", "fork_at"    // a fork from the latest message; from any
+agent.start, agent.send += key?: text             // 16 lowercase hex digits (below)
+agent.send's answer     += duplicate?: bool
+AgentItem   += notice?: text                      // kind "notice": "rewound" | "edit_from_here" |
+                                                  // "files_restored" | "forked"
+
+AgentTurn     = { turn, prompt_seq, last_seq?, started_ms, ended_ms?,
+                  ended?: text,                   // "done" | "failed" | "stopped"
+                  checkpoint?: text,              // "pending" | "ready" | "missing" | "none" | "expired"
+                  why?: text,                     // with "missing": "busy" | "slow" | "large" | "refused" | "off" | "before"
+                  files, adds, dels, more_files?, skipped,
+                  can_fork?: bool, can_rewind?: bool }
+AgentTurnFile = { path, status?: text,            // "added" | "modified" | "deleted" | "renamed" | "type" | "unrecorded"
+                  from?, adds, dels, binary? }
+AgentHit      = { thread, title, agent, folder, state, archived?, seq,   // seq 0: the title matched
+                  kind?, when, snippet, marks?: [[start, length]], more_in_thread }
+AgentFound    = { id, agent, title, folder, folder_id?, first_ms?, updated_ms, bytes,
+                  packed?, source, open?, thread?, damaged? }
+```
+
+- **Shelves.** `agent.threads` without `show` lists the main shelf (neither
+  archived nor snoozed), `"archived"` and `"snoozed"` the others; `before_ms`
+  pages back by last change. `agent.mark` changes up to 50 threads at once and
+  answers the threads it changed: an archive of a working or waiting thread is
+  `BUSY` and left out, the others still apply. `snooze` is Unix ms in the
+  future and at most 30 days ahead, `0` brings it back; a snoozed thread
+  comes back by itself the moment it needs you, fails or is sent to, and
+  sends nothing when it does. Sending to an archived thread unarchives it.
+- **Turns.** A turn starts with a message you sent. `agent.turn` comes when
+  one starts, ends, and when its restore point settles. `checkpoint` says
+  whether the PC recorded the folder's files before and after it; `files`,
+  `adds` and `dels` count what changed, `skipped` the large files left out
+  (`status: "unrecorded"`: no diff, and no rewind touches them).
+  `can_fork` and `can_rewind` are the PC's verdicts for that turn; a client
+  doesn't work them out itself.
+- **Diffs.** `agent.diff.files` lists what a turn (`turn`) or a range of
+  turns (`from` to `to`) changed, at most 500 files (`more` past that; `adds`
+  and `dels` count them all), each path relative to the thread's folder with
+  `/` between components. `agent.diff.patch` sends one listed file's patch,
+  at most 1 MiB (`truncated` past that); its parts each carry the next piece
+  of `patch` and the receiver joins them. A path the diff doesn't list is
+  `BAD_MESSAGE`; a turn whose restore point isn't `ready` is `UNSUPPORTED`.
+- **Search** covers every message the PC holds (yours and the agent's
+  answers, not tool output) and thread titles. A query of words of one or two
+  letters searches titles only (`titles_only`: show "Type 3 letters or more
+  to search messages."). Hits are newest first, at most 3 a thread a page
+  (`more_in_thread`); `next` is the `cursor` for the next page. A `snippet`
+  is one line of at most 240 characters; `marks` are the matches in it as
+  start and length in UTF-16 units. Archived threads only with `archived`.
+- **Fork** makes a new thread from a copy of the conversation up to `turn`
+  (the latest without it), in the same folder; the files are as they are.
+  From a phone it's `supervised` or `plan`. The PC shows its user the same
+  notice as for a thread a phone started.
+- **Rewind** is two steps. `agent.rewind.preview` says how many turns and
+  messages would leave the thread and hands out a `token` for 120 s; nothing
+  changes yet. `agent.rewind.apply` with that token does it, once; `refill`
+  puts the turn's message back as the thread's draft (edit from here). The
+  thread's `undo` is then set: `agent.rewind.undo` brings the messages back
+  until the next turn starts or 24 h pass. Every device gets `agent.cut` with
+  the range of `seq`s that left (`restored` when an undo brought them back):
+  drop them, or read again. **A phone rewinds the conversation only**: the PC
+  answers `DENIED` to a preview with `files` or an apply with
+  `include_later`, never sends a phone a list of files to restore, and a
+  rewind that put files back (`undo.files`) can be undone on the PC only.
+- **Sessions found on the PC.** `agent.found` lists every Claude and Codex
+  session on the PC, including compressed ones, newest first; `query`
+  matches title and folder, `show: "new"` leaves out those already brought
+  in. While the PC is still looking it answers what it has with `scanning`;
+  ask again. `partial`: it stopped at one of its bounds. `folder` is a label
+  or the folder's name, never a path. `agent.found.preview` reads a session's
+  newest messages without keeping anything. `agent.import` brings up to 50 in
+  as threads, one job at a time (`BUSY`), reporting `agent.import.progress`
+  at most 4 times a second, the last with `done + failed == total`. A thread
+  brought in is read-only (`readonly`) until its folder is an agent folder;
+  sending to it continues a copy of the session, never the original.
+- **Held messages.** A phone may send `key` with `agent.start` and
+  `agent.send`: 16 random lowercase hex digits. A second message with a key
+  the thread already took in the last 24 h is answered `ok` with
+  `duplicate: true` and nothing is sent, so a phone can resend after a lost
+  answer.
+- **Notices.** A rewind and a fork write an ordinary `notice` item ("Rewound
+  to here", "Forked from here…"); its `notice` says which, so a receiver
+  puts Undo on a `rewound` or `edit_from_here` one while the thread's `undo`
+  is set. A receiver reads a `notice` it doesn't know as absent, and one on
+  an item that isn't a notice is left out.
+- Every mark, rename, fork, rewind and import a phone makes is shown on the
+  PC with the phone's name, as its messages are.
+- **Never to a phone**: a folder's path or any absolute path (diff paths are
+  relative to the folder; a found session's `folder` is a label), the files a
+  rewind would restore, the PC's store size, a found session's working
+  directory.
+- A receiver reads a `checkpoint`, `why`, `ended`, `status`, `blocked`,
+  `readonly` or `kind` it doesn't know as absent, and a `source` as `other`.
+  A diff path that isn't relative, or climbs out with `..`, is left out (never
+  cut); a hit's mark that falls outside its snippet is left out.
+
+Limits (bytes of UTF-8 unless noted):
+
+| Field | Limit |
+|---|---|
+| `agent.turns` | `limit` 1 to 100 (default 30) |
+| `agent.diff.files` answer | 500 files; `path`, `from` 1 to 512, relative |
+| `agent.diff.patch` | `path` 1 to 512; the answer's `patch` 1 MiB |
+| `agent.search` | `query` 1 to 200, one line; `limit` 1 to 50 (default 20); `cursor` 1 to 256 |
+| hit | `snippet` 240 characters, one line; 8 `marks`; `title` 80; `folder` 64 |
+| `agent.mark` | 1 to 50 distinct thread ids; at least one change; `snooze` at most 30 days ahead |
+| `agent.rename` | `title` 1 to 80, one line |
+| `token` | an id (1 to 40, `[a-z0-9]`) |
+| `agent.found` | `query` 128, one line; `limit` 1 to 100 (default 50); `show` `"all"` or `"new"` |
+| `agent.found.preview` | `limit` 1 to 50 (default 50) |
+| `agent.import` | 1 to 50 distinct ids; `job` 16 lowercase hex digits |
+| `key` | 16 lowercase hex digits |
+
+Errors as §2.3, and: `UNSUPPORTED` for a diff of a turn without a ready
+restore point, or a fork the agent can't make (only from the latest message,
+say); `DENIED` for a rewind from a phone that names files, and for anything
+of `agent/found*` and `agent/import` with `agent_sessions` off;
+`BAD_MESSAGE` for a path the diff doesn't list, more than 50 ids, a snooze in
+the past or beyond 30 days; `NOT_FOUND` for an unknown or used token, or
+nothing to undo; `BUSY` while the thread works or waits (rewind, fork,
+archive), and for a second import job.
+
+## 7. Implementation notes
 
 - G7 Link desktop talks to the agent host (`g7-agents`) on a local socket and
   relays its threads; the folder's path never leaves the PC. The PC's

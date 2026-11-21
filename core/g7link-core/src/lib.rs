@@ -8,6 +8,8 @@
 
 mod actions;
 mod adb_wifi;
+mod agent_cache;
+pub mod agent_history;
 pub mod agents;
 mod ble_link;
 mod calls;
@@ -59,6 +61,12 @@ pub mod webcam;
 mod wire_stats;
 
 pub use actions::{PC_WAKE, PowerAction};
+pub use agent_history::{
+    AgentCut, AgentForkedFrom, AgentFound, AgentFoundList, AgentFoundRequest, AgentHeld, AgentHit, AgentHits,
+    AgentImportJob, AgentImportProgress, AgentMark, AgentPatch, AgentPatchPage, AgentRewindPlan,
+    AgentSearchRequest, AgentThreadsRequest, AgentTurn, AgentTurnFile, AgentTurnFiles, AgentUndo,
+    Cached as AgentCached, CachedItems as AgentCachedItems, HeldState, HeldWhy, TurnRange, history,
+};
 pub use agents::{
     AgentAsk, AgentAsked, AgentCatalog, AgentCatalogAgent, AgentCatalogFolder, AgentCommand, AgentConfigure,
     AgentContext, AgentDraft, AgentDraftSaved, AgentDraftSet, AgentEvent, AgentExport, AgentFailure,
@@ -188,8 +196,8 @@ pub use remote::{
 pub use session::is_lan_ip;
 pub use storage::{FolderStorage, StorageError, StorageReadFile, TOGGLE as STORAGE_TOGGLE};
 pub use store::{
-    CHAT_RETENTION_SECS, ChatMessageRecord, ChatThreadRecord, MAX_CHAT_MESSAGES_PER_THREAD,
-    MAX_CHAT_THREADS_PER_PEER, MAX_QUEUE_ACTIVE_BYTES, MAX_QUEUE_ACTIVE_ITEMS,
+    CHAT_KEPT_IDLE_SECS, CHAT_RETIRED_GRACE_SECS, ChatMessageRecord, ChatThreadRecord,
+    MAX_CHAT_MESSAGES_PER_THREAD, MAX_CHAT_THREADS_PER_PEER, MAX_QUEUE_ACTIVE_BYTES, MAX_QUEUE_ACTIVE_ITEMS,
     MAX_QUEUE_CLIPBOARD_IMAGE_BYTES, QueueItem, QueueKind, QueuePayload, QueueStatus, QueuedFileSpec,
     chat_thread_id, file_mtime_ms,
 };

@@ -38,6 +38,9 @@ pub const SHOW: &str = "notify.show";
 const SNAPSHOT_BUDGET: usize = 768 * 1024;
 /// Maximum cached app icons in memory.
 const MAX_CACHED_ICONS: usize = 256;
+/// Most keys of notifications dropped past the cap that are remembered (see
+/// [`FeedState::evicted`]).
+const MAX_EVICTED: usize = 4 * SNAPSHOT_ITEMS;
 
 /// Why the phone couldn't dismiss a notification or run its action.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -68,6 +71,20 @@ struct FeedState {
     items: HashMap<String, Notification>,
     icons: HashMap<String, Vec<u8>>,
     peer_icons: HashMap<(DeviceId, String), Vec<u8>>,
+    /// Notifications dropped to stay under [`SNAPSHOT_ITEMS`] that the phone
+    /// may still show: while there are any, a snapshot doesn't hold everything.
+    evicted: HashSet<String>,
+    /// More were dropped than [`MAX_EVICTED`]: no snapshot holds everything
+    /// until the app reports the full list again.
+    evicted_overflow: bool,
+}
+
+impl FeedState {
+    /// Whether a snapshot of `sent` items leaves out a notification the phone
+    /// may still show (`notify.snapshot`'s `truncated`).
+    fn cut_short(&self, sent: usize) -> bool {
+        sent < self.items.len() || !self.evicted.is_empty() || self.evicted_overflow
+    }
 }
 
 impl Feed {
@@ -111,6 +128,8 @@ impl Feed {
         state.items.clear();
         state.icons.clear();
         state.peer_icons.clear();
+        state.evicted.clear();
+        state.evicted_overflow = false;
     }
 
     /// Stores a notification (its icon separately); returns it without the
@@ -132,23 +151,34 @@ impl Feed {
             if let Some(oldest) = state.items.iter().min_by_key(|(_, item)| item.when).map(|(k, _)| k.clone())
             {
                 state.items.remove(&oldest);
+                if state.evicted.len() < MAX_EVICTED {
+                    state.evicted.insert(oldest);
+                } else {
+                    state.evicted_overflow = true;
+                }
             } else {
                 break;
             }
         }
+        state.evicted.remove(&n.key);
         state.items.insert(n.key.clone(), n.clone());
         Some(n)
     }
 
+    /// Forgets a notification the phone no longer shows. True when PCs may
+    /// have it: it's held, or it was dropped past the cap.
     fn remove(&self, key: &str) -> bool {
         let mut state = self.lock();
         state.active = true;
-        state.items.remove(key).is_some()
+        let evicted = state.evicted.remove(key);
+        state.items.remove(key).is_some() || evicted
     }
 
     fn reset(&self, items: Vec<Notification>) {
         let mut state = self.lock();
         state.active = true;
+        state.evicted.clear();
+        state.evicted_overflow = false;
         state.items.clear();
         for n in items.into_iter().filter_map(Notification::sanitized) {
             let mut n = n;
@@ -195,7 +225,8 @@ impl Feed {
             }
             out.push(n);
         }
-        NotifySnapshot { items: out }
+        let truncated = state.cut_short(out.len());
+        NotifySnapshot { items: out, truncated }
     }
 
     /// `n` with its app icon attached if `session` hasn't had it yet.
@@ -291,7 +322,7 @@ impl Shared {
             self.notifications.snapshot(session)
         } else {
             session.sent_icons().clear();
-            NotifySnapshot { items: Vec::new() }
+            NotifySnapshot { items: Vec::new(), truncated: false }
         };
         if let Ok(env) = Envelope::new(types::NOTIFY_SNAPSHOT, &snapshot) {
             let _ = session.send(env).await;
@@ -366,27 +397,31 @@ pub(crate) async fn handle(
         types::NOTIFY_SNAPSHOT => {
             if shared.notifications_allowed(&peer) && !shared.notifications.is_holding() {
                 let snapshot: NotifySnapshot = env.body()?;
+                // More than a snapshot holds is a list cut short, too.
+                let truncated = snapshot.truncated || snapshot.items.len() > SNAPSHOT_ITEMS;
                 let items: Vec<Notification> = snapshot
                     .items
                     .into_iter()
                     .filter_map(Notification::sanitized)
                     .take(SNAPSHOT_ITEMS)
                     .collect();
-                let (items, changed_thread) = store_blocking(shared, move |shared| {
-                    let mut changed_thread = None;
-                    for n in &items {
-                        let cached_icon = shared.notifications.peer_icon(peer, &n.app, n.icon.as_deref());
-                        if let Ok(Some(tid)) =
-                            shared.store.upsert_chat_notification(&peer, n, cached_icon.as_deref(), true)
-                        {
-                            changed_thread = Some(tid);
-                        }
-                    }
-                    Ok((items, changed_thread))
+                let (items, chats) = store_blocking(shared, move |shared| {
+                    let icons: Vec<Option<Vec<u8>>> = items
+                        .iter()
+                        .map(|n| shared.notifications.peer_icon(peer, &n.app, n.icon.as_deref()))
+                        .collect();
+                    let with_icons: Vec<(&Notification, Option<&[u8]>)> =
+                        items.iter().zip(&icons).map(|(n, icon)| (n, icon.as_deref())).collect();
+                    let chats = shared.store.apply_chat_snapshot(&peer, &with_icons, truncated);
+                    Ok((items, chats))
                 })
                 .await?;
-                if let Some(thread) = changed_thread {
-                    shared.emit(NodeEvent::SmsChanged { device: peer, thread: Some(thread) });
+                match chats {
+                    Ok(chats) if !chats.stored.is_empty() || !chats.retired.is_empty() => {
+                        shared.emit(NodeEvent::SmsChanged { device: peer, thread: None });
+                    }
+                    Ok(_) => {}
+                    Err(e) => tracing::warn!(error = %e, "can't store the phone's chats"),
                 }
                 shared.emit(NodeEvent::NotificationsReset { device: peer, items });
             }
@@ -420,13 +455,17 @@ pub(crate) async fn handle(
                 && !key.is_empty()
                 && key.len() <= g7link_protocol::messages::notify_limits::KEY_BYTES
             {
-                let (key, chat) = store_blocking(shared, move |shared| {
-                    let chat = shared.store.mark_chat_notification_removed(&peer, &key);
-                    Ok((key, chat))
+                let (key, retired) = store_blocking(shared, move |shared| {
+                    let retired = shared.store.mark_chat_notification_removed(&peer, &key);
+                    Ok((key, retired))
                 })
                 .await?;
-                if let Ok(Some(thread)) = chat {
-                    shared.emit(NodeEvent::SmsChanged { device: peer, thread: Some(thread) });
+                match retired {
+                    Ok(retired) if !retired.is_empty() => {
+                        shared.emit(NodeEvent::SmsChanged { device: peer, thread: None });
+                    }
+                    Ok(_) => {}
+                    Err(e) => tracing::warn!(error = %e, "can't retire the phone's chat"),
                 }
                 shared.emit(NodeEvent::NotificationRemoved { device: peer, key });
             }
@@ -517,3 +556,65 @@ async fn run_blocking(
 
 /// Per-session record of which apps' icons were sent.
 pub(crate) type SentIcons = Mutex<HashSet<String>>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn note(key: &str, when: i64) -> Notification {
+        Notification {
+            key: key.into(),
+            app: "com.chat".into(),
+            app_name: "Chat".into(),
+            title: Some("Sam".into()),
+            text: Some("Hi".into()),
+            sub: None,
+            when,
+            actions: Vec::new(),
+            silent: false,
+            ongoing: false,
+            icon: None,
+            image: None,
+            live: None,
+            conversation: None,
+        }
+    }
+
+    #[test]
+    fn a_snapshot_is_cut_short_while_a_notification_past_the_cap_may_still_show() {
+        let feed = Feed::default();
+        for i in 0..SNAPSHOT_ITEMS {
+            feed.post(note(&format!("k{i}"), i as i64)).unwrap();
+        }
+        assert!(!feed.lock().cut_short(SNAPSHOT_ITEMS), "everything fits");
+        assert!(feed.lock().cut_short(SNAPSHOT_ITEMS - 1), "the size budget left one out");
+
+        // A new one pushes the oldest out of the feed, not off the phone.
+        feed.post(note("new", 1_000)).unwrap();
+        assert!(feed.lock().cut_short(SNAPSHOT_ITEMS));
+        assert!(feed.remove("k0"), "PCs may still have it, so they hear it's gone");
+        assert!(!feed.lock().cut_short(SNAPSHOT_ITEMS));
+
+        // One that comes back is held again.
+        feed.post(note("newer", 1_001)).unwrap();
+        feed.post(note("k1", 1_002)).unwrap();
+        assert_eq!(feed.lock().evicted, HashSet::from(["k2".to_owned()]));
+
+        // The full list from the app starts over.
+        feed.reset(vec![note("a", 1)]);
+        assert!(!feed.lock().cut_short(1));
+        assert!(!feed.remove("k2"), "forgotten with the reset");
+
+        // Past what it remembers, every snapshot is cut short until then.
+        for i in 0..(SNAPSHOT_ITEMS + MAX_EVICTED + 1) {
+            feed.post(note(&format!("m{i}"), 10_000 + i as i64)).unwrap();
+        }
+        let dropped: Vec<String> = feed.lock().evicted.iter().cloned().collect();
+        for key in dropped {
+            feed.remove(&key);
+        }
+        assert!(feed.lock().cut_short(SNAPSHOT_ITEMS));
+        feed.reset(Vec::new());
+        assert!(!feed.lock().cut_short(0));
+    }
+}

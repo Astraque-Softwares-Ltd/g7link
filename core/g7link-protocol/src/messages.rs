@@ -160,6 +160,7 @@ pub mod types {
     pub const MIRROR_INPUT: &str = "mirror.input";
     pub const MIRROR_APPS: &str = "mirror.apps";
     pub const MIRROR_NOTICE: &str = "mirror.notice";
+    pub const MIRROR_CLOCK: &str = "mirror.clock";
 
     // ---- webcam, mic ----
     pub const WEBCAM_START: &str = "webcam.start";
@@ -211,6 +212,23 @@ pub mod types {
     pub const AGENT_IMAGE: &str = "agent.image";
     pub const AGENT_IMAGE_THUMB: &str = "agent.image.thumb";
     pub const AGENT_IMAGE_THUMB_META: &str = "agent.image.thumb.meta";
+    // ---- agent: history and undo (docs/protocol/agents.md §6) ----
+    pub const AGENT_TURNS: &str = "agent.turns";
+    pub const AGENT_DIFF_FILES: &str = "agent.diff.files";
+    pub const AGENT_DIFF_PATCH: &str = "agent.diff.patch";
+    pub const AGENT_SEARCH: &str = "agent.search";
+    pub const AGENT_MARK: &str = "agent.mark";
+    pub const AGENT_RENAME: &str = "agent.rename";
+    pub const AGENT_FORK: &str = "agent.fork";
+    pub const AGENT_REWIND_PREVIEW: &str = "agent.rewind.preview";
+    pub const AGENT_REWIND_APPLY: &str = "agent.rewind.apply";
+    pub const AGENT_REWIND_UNDO: &str = "agent.rewind.undo";
+    pub const AGENT_FOUND: &str = "agent.found";
+    pub const AGENT_FOUND_PREVIEW: &str = "agent.found.preview";
+    pub const AGENT_IMPORT: &str = "agent.import";
+    pub const AGENT_TURN: &str = "agent.turn";
+    pub const AGENT_CUT: &str = "agent.cut";
+    pub const AGENT_IMPORT_PROGRESS: &str = "agent.import.progress";
 }
 
 /// What kind of device this is.
@@ -672,6 +690,8 @@ pub mod notify_limits {
     pub const CONVERSATION_MESSAGES: usize = 25;
     pub const SENDER_CHARS: usize = 128;
     pub const AVATAR_BYTES: usize = 16 * 1024;
+    /// A conversation's ID: 1 to this many bytes of `[A-Za-z0-9_-]`.
+    pub const CONVERSATION_ID_BYTES: usize = 64;
 }
 
 fn default_live_v() -> u32 {
@@ -856,7 +876,13 @@ pub struct NotificationConversation {
     /// Schema version (currently `1`).
     #[serde(default = "default_conversation_v")]
     pub v: u32,
-    /// Conversation title (group name or 1:1 contact name).
+    /// The phone's ID for the conversation, when the app gave it one: 1 to
+    /// [`notify_limits::CONVERSATION_ID_BYTES`] bytes of `[A-Za-z0-9_-]`. It
+    /// names the conversation over its title (see [`crate::chat_identity`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    /// Conversation title (group name or 1:1 contact name), without a message
+    /// count once sanitized.
     pub title: String,
     /// True when `MessagingStyle.isGroupConversation` is true.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -869,11 +895,12 @@ pub struct NotificationConversation {
     pub messages: Vec<NotificationChatMessage>,
 }
 
-/// Never prints conversation title or messages (protocol v1 §11).
+/// Never prints conversation title, ID or messages (protocol v1 §11).
 impl std::fmt::Debug for NotificationConversation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("NotificationConversation")
             .field("v", &self.v)
+            .field("has_id", &self.id.is_some())
             .field("group", &self.group)
             .field("messages", &self.messages.len())
             .field("has_avatar", &self.avatar.is_some())
@@ -882,13 +909,17 @@ impl std::fmt::Debug for NotificationConversation {
 }
 
 impl NotificationConversation {
-    /// Applies limits and drops unknown schema versions (`v != 1`) or empty conversations.
+    /// Applies limits, drops a malformed `id` and the count in the title
+    /// ([`crate::chat_identity::strip_count`]), and drops unknown schema
+    /// versions (`v != 1`) or empty conversations.
     pub fn sanitized(mut self) -> Option<Self> {
         use notify_limits::*;
         if self.v != CONVERSATION_VERSION {
             return None;
         }
-        self.title = clean_text(Some(self.title), TITLE_CHARS)?;
+        self.id = self.id.filter(|id| crate::chat_identity::is_conversation_id(id));
+        let title = crate::chat_identity::strip_count(&self.title).to_owned();
+        self.title = clean_text(Some(title), TITLE_CHARS)?;
         if self.avatar.as_ref().is_some_and(|a| a.is_empty() || a.len() > AVATAR_BYTES) {
             self.avatar = None;
         }
@@ -1041,6 +1072,9 @@ impl Notification {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NotifySnapshot {
     pub items: Vec<Notification>,
+    /// The phone holds more notifications than `items` carries (the item cap
+    /// or the size budget cut it), so what's missing may still be showing.
+    pub truncated: bool,
 }
 
 /// Body of `notify.hold`.
@@ -1830,6 +1864,21 @@ pub mod mirror {
     /// the phone is locked, so it takes no taps or keys and opens no app
     /// windows until it's unlocked.
     pub const NOTICE_LOCKED: &str = "locked";
+    /// `mirror.notice` (PC → phone, `session` 0): the PC asks someone at it
+    /// to choose the screen to share (GNOME's dialog); the picture comes once
+    /// they do.
+    pub const NOTICE_PROMPT: &str = "prompt";
+    /// `mirror.notice` (PC → phone, `session` 0): Play on phone ended because
+    /// the player's window is gone.
+    pub const NOTICE_NO_WINDOW: &str = "no_window";
+}
+
+/// Body of a `mirror.clock` answer (PC → phone): the PC's monotonic clock
+/// (`CLOCK_MONOTONIC` on Linux) in microseconds when it answered: the clock
+/// its video packets' `time` is on. The request has an empty body.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MirrorClock {
+    pub now_us: u64,
 }
 
 /// Whether `name` looks like an Android package name.
@@ -1934,8 +1983,9 @@ pub struct MirrorSession {
     pub session: u32,
 }
 
-/// Body of `mirror.notice` (phone → PC): something the PC should tell its
-/// user about a mirroring, by a code it knows (`mirror::NOTICE_*`).
+/// Body of `mirror.notice`: something the other side should tell its user
+/// about a mirroring, by a code it knows (`mirror::NOTICE_*`). Phones tell
+/// PCs `input_blocked` and `locked`; PCs tell phones `prompt` and `no_window`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MirrorNotice {
     #[serde(default)]
@@ -5530,7 +5580,11 @@ pub mod agent {
         pub const IMAGES: &str = "images";
         pub const MCP_SWITCH: &str = "mcp_switch";
         pub const COMMANDS: &str = "commands";
-        pub const ALL: &[&str] = &[PLAN, QUESTIONS, STEER, IMAGES, MCP_SWITCH, COMMANDS];
+        /// A fork from the latest message (§6).
+        pub const FORK: &str = "fork";
+        /// A fork, rewind or edit from an earlier message (§6).
+        pub const FORK_AT: &str = "fork_at";
+        pub const ALL: &[&str] = &[PLAN, QUESTIONS, STEER, IMAGES, MCP_SWITCH, COMMANDS, FORK, FORK_AT];
     }
 
     /// A usage window's `state`. Receivers read a word they don't know as [`OK`](limit_state::OK).
@@ -6003,6 +6057,10 @@ impl AgentCatalogAgent {
 pub struct AgentCatalogFolder {
     pub id: String,
     pub label: String,
+    /// The PC keeps a restore point for each turn in it (§6); false from a
+    /// PC that doesn't say.
+    #[serde(default)]
+    pub checkpoints: bool,
 }
 
 impl std::fmt::Debug for AgentCatalogFolder {
@@ -6135,6 +6193,34 @@ pub struct AgentThread {
     /// Questions waiting for an answer (not counted in `asks`).
     #[serde(default, skip_serializing_if = "is_zero")]
     pub asking: u32,
+    // ---- History and undo (`docs/protocol/agents.md` §6) ----
+    /// In the "Pinned" section.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pinned: bool,
+    /// On the "Archived" shelf: out of the main list, still searchable.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub archived: bool,
+    /// Marked unread, or something happened in it since anyone looked.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub unread: bool,
+    /// Out of the main list until then, Unix milliseconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snoozed_until_ms: Option<u64>,
+    /// The newest turn's number; 0 when none.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub turns: u32,
+    /// Made by a fork of that thread.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub forked_from: Option<AgentForkedFrom>,
+    /// Brought in from a session found on the PC.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub found: bool,
+    /// It can be read but not continued: one of [`history::readonly`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub readonly: Option<String>,
+    /// The last rewind can be undone until then.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub undo: Option<AgentUndo>,
 }
 
 /// One step of a thread's plan (`AgentThread.plan`).
@@ -6210,6 +6296,7 @@ impl AgentThread {
             && fits_opt(&self.answered_model, agent::MAX_MODEL_ID_BYTES)
             && self.queued.len() <= agent::MAX_QUEUED
             && self.queued.iter().all(AgentQueued::is_valid)
+            && agent_history::is_valid_thread_history(self)
     }
 
     /// The thread within its limits, or `None` when an id or a wire word is bad.
@@ -6243,6 +6330,7 @@ impl AgentThread {
         self.queued =
             std::mem::take(&mut self.queued).into_iter().filter_map(AgentQueued::sanitized).collect();
         self.queued.truncate(agent::MAX_QUEUED);
+        agent_history::clean_thread_history(&mut self);
         Some(self)
     }
 
@@ -6376,6 +6464,10 @@ pub struct AgentItem {
     /// A `question` item: how many it asked, and how it ended.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub question: Option<AgentItemQuestion>,
+    /// A `notice` item: which notice, for those a client acts on (§6): one
+    /// of [`history::notice`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notice: Option<String>,
 }
 
 /// Never prints the text or the ids it names (protocol v1 §11).
@@ -6391,6 +6483,7 @@ impl std::fmt::Debug for AgentItem {
             .field("via", &self.via)
             .field("images", &self.images.len())
             .field("plan_state", &self.plan_state)
+            .field("notice", &self.notice)
             .finish_non_exhaustive()
     }
 }
@@ -6417,6 +6510,7 @@ impl AgentItem {
             && self.images.iter().all(AgentImage::is_valid)
             && fits_word(&self.plan_state)
             && self.question.as_ref().is_none_or(AgentItemQuestion::is_valid)
+            && fits_word(&self.notice)
     }
 
     /// The item within its limits (text cut is flagged `truncated`), or
@@ -6473,6 +6567,11 @@ impl AgentItem {
             Some(question) if self.kind == agent::item::QUESTION => Some(question.sanitized()),
             _ => None,
         };
+        if self.kind == agent::item::NOTICE {
+            known_word(&mut self.notice, history::notice::ALL);
+        } else {
+            self.notice = None;
+        }
         Some(self)
     }
 
@@ -6937,6 +7036,9 @@ pub struct AgentStart {
     /// `model` was typed by the user rather than picked from the catalog.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub custom_model: bool,
+    /// 16 lowercase hex digits: one the PC took in the last 24 h starts nothing (§6).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
 }
 
 /// Never prints the prompt (protocol v1 §11).
@@ -6967,6 +7069,7 @@ impl AgentStart {
             && self.effort.as_deref().is_none_or(is_effort)
             && is_valid_image_ids(&self.images)
             && (!self.custom_model || self.model.is_some())
+            && self.key.as_deref().is_none_or(is_send_key)
     }
 
     /// Whether it uses anything of §5 (a PC answers it only with [`agent::CONTROL`]).
@@ -6992,6 +7095,11 @@ pub struct AgentSend {
     /// Images the phone sent first (`agent.image.meta`), by id.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub images: Vec<String>,
+    /// 16 lowercase hex digits: a message held on the phone carries one, and
+    /// one the thread took in the last 24 h is answered `duplicate` and not
+    /// sent again (§6).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
 }
 
 /// Never prints the text (protocol v1 §11).
@@ -7013,6 +7121,7 @@ impl AgentSend {
             && (least..=agent::MAX_PROMPT_BYTES).contains(&self.text.len())
             && self.dispatch.as_deref().is_none_or(|d| agent::dispatch::ALL.contains(&d))
             && is_valid_image_ids(&self.images)
+            && self.key.as_deref().is_none_or(is_send_key)
     }
 
     /// Whether it uses anything of §5 (a PC answers it only with [`agent::CONTROL`]).
@@ -7452,6 +7561,8 @@ impl AgentSessionContinue {
 
 mod agent_control;
 pub use agent_control::*;
+mod agent_history;
+pub use agent_history::*;
 
 /// The `agent/export` stream: one thread or session as Markdown per stream
 /// (`docs/protocol/agents.md` §4).
@@ -8021,6 +8132,7 @@ mod tests {
         let mut n = notification();
         n.conversation = Some(NotificationConversation {
             v: 1,
+            id: Some("c0nv-ID_1".into()),
             title: "Design Team".into(),
             group: true,
             avatar: Some(vec![0xff, 0xd8]),
@@ -8035,13 +8147,107 @@ mod tests {
                 .collect(),
         });
         let shown = format!("{n:?} {:?}", n.conversation);
-        assert!(!shown.contains("Design Team") && !shown.contains("Message 29"), "{shown}");
+        assert!(
+            !shown.contains("Design Team") && !shown.contains("Message 29") && !shown.contains("c0nv-ID_1"),
+            "{shown}"
+        );
         let clean = n.sanitized().unwrap();
         let conv = clean.conversation.unwrap();
+        assert_eq!(conv.id.as_deref(), Some("c0nv-ID_1"));
         assert_eq!(conv.messages.len(), notify_limits::CONVERSATION_MESSAGES);
         assert_eq!(conv.messages[0].text, "Message 5", "keeps newest messages");
         assert_eq!(conv.messages[1].sender, None, "self-sent messages drop sender name");
         assert_eq!(conv.messages.last().unwrap().avatar, None, "oversized avatar is dropped");
+    }
+
+    fn chat(id: Option<&str>, title: &str) -> Notification {
+        let mut n = notification();
+        n.title = Some(title.into());
+        n.conversation = Some(NotificationConversation {
+            v: 1,
+            id: id.map(Into::into),
+            title: title.into(),
+            group: true,
+            avatar: None,
+            messages: vec![NotificationChatMessage {
+                sender: Some("Ana".into()),
+                text: "Bring snacks".into(),
+                time: 1_760_000_000_000,
+                self_sent: false,
+                avatar: None,
+            }],
+        });
+        n
+    }
+
+    #[test]
+    fn a_malformed_conversation_id_is_dropped_and_the_conversation_kept() {
+        let too_long = "a".repeat(notify_limits::CONVERSATION_ID_BYTES + 1);
+        for bad in ["", "has space", "slash/es", "colon:s", "é", too_long.as_str()] {
+            let conv = chat(Some(bad), "Book Club").sanitized().unwrap().conversation.expect("kept");
+            assert_eq!(conv.id, None, "{bad:?}");
+            assert_eq!(conv.title, "Book Club");
+            assert_eq!(conv.messages.len(), 1);
+        }
+        let longest = "Z".repeat(notify_limits::CONVERSATION_ID_BYTES);
+        let conv = chat(Some(&longest), "Book Club").sanitized().unwrap().conversation.unwrap();
+        assert_eq!(conv.id.as_deref(), Some(longest.as_str()));
+        // Absent stays absent, on the wire too.
+        let plain = chat(None, "Book Club");
+        let env = Envelope::new(types::NOTIFY_POSTED, &plain).unwrap();
+        let back: Notification = Envelope::from_cbor(&env.to_cbor()).unwrap().body().unwrap();
+        assert_eq!(back.conversation.unwrap().id, None);
+        let with_id = chat(Some("k3Y_-"), "Book Club");
+        let env = Envelope::new(types::NOTIFY_POSTED, &with_id).unwrap();
+        let back: Notification = Envelope::from_cbor(&env.to_cbor()).unwrap().body().unwrap();
+        assert_eq!(back, with_id);
+    }
+
+    #[test]
+    fn a_sanitized_conversation_title_has_no_count() {
+        let n = chat(Some("k3Y"), "Book Club (5 messages)").sanitized().unwrap();
+        assert_eq!(n.conversation.unwrap().title, "Book Club");
+        assert_eq!(n.title.as_deref(), Some("Book Club (5 messages)"), "the notification's own title stays");
+        let n = chat(None, "  (3) Book Club ").sanitized().unwrap();
+        assert_eq!(n.conversation.unwrap().title, "Book Club");
+        // Sanitizing twice (the phone, then the PC) gives the same title.
+        let once = chat(None, "Book Club: 4 new messages").sanitized().unwrap();
+        assert_eq!(once.clone().sanitized().unwrap(), once);
+    }
+
+    #[test]
+    fn a_long_conversation_title_loses_its_count_before_it_is_cut() {
+        let name = "B".repeat(notify_limits::TITLE_CHARS - 6);
+        let titles: Vec<String> = ["(2 messages)", "(10 messages)", "(125 messages)"]
+            .iter()
+            .map(|count| {
+                chat(None, &format!("{name} {count}")).sanitized().unwrap().conversation.unwrap().title
+            })
+            .collect();
+        assert!(titles.iter().all(|t| *t == name), "every count leaves the same title: {titles:?}");
+    }
+
+    #[test]
+    fn a_snapshot_says_when_it_is_truncated() {
+        for truncated in [false, true] {
+            let snapshot = NotifySnapshot { items: vec![chat(Some("k3Y"), "Book Club")], truncated };
+            let env = Envelope::new(types::NOTIFY_SNAPSHOT, &snapshot).unwrap();
+            let back: NotifySnapshot = Envelope::from_cbor(&env.to_cbor()).unwrap().body().unwrap();
+            assert_eq!(back, snapshot);
+        }
+        // It's required: a snapshot that doesn't say can't be told from a complete one.
+        let mut fields =
+            match Envelope::new(types::NOTIFY_SNAPSHOT, &NotifySnapshot { items: vec![], truncated: false })
+                .unwrap()
+                .b
+            {
+                Some(ciborium::Value::Map(fields)) => fields,
+                other => panic!("a map: {other:?}"),
+            };
+        fields.retain(|(k, _)| k.as_text() != Some("truncated"));
+        let env =
+            Envelope { b: Some(ciborium::Value::Map(fields)), ..Envelope::empty(types::NOTIFY_SNAPSHOT) };
+        assert!(env.body::<NotifySnapshot>().is_err());
     }
 
     #[test]
@@ -9490,6 +9696,19 @@ mod tests {
         for code in ["", "Input_Blocked", "input blocked", &"a".repeat(33), "über"] {
             assert!(!MirrorNotice { session: 0, code: code.into() }.is_valid(), "{code}");
         }
+        // The PC's to the phone.
+        for code in [mirror::NOTICE_PROMPT, mirror::NOTICE_NO_WINDOW] {
+            assert!(MirrorNotice { session: mirror::SCREEN, code: code.into() }.is_valid(), "{code}");
+        }
+    }
+
+    #[test]
+    fn the_mirror_clock_answers_with_the_pcs_microseconds() {
+        let env =
+            crate::Envelope::new(types::MIRROR_CLOCK, &MirrorClock { now_us: 86_400_000_123_456 }).unwrap();
+        let decoded: MirrorClock = crate::Envelope::from_cbor(&env.to_cbor()).unwrap().body().unwrap();
+        assert_eq!(decoded.now_us, 86_400_000_123_456);
+        assert!(crate::Envelope::from_cbor(&crate::Envelope::empty(types::MIRROR_CLOCK).to_cbor()).is_ok());
     }
 
     #[test]
@@ -9768,7 +9987,11 @@ mod tests {
                 auth: Some("api_key".into()),
                 ..Default::default()
             }],
-            folders: vec![AgentCatalogFolder { id: "f0123456789ab".into(), label: "g7linux".into() }],
+            folders: vec![AgentCatalogFolder {
+                id: "f0123456789ab".into(),
+                label: "g7linux".into(),
+                checkpoints: true,
+            }],
             modes: vec![agent::mode::SUPERVISED.into()],
         };
         assert!(catalog.is_valid());

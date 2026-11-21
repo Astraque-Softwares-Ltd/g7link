@@ -1276,6 +1276,7 @@ mod tests {
             effort: Some("high".into()),
             images: vec![IMAGE.into()],
             custom_model: true,
+            key: None,
         };
         assert!(start.is_valid() && start.uses_control());
         round_trip(types::AGENT_START, &start);
@@ -1284,6 +1285,7 @@ mod tests {
             text: String::new(),
             dispatch: Some(agent::dispatch::STEER.into()),
             images: vec![IMAGE.into()],
+            key: None,
         };
         assert!(send.is_valid() && send.uses_control(), "an image needs no words");
         round_trip(types::AGENT_SEND, &send);

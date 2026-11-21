@@ -113,7 +113,8 @@ map so the PC can present them in a unified Messages inbox alongside SMS:
 ```
 Conversation = {
   v:        uint,            // Schema version (currently 1)
-  title:    text,            // Group title or 1:1 contact name, at most 256 chars
+  id:       text?,           // The phone's ID for the conversation, 1 to 64 bytes of [A-Za-z0-9_-] (§2.4)
+  title:    text,            // Group title or 1:1 contact name, at most 256 chars, without a message count (§2.4)
   group:    bool?,           // True when MessagingStyle.isGroupConversation is true
   avatar:   bytes?,          // Conversation or contact avatar (JPEG/PNG), at most 16 KiB
   messages: [ChatMessage],   // Chronological (oldest first), at most 25
@@ -134,10 +135,44 @@ SMS app matches a message already present in the system SMS/MMS provider.
 Replies from the unified inbox use `notify.action` (§4) with the notification's
 `reply: true` action (`RemoteInput`).
 
+`title` is the group's name for a group, and for a one-to-one chat the other
+person's name. The notification's own `title` is not part of the conversation
+and is shown as the app wrote it.
+
+### 2.4 Which conversation (`id`, and the title)
+
+A notification's `key` is not a conversation: an app may post one per message,
+and keys are only used to tell which conversations left the phone (§3). A
+conversation is named by:
+
+1. **`id`**, when the app gave the conversation one. On Android it comes from
+   the notification's shortcut ID, else its locus ID, else the ranking's
+   conversation shortcut. The raw ID can hold a phone number (WhatsApp's is
+   the chat's JID), so a phone **MUST NOT** send it: it sends the first 22
+   characters of base64url, without padding, of
+   `SHA-256(package name + 0x00 + raw ID)`. Absent means the app gave none.
+   Receivers drop an `id` that isn't 1 to 64 bytes of `[A-Za-z0-9_-]` and keep
+   the conversation.
+2. Otherwise **the title**, lowercased.
+
+Chat apps write a message count into titles ("Book Club (5 messages)"), so the
+title is always sent and compared without one. Both sides remove, once,
+ignoring case and then trimming, a trailing ` (N messages)`, ` (N message)`,
+` (N new messages)` or ` (N new message)`, a trailing `: N new messages` or
+`: N new message`, or a leading `(N) `, where `N` is 1 to 6 ASCII digits. Other
+brackets stay, and a title that would become empty stays as it is. The count is
+never read as a number.
+
+A conversation first seen by its title takes its `id` when one arrives, so it
+stays one conversation, with what the PC stored for it. A conversation with an
+`id` that comes back under a new title is the same conversation, renamed.
+
+Implementations **MUST NOT** log a conversation's `id`, raw or hashed.
+
 ## 3. Events (phone → PC)
 
 ```
-t = "notify.snapshot"   b = { items: [Notification] }
+t = "notify.snapshot"   b = { items: [Notification], truncated: bool }
 t = "notify.posted"     b = Notification
 t = "notify.removed"    b = { key: text }
 ```
@@ -146,7 +181,17 @@ t = "notify.removed"    b = { key: text }
   phone sends it right after a session is established, when the user turns
   notifications for that PC on or off (an empty list when off), and when its
   notification listener (re)connects. Items are newest first, at most 100.
-  The PC **MUST NOT** alert for snapshot items.
+  `truncated` (required) is true when the phone holds more notifications than
+  `items` carries, because the 100-item cap or the frame's size budget cut the
+  list. The PC **MUST NOT** alert for snapshot items.
+
+  A conversation (§2.3) is on the phone while some notification with its key
+  is. So a PC that receives a snapshot with `truncated` false treats every
+  conversation whose notification key matches none of the items (with a
+  `conversation` or without) as gone from the phone, as if each had been
+  `notify.removed`. A truncated snapshot says nothing about what it left out:
+  those conversations wait for their own `notify.removed`. A PC treats a
+  snapshot of more than 100 items as truncated.
 - **`notify.posted`** adds a notification, or replaces the one with the same
   `key` (an update, such as a new message in the same conversation). The PC
   alerts unless `silent` is set; a `silent` update of a notification the PC
@@ -155,7 +200,13 @@ t = "notify.removed"    b = { key: text }
   The phone doesn't send a re-post that shows nothing new, and a
   conversation's `when` is its latest message's time.
 - **`notify.removed`** removes it: the user or the app dismissed it on the
-  phone. The PC removes its desktop notification too.
+  phone. The PC removes its desktop notification too, and every conversation
+  that had this key is no longer on the phone.
+
+The three travel on one lane, so they arrive in the order the phone sent them;
+that is the only order this relies on. A `notify.posted` that crosses a PC's
+`notify.dismiss` brings the conversation back until the `notify.removed` that
+follows.
 
 ## 4. Requests (PC → phone)
 
@@ -177,7 +228,9 @@ RPC notify/action    t = "notify.action"    b = { key: text, action: text, reply
   on reconnecting, and follows `held: false` with `notify.sync`. A holding PC
   also drops what still arrives.
 - **`notify.dismiss`** dismisses the notification on the phone. Dismissing
-  one that's already gone succeeds. A PC **SHOULD NOT** send it for an `ongoing`
+  one that's already gone succeeds. A PC also sends it when the user removes
+  a conversation whose notification is on the phone, so that it doesn't come
+  back with the next snapshot. A PC **SHOULD NOT** send it for an `ongoing`
   notification, nor remove one from its list on a "clear all": Android
   doesn't let the phone dismiss those, so they'd stay on the phone and only
   come back to the PC when the app next updated them.

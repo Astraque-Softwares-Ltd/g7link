@@ -24,8 +24,8 @@ use std::time::{Duration, Instant};
 use g7link_protocol::{
     DeviceId, Envelope, ErrorCode, PacketKind, ProtocolError,
     messages::{
-        MirrorAudioConfig, MirrorConfig, MirrorInput, MirrorNotice, MirrorPower, MirrorResize, MirrorSession,
-        MirrorSound, MirrorStart, PhoneApp, PhoneApps, StreamHeader, mirror, types,
+        MirrorAudioConfig, MirrorClock, MirrorConfig, MirrorInput, MirrorNotice, MirrorPower, MirrorResize,
+        MirrorSession, MirrorSound, MirrorStart, PhoneApp, PhoneApps, StreamHeader, mirror, types,
     },
     read_video_packet, video_packet_header, write_frame,
 };
@@ -67,6 +67,22 @@ const STALE_AFTER: Duration = Duration::from_millis(500);
 /// How long a measured round trip stays in use: long enough to span a busy
 /// spell, short enough to notice a move from Wi-Fi to a relay.
 const TRIP_MEMORY: Duration = Duration::from_secs(10);
+/// A hold also needs at least this much on its way (and a quarter of a
+/// second of the stream's rate): a few late reports of a quiet stream say the
+/// other side's radio dozed for a moment, not that the link is full.
+const HOLD_MIN_BYTES: u64 = 32 * 1024;
+/// Report trips kept for the stats between two looks, at most.
+const MAX_TRIP_SAMPLES: usize = 4096;
+/// The PC's clock is timed this many times, the last few kept: the shortest
+/// round trip among them is the least skewed by queues on the way.
+const CLOCK_SAMPLES: usize = 8;
+/// A clock exchange slower than this says nothing useful.
+const MAX_CLOCK_TRIP_US: u64 = 2_000_000;
+/// How often the PC's clock is timed while its screen shows: often at first,
+/// then enough to follow a change of path.
+const CLOCK_FIRST_EVERY: Duration = Duration::from_secs(1);
+const CLOCK_FIRST_COUNT: u32 = 5;
+const CLOCK_EVERY: Duration = Duration::from_secs(5);
 
 /// What the PC's app gets of a mirroring stream. Called from the core's
 /// threads; must return quickly (hand the work to a thread of its own).
@@ -83,6 +99,100 @@ pub trait MirrorSink: Send + Sync {
     fn audio(&self, _time_us: u64, _data: Vec<u8>) {}
     /// The sound stream ended.
     fn audio_ended(&self) {}
+    /// A newer estimate of the sender's clock (the one its packets' `time` is
+    /// on) against this device's `CLOCK_MONOTONIC`: the sender's minus ours,
+    /// and the round trip it was timed over, both in microseconds. Phones
+    /// showing a PC's screen only.
+    fn clock(&self, _offset_us: i64, _rtt_us: u32) {}
+}
+
+/// This device's `CLOCK_MONOTONIC`, in microseconds: the clock a PC's video
+/// packets are stamped with, and the one Android's `System.nanoTime` reads.
+#[cfg(unix)]
+#[allow(unsafe_code)]
+pub(crate) fn monotonic_us() -> u64 {
+    let mut now = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+    // SAFETY: `now` is a valid timespec for the call to fill; CLOCK_MONOTONIC
+    // always exists on Linux and Android.
+    if unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut now) } != 0 {
+        return 0;
+    }
+    let secs = u64::try_from(now.tv_sec).unwrap_or(0);
+    let micros = u64::try_from(now.tv_nsec).unwrap_or(0) / 1000;
+    secs.saturating_mul(1_000_000).saturating_add(micros)
+}
+
+/// Elsewhere, a monotonic clock of this process's own.
+#[cfg(not(unix))]
+pub(crate) fn monotonic_us() -> u64 {
+    static START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+    u64::try_from(START.get_or_init(Instant::now).elapsed().as_micros()).unwrap_or(u64::MAX)
+}
+
+/// The other side's clock against ours, from timed exchanges.
+#[derive(Debug, Default)]
+struct ClockEstimate {
+    /// The last few: the other's clock minus ours at the middle of the
+    /// exchange, and its round trip, in microseconds.
+    samples: VecDeque<(i64, u32)>,
+}
+
+impl ClockEstimate {
+    /// An exchange sent at `sent_us` and answered at `received_us` (our
+    /// clock) whose answer read `their_us` (theirs). Returns the estimate:
+    /// the kept sample with the shortest round trip.
+    fn add(&mut self, sent_us: u64, their_us: u64, received_us: u64) -> Option<(i64, u32)> {
+        let trip = received_us.checked_sub(sent_us).filter(|trip| *trip <= MAX_CLOCK_TRIP_US);
+        if let Some(trip) = trip {
+            let middle = sent_us + trip / 2;
+            if let Ok(offset) = i64::try_from(i128::from(their_us) - i128::from(middle)) {
+                if self.samples.len() == CLOCK_SAMPLES {
+                    self.samples.pop_front();
+                }
+                self.samples.push_back((offset, u32::try_from(trip).unwrap_or(u32::MAX)));
+            }
+        }
+        self.samples.iter().min_by_key(|(_, trip)| *trip).copied()
+    }
+}
+
+/// Phone: times the PC's clock while its screen shows here, and tells `sink`
+/// each new estimate. Runs until it's aborted.
+async fn follow_clock(shared: std::sync::Weak<Shared>, peer: DeviceId, sink: Arc<dyn MirrorSink>) {
+    let mut estimate = ClockEstimate::default();
+    let mut timed = 0u32;
+    loop {
+        let session = shared.upgrade().and_then(|shared| shared.session(&peer));
+        if let Some(session) = session {
+            let sent = monotonic_us();
+            let answer =
+                session.request(Envelope::empty(types::MIRROR_CLOCK), crate::session::REQUEST_TIMEOUT).await;
+            let received = monotonic_us();
+            match answer.map(|env| env.expect_body::<MirrorClock>(types::MIRROR_CLOCK)) {
+                Ok(Ok(clock)) => {
+                    if let Some((offset, trip)) = estimate.add(sent, clock.now_us, received) {
+                        sink.clock(offset, trip);
+                    }
+                }
+                Ok(Err(e)) => {
+                    tracing::debug!(error = %e, "the PC didn't tell its clock");
+                    return;
+                }
+                Err(e) => tracing::debug!(error = %e, "couldn't time the PC's clock"),
+            }
+        }
+        timed = timed.saturating_add(1);
+        tokio::time::sleep(if timed < CLOCK_FIRST_COUNT { CLOCK_FIRST_EVERY } else { CLOCK_EVERY }).await;
+    }
+}
+
+/// Aborts its task when dropped.
+struct AbortOnDrop(tokio::task::JoinHandle<()>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
 }
 
 impl std::fmt::Debug for dyn MirrorSink {
@@ -309,6 +419,10 @@ pub(crate) async fn receive(shared: Arc<Shared>, peer: DeviceId, mut send: SendS
     });
     shared.emit(NodeEvent::Mirroring { device: peer, session: mirroring, on: true });
     sink.config(config);
+    // A phone showing a PC's screen times the PC's clock, which its packets
+    // are stamped with, for as long as the stream lasts.
+    let _clock = (mirroring == mirror::SCREEN && !is_local_desktop(&shared))
+        .then(|| AbortOnDrop(tokio::spawn(follow_clock(Arc::downgrade(&shared), peer, sink.clone()))));
     // Reports what arrived, for a sender that uses it (`Pacer`). They go ahead
     // of anything else this side is sending, or they'd measure that instead.
     let reports = peer_reports(&shared, &peer);
@@ -502,6 +616,16 @@ pub(crate) async fn handle(
             let MirrorSession { session: mirroring } = env.body()?;
             tokio::task::spawn_blocking(move || platform.mirror_keyframe_requested(&peer, mirroring));
         }
+        types::MIRROR_CLOCK => {
+            // A PC's screen is stamped with its clock; the phone showing it
+            // times it against its own.
+            if is_local_desktop(shared) {
+                rsp.send(Envelope::new(types::MIRROR_CLOCK, &MirrorClock { now_us: monotonic_us() })?)
+                    .await?;
+            } else {
+                rsp.error(ErrorCode::Unsupported, "only a PC's screen goes by its clock").await?;
+            }
+        }
         types::MIRROR_RESIZE => {
             let resize: MirrorResize = env.body()?;
             let allowed = shared.toggle_on(&peer, TOGGLE) && shared.we_offer(mirror::VIRTUAL_DISPLAY);
@@ -622,6 +746,58 @@ pub struct MirrorStream {
     link_rate: Arc<AtomicU64>,
     /// How many bytes that measure was made over.
     link_bytes: Arc<AtomicU64>,
+    /// The stream's bitrate, as its sender last said (`set_rate`).
+    rate: Arc<AtomicU64>,
+    /// Whether the sending task holds video back now (`is_held`).
+    holding: Arc<AtomicBool>,
+    /// What the pacing did since the stats were last taken.
+    pace: Arc<Mutex<PaceStats>>,
+}
+
+/// What a video stream's pacing did since it was last asked
+/// ([`MirrorStream::take_stats`]). Empty for a stream that isn't paced.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct MirrorStats {
+    /// Holds started: video waited for the other side to catch up.
+    pub holds: u32,
+    /// How long video was held, in all.
+    pub held: Duration,
+    /// The shortest time from writing a packet to its report.
+    pub shortest_trip: Option<Duration>,
+    /// The 95th percentile of those times.
+    pub p95_trip: Option<Duration>,
+}
+
+/// [`MirrorStats`] as they build up.
+#[derive(Debug, Default)]
+struct PaceStats {
+    holds: u32,
+    held: Duration,
+    /// When the hold under way started.
+    holding_since: Option<Instant>,
+    /// Report trips, at most [`MAX_TRIP_SAMPLES`].
+    trips: Vec<Duration>,
+}
+
+impl PaceStats {
+    /// What built up since the last time, as of `now` (a hold under way
+    /// counts up to now).
+    fn take(&mut self, now: Instant) -> MirrorStats {
+        let mut held = std::mem::take(&mut self.held);
+        if let Some(since) = self.holding_since.as_mut() {
+            held += now.saturating_duration_since(*since);
+            *since = now;
+        }
+        let mut trips = std::mem::take(&mut self.trips);
+        trips.sort_unstable();
+        let p95_trip = trips.len().checked_sub(1).map(|last| trips[last * 95 / 100]);
+        MirrorStats {
+            holds: std::mem::take(&mut self.holds),
+            held,
+            shortest_trip: trips.first().copied(),
+            p95_trip,
+        }
+    }
 }
 
 impl MirrorStream {
@@ -689,6 +865,25 @@ impl MirrorStream {
     pub fn is_backed_up(&self) -> bool {
         self.queue.capacity() == 0 && !self.is_closed()
     }
+
+    /// Whether video is held back now, until the other side has what's on its
+    /// way. A picture made meanwhile would only wait: keep the newest, and
+    /// send it once this ends.
+    pub fn is_held(&self) -> bool {
+        self.holding.load(Ordering::Acquire) && !self.is_closed()
+    }
+
+    /// The bitrate the stream is encoded at now. A hold needs a quarter of a
+    /// second of it on its way (and at least [`HOLD_MIN_BYTES`]).
+    pub fn set_rate(&self, bits_per_second: u32) {
+        self.rate.store(u64::from(bits_per_second), Ordering::Release);
+    }
+
+    /// What the pacing did since the last call: holds, how long they lasted,
+    /// and how long reports took.
+    pub fn take_stats(&self) -> MirrorStats {
+        self.pace.lock().unwrap_or_else(|e| e.into_inner()).take(Instant::now())
+    }
 }
 
 /// Keeps video from getting ahead of what the other side has received, from
@@ -707,6 +902,10 @@ struct Pacer {
     draining: Option<Drain>,
     /// How many bytes the last wait measured the link over.
     measured_bytes: u64,
+    /// The stream's bitrate, in bits per second (0: not known).
+    rate: u64,
+    /// Holds and report trips, for the stats.
+    stats: Arc<Mutex<PaceStats>>,
 }
 
 /// A wait for what's on its way to arrive, which also measures the link: it's
@@ -726,10 +925,14 @@ impl Pacer {
     /// `reports` more packets arrived. Returns what the link carries, in bits
     /// per second, if that ended a wait.
     fn reported(&mut self, now: Instant, reports: usize) -> Option<u64> {
+        let mut stats = self.stats.lock().unwrap_or_else(|e| e.into_inner());
         for _ in 0..reports {
             let Some((written, bytes)) = self.in_flight.pop_front() else { break };
             self.in_flight_bytes -= bytes as u64;
             let trip = now.saturating_duration_since(written);
+            if stats.trips.len() < MAX_TRIP_SAMPLES {
+                stats.trips.push(trip);
+            }
             while self.trips.back().is_some_and(|(_, t)| *t >= trip) {
                 self.trips.pop_back();
             }
@@ -744,6 +947,9 @@ impl Pacer {
             return None;
         }
         let drain = self.draining.take()?;
+        if let Some(since) = stats.holding_since.take() {
+            stats.held += now.saturating_duration_since(since);
+        }
         self.measured_bytes = drain.bytes;
         // Less a round trip: the last report took that on top of the link's time.
         let queued = now.saturating_duration_since(drain.since).saturating_sub(self.round_trip());
@@ -754,8 +960,12 @@ impl Pacer {
         self.trips.front().map_or(Duration::ZERO, |(_, trip)| *trip)
     }
 
-    /// Whether to hold video back for now. Nothing's known until the first
-    /// report, which arrives within a round trip.
+    /// Whether to hold video back for now: the oldest packet is late by more
+    /// than [`MAX_LAG`] beyond a round trip, and enough is on its way to keep
+    /// the link busy ([`Self::busy_bytes`]). A late report of a quiet stream
+    /// alone says the other side dozed, and holding would only stall the
+    /// picture. Nothing's known until the first report, which arrives within
+    /// a round trip.
     fn hold(&mut self, now: Instant) -> bool {
         if self.draining.is_some() {
             return true;
@@ -763,18 +973,31 @@ impl Pacer {
         let Some((oldest, _)) = self.in_flight.front() else { return false };
         if self.trips.is_empty()
             || now.saturating_duration_since(*oldest).saturating_sub(self.round_trip()) <= MAX_LAG
+            || self.in_flight_bytes <= self.busy_bytes()
         {
             return false;
         }
         self.draining = Some(Drain { since: *oldest, bytes: self.in_flight_bytes });
+        let mut stats = self.stats.lock().unwrap_or_else(|e| e.into_inner());
+        stats.holds += 1;
+        stats.holding_since = Some(now);
         true
     }
 
+    /// More than this on its way keeps the link busy: a quarter of a second
+    /// of the stream's rate, and at least [`HOLD_MIN_BYTES`].
+    fn busy_bytes(&self) -> u64 {
+        (self.rate / 8 / 4).max(HOLD_MIN_BYTES)
+    }
+
     /// When the wait for the oldest packet will have gone on too long, for a
-    /// link with nothing coming back to wake the sender.
+    /// link with nothing coming back to wake the sender. None while too little
+    /// is on its way to hold for: a write or a report changes that, and both
+    /// wake the sender anyway.
     fn next_check(&self) -> Option<Instant> {
         let (oldest, _) = self.in_flight.front()?;
-        (self.draining.is_none() && !self.trips.is_empty()).then(|| *oldest + self.round_trip() + MAX_LAG)
+        (self.draining.is_none() && !self.trips.is_empty() && self.in_flight_bytes > self.busy_bytes())
+            .then(|| *oldest + self.round_trip() + MAX_LAG)
     }
 }
 
@@ -878,13 +1101,23 @@ impl MirrorStream {
         let measured_bytes = link_bytes.clone();
         let resyncing = Arc::new(Mutex::new(false));
         let resync = resyncing.clone();
+        let rate = Arc::new(AtomicU64::new(0));
+        let stream_rate = rate.clone();
+        let holding = Arc::new(AtomicBool::new(false));
+        let held_now = holding.clone();
+        let pace = Arc::new(Mutex::new(PaceStats::default()));
+        let pace_stats = pace.clone();
         tokio::spawn(async move {
-            let mut pacer = paced.then(Pacer::default);
+            let mut pacer = paced.then(|| Pacer { stats: pace_stats, ..Pacer::default() });
             let mut reports = [0u8; 256];
             let mut held_since: Option<Instant> = None;
             'stream: loop {
                 let now = Instant::now();
+                if let Some(pacer) = &mut pacer {
+                    pacer.rate = stream_rate.load(Ordering::Acquire);
+                }
                 let hold = pacer.as_mut().is_some_and(|p| p.hold(now));
+                held_now.store(hold, Ordering::Release);
                 let mut batch = Vec::new();
                 // How long the hold that just ended lasted.
                 let held = match held_since {
@@ -956,12 +1189,13 @@ impl MirrorStream {
                 }
             }
             done.store(true, Ordering::Release);
+            held_now.store(false, Ordering::Release);
             let _ = send.finish();
             if let Some((shared, row_id, started_at)) = on_end {
                 shared.finish_timeline_session(row_id, started_at.elapsed().as_secs().max(1));
             }
         });
-        MirrorStream { queue, closed, stop, resyncing, audio, link_rate, link_bytes }
+        MirrorStream { queue, closed, stop, resyncing, audio, link_rate, link_bytes, rate, holding, pace }
     }
 }
 
@@ -1060,11 +1294,100 @@ mod tests {
         assert_eq!(pacer.reported(t + ms(100), 1), None);
         assert_eq!(pacer.round_trip(), ms(100));
 
-        pacer.written(t + ms(1000), 1000);
+        // A keyframe's worth: enough to keep the link busy.
+        pacer.written(t + ms(1000), 100_000);
         assert!(!pacer.hold(t + ms(1000 + 100 + 250)), "a round trip plus what's allowed");
         assert_eq!(pacer.next_check(), Some(t + ms(1000 + 100 + 250)));
         assert!(pacer.hold(t + ms(1000 + 100 + 251)));
         assert_eq!(pacer.next_check(), None, "a report ends this wait");
+    }
+
+    #[test]
+    fn one_late_report_on_a_quiet_stream_does_not_hold() {
+        let t = Instant::now();
+        let mut pacer = Pacer::default();
+        pacer.written(t, 100);
+        pacer.reported(t + ms(20), 1);
+        // A small frame whose report is a second late: the phone's radio dozed.
+        pacer.written(t + ms(1000), 3_000);
+        assert!(!pacer.hold(t + ms(2000)), "late, but nothing that fills the link");
+        assert_eq!(pacer.next_check(), None, "and nothing to wake up for: a write or a report will");
+        // More of it, past a quarter of a second of 1 Mbit/s and 32 KiB: busy and late.
+        pacer.rate = 1_000_000;
+        pacer.written(t + ms(2000), 40_000);
+        assert!(pacer.hold(t + ms(2001)), "a busy late stream holds");
+    }
+
+    #[test]
+    fn a_busy_stream_needs_a_quarter_second_of_its_rate_on_its_way() {
+        let t = Instant::now();
+        let mut pacer = Pacer { rate: 8_000_000, ..Pacer::default() };
+        pacer.written(t, 100);
+        pacer.reported(t + ms(20), 1);
+        // 8 Mbit/s: a quarter of a second is 250 kB.
+        pacer.written(t + ms(100), 200_000);
+        assert!(!pacer.hold(t + ms(1000)), "under a quarter of a second of the stream");
+        pacer.written(t + ms(1000), 60_000);
+        assert!(pacer.hold(t + ms(1001)));
+    }
+
+    #[test]
+    fn holds_and_report_trips_are_counted_for_the_stats() {
+        let t = Instant::now();
+        let mut pacer = Pacer::default();
+        for i in 0..100u64 {
+            pacer.written(t + ms(i * 10), 100);
+            pacer.reported(t + ms(i * 10 + 5 + i), 1);
+        }
+        pacer.written(t + ms(2000), 100_000);
+        assert!(pacer.hold(t + ms(2400)));
+        pacer.reported(t + ms(2600), 1);
+        let stats = pacer.stats.lock().unwrap().take(t + ms(3000));
+        assert_eq!(stats.holds, 1);
+        assert_eq!(stats.held, ms(200), "from when the hold started to its last report");
+        assert_eq!(stats.shortest_trip, Some(ms(5)));
+        assert_eq!(stats.p95_trip, Some(ms(100)), "of 101 trips: 5..=104 ms, and the held one's 600");
+        let again = pacer.stats.lock().unwrap().take(t + ms(3000));
+        assert_eq!(again, MirrorStats::default(), "taken: they start again");
+
+        // A hold under way counts up to the moment the stats are taken.
+        pacer.written(t + ms(4000), 100_000);
+        assert!(pacer.hold(t + ms(4500)));
+        let during = pacer.stats.lock().unwrap().take(t + ms(4700));
+        assert_eq!((during.holds, during.held), (1, ms(200)));
+        pacer.reported(t + ms(4800), 1);
+        assert_eq!(pacer.stats.lock().unwrap().take(t + ms(5000)).held, ms(100), "the rest of it");
+    }
+
+    #[test]
+    fn the_clock_estimate_takes_the_shortest_round_trip() {
+        let mut clock = ClockEstimate::default();
+        // The PC's clock is 1 s ahead; this exchange took 10 ms, evenly.
+        assert_eq!(clock.add(5_000_000, 6_005_000, 5_010_000), Some((1_000_000, 10_000)));
+        // A slower one, skewed by a queue on the way back: the faster stands.
+        assert_eq!(clock.add(6_000_000, 7_001_000, 6_050_000), Some((1_000_000, 10_000)));
+        // A faster one replaces it.
+        assert_eq!(clock.add(7_000_000, 8_000_500, 7_002_000), Some((999_500, 2_000)));
+        // An answer from before the question, or one that took too long, is no measure.
+        assert_eq!(clock.add(9_000_000, 1, 8_000_000), Some((999_500, 2_000)));
+        assert_eq!(clock.add(9_000_000, 1, 9_000_000 + MAX_CLOCK_TRIP_US + 1), Some((999_500, 2_000)));
+        // A PC whose clock is behind the phone's.
+        let mut behind = ClockEstimate::default();
+        assert_eq!(behind.add(9_000_000_000, 4_000, 9_000_000_400), Some((-8_999_996_200, 400)));
+        // Only the last few count: the old fast one ages out.
+        for i in 0..CLOCK_SAMPLES as u64 {
+            clock.add(10_000_000 + i, 11_000_000 + i + 2_500, 10_000_000 + i + 5_000);
+        }
+        assert_eq!(clock.add(20_000_000, 21_002_500, 20_005_000), Some((1_000_000, 5_000)));
+        assert_eq!(clock.samples.len(), CLOCK_SAMPLES);
+    }
+
+    #[test]
+    fn the_monotonic_clock_goes_forward_in_microseconds() {
+        let first = monotonic_us();
+        std::thread::sleep(ms(2));
+        let second = monotonic_us();
+        assert!(first > 0 && second >= first + 2_000, "{first} {second}");
     }
 
     #[test]
@@ -1151,6 +1474,9 @@ mod tests {
             audio: false,
             link_rate: Arc::default(),
             link_bytes: Arc::default(),
+            rate: Arc::default(),
+            holding: Arc::default(),
+            pace: Arc::default(),
         };
         let send = |kind| tokio::task::block_in_place(|| stream.send(kind, 0, vec![1]));
         assert_eq!(send(PacketKind::Keyframe), MirrorSend::Queued);
@@ -1179,6 +1505,9 @@ mod tests {
             audio: true,
             link_rate: Arc::default(),
             link_bytes: Arc::default(),
+            rate: Arc::default(),
+            holding: Arc::default(),
+            pace: Arc::default(),
         };
         let send = |kind| tokio::task::block_in_place(|| stream.send(kind, 0, vec![1]));
         assert_eq!(send(PacketKind::Frame), MirrorSend::Queued);
@@ -1199,6 +1528,9 @@ mod tests {
             audio: false,
             link_rate: Arc::default(),
             link_bytes: Arc::default(),
+            rate: Arc::default(),
+            holding: Arc::default(),
+            pace: Arc::default(),
         });
         // Fill the 1-slot queue.
         let s1 = stream.clone();

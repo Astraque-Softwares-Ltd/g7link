@@ -477,4 +477,28 @@ pub enum NodeEvent {
         key: String,
         rev: u64,
     },
+    /// Phone: a turn of a PC's thread started, ended, or its restore point
+    /// settled (`agent.turn`).
+    AgentTurn {
+        device: DeviceId,
+        thread: String,
+        turn: crate::AgentTurn,
+    },
+    /// Phone: items of a PC's thread left it (a rewind), or came back
+    /// (`restored`, its undo): drop that range, or read it again (`agent.cut`).
+    AgentCut {
+        device: DeviceId,
+        cut: crate::AgentCut,
+    },
+    /// Phone: how an import of sessions found on a PC goes (`agent.import.progress`).
+    AgentImport {
+        device: DeviceId,
+        progress: crate::AgentImportProgress,
+    },
+    /// Phone: this phone's held messages for a PC changed; all of them, in
+    /// the order written.
+    AgentOutbox {
+        device: DeviceId,
+        held: Vec<crate::AgentHeld>,
+    },
 }

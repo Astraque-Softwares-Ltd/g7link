@@ -44,14 +44,25 @@ pub use g7link_protocol::messages::{
 use g7link_protocol::{
     DeviceId, Envelope, ErrorCode, ProtocolError,
     messages::{
-        StreamHeader, agent_export, agent_image, clean_agent_export, clean_export_file_name,
+        AgentSent, StreamHeader, agent_export, agent_image, clean_agent_export, clean_export_file_name,
         clean_image_name, is_jpeg, types,
     },
     read_frame, write_frame,
 };
 use iroh::endpoint::{RecvStream, SendStream};
 
-use crate::{Error, Result, dispatch::Responder, events::NodeEvent, node::Shared, session::Session};
+use crate::{
+    Error, Result,
+    agent_cache::AgentCache,
+    agent_history::{
+        AgentFoundList, AgentHits, AgentImportJob, AgentPatchPage, AgentRewindPlan, AgentThreadsRequest,
+        AgentTurn, AgentTurnFiles, TurnRange,
+    },
+    dispatch::Responder,
+    events::NodeEvent,
+    node::Shared,
+    session::Session,
+};
 
 /// The per-device toggle on the PC that governs the service (off by default).
 pub const TOGGLE: &str = agent::TOGGLE;
@@ -60,7 +71,7 @@ pub const TOGGLE: &str = agent::TOGGLE;
 pub const SESSIONS_TOGGLE: &str = agent::SESSIONS_TOGGLE;
 
 /// How long the platform has to answer one request.
-const PLATFORM_LIMIT: Duration = Duration::from_secs(15);
+pub(crate) const PLATFORM_LIMIT: Duration = Duration::from_secs(15);
 /// How long a phone waits for a PC's answer: longer than the PC gives its
 /// host ([`PLATFORM_LIMIT`]), so the PC's own refusal arrives first.
 const AGENT_WAIT: Duration = Duration::from_secs(20);
@@ -115,10 +126,15 @@ impl std::fmt::Debug for QueueAction {
 pub enum AgentRequest {
     /// `agent.threads`: newest first, at most [`agent::MAX_THREADS`].
     Threads,
+    /// `agent.threads` for a shelf (`show`: one of
+    /// [`history::show`](g7link_protocol::messages::history::show)), or the
+    /// next page (`before_ms`). Answered with `Threads`.
+    ThreadsPage { show: Option<String>, before_ms: Option<u64> },
     /// `agent.start`. `mode` is `"supervised"`, or `"plan"` from a phone
     /// with `agent.control`; `model`, `effort` and `images` come only from
     /// such a phone too (`model` as one argument: never a flag, no space).
     /// `custom_model`: the user typed `model` (it needn't be listed).
+    /// `key`: 16 hex digits; one the thread took in the last 24 h starts nothing.
     Start {
         agent: String,
         folder: String,
@@ -128,11 +144,14 @@ pub enum AgentRequest {
         effort: Option<String>,
         images: Vec<String>,
         custom_model: bool,
+        key: Option<String>,
     },
     /// `agent.send`. `dispatch` (one of [`agent::dispatch`]) and `images`
     /// only from a phone with `agent.control`; without `dispatch` the turn
-    /// must have ended. `text` may be empty with images.
-    Send { thread: String, text: String, dispatch: Option<String>, images: Vec<String> },
+    /// must have ended. `text` may be empty with images. `key`: 16 hex
+    /// digits; one the thread took in the last 24 h is answered
+    /// `Duplicate` and nothing is sent.
+    Send { thread: String, text: String, dispatch: Option<String>, images: Vec<String>, key: Option<String> },
     /// `agent.configure`: changes for the thread's next turn. An empty
     /// `model` or `effort` goes back to the default; `mode` is
     /// `"supervised"` or `"plan"`. Answered with `Thread`.
@@ -196,6 +215,55 @@ pub enum AgentRequest {
     /// `agent.export`: a thread, or a session, as Markdown (exactly one of
     /// the two; a session only with `agent_sessions` on).
     Export { thread: Option<String>, session: Option<String> },
+    // ---- History and undo (`docs/protocol/agents.md` §6) ----
+    /// `agent.turns`: a thread's turns, newest first, before `before`; at
+    /// most `limit` (1 to 100). Answered with `Turns`.
+    Turns { thread: String, before: Option<u32>, limit: u32 },
+    /// `agent.diff.files`: what a turn or a range of turns changed. Answered
+    /// with `TurnFiles`.
+    DiffFiles { thread: String, range: TurnRange },
+    /// `agent.diff.patch`: one page of a file's patch, from `offset`; the
+    /// core asks again from the page's `next`, up to 1 MiB. `path` is one
+    /// the diff lists: look it up, never pass it on trust. Answered with `Patch`.
+    DiffPatch { thread: String, range: TurnRange, path: String, offset: Option<u64> },
+    /// `agent.search` (one line, 1 to 200 bytes; `limit` 1 to 50). Answered with `Hits`.
+    Search { query: String, limit: u32, cursor: Option<String>, archived: bool },
+    /// `agent.mark`: 1 to 50 threads; `snooze` in the future, at most 30
+    /// days ahead, or 0. Answered with `Threads`: those that changed.
+    Mark {
+        threads: Vec<String>,
+        pinned: Option<bool>,
+        archived: Option<bool>,
+        unread: Option<bool>,
+        snooze: Option<u64>,
+    },
+    /// `agent.rename`: `title` one line, 1 to 80 bytes. Answered with `Thread`.
+    Rename { thread: String, title: String },
+    /// `agent.fork`: from `turn`, or the latest; supervised or plan from a
+    /// phone. Answered with `Thread`, the new one.
+    Fork { thread: String, turn: Option<u32> },
+    /// `agent.rewind.preview`: the conversation only, always. Answered with `RewindPlan`.
+    RewindPreview { thread: String, turn: u32 },
+    /// `agent.rewind.apply`: the conversation only (`include_later` is
+    /// refused here). Answered with `Thread`.
+    RewindApply { token: String, refill: bool },
+    /// `agent.rewind.undo`: a rewind that put no files back. Answered with `Thread`.
+    RewindUndo { thread: String },
+    /// `agent.found` (`agent_sessions` on). Answered with `Found`; never a `cwd`.
+    Found {
+        query: Option<String>,
+        agent: Option<String>,
+        show: Option<String>,
+        before_ms: Option<u64>,
+        limit: u32,
+    },
+    /// `agent.found.preview` (`agent_sessions` on). Answered with `Items`,
+    /// of which only `items` is read.
+    FoundPreview { id: String, limit: u32 },
+    /// `agent.import` (`agent_sessions` on): 1 to 50 found ids. Answered with `Job`.
+    Import { ids: Vec<String> },
+    /// `agent.import` with `cancel`. Answered with `Ok`.
+    ImportCancel { job: String },
 }
 
 /// Never prints a prompt, text or token (protocol v0 §11).
@@ -203,6 +271,9 @@ impl std::fmt::Debug for AgentRequest {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Threads => f.write_str("Threads"),
+            Self::ThreadsPage { show, before_ms } => {
+                f.debug_struct("ThreadsPage").field("show", show).field("before_ms", before_ms).finish()
+            }
             Self::Start { agent, folder, mode, model, effort, images, custom_model, .. } => f
                 .debug_struct("Start")
                 .field("agent", agent)
@@ -289,6 +360,62 @@ impl std::fmt::Debug for AgentRequest {
             Self::Export { thread, session } => {
                 f.debug_struct("Export").field("thread", thread).field("session", session).finish()
             }
+            Self::Turns { thread, before, limit } => f
+                .debug_struct("Turns")
+                .field("thread", thread)
+                .field("before", before)
+                .field("limit", limit)
+                .finish(),
+            Self::DiffFiles { thread, range } => {
+                f.debug_struct("DiffFiles").field("thread", thread).field("range", range).finish()
+            }
+            Self::DiffPatch { thread, range, offset, .. } => f
+                .debug_struct("DiffPatch")
+                .field("thread", thread)
+                .field("range", range)
+                .field("offset", offset)
+                .finish_non_exhaustive(),
+            Self::Search { limit, cursor, archived, query } => f
+                .debug_struct("Search")
+                .field("bytes", &query.len())
+                .field("limit", limit)
+                .field("paged", &cursor.is_some())
+                .field("archived", archived)
+                .finish(),
+            Self::Mark { threads, pinned, archived, unread, snooze } => f
+                .debug_struct("Mark")
+                .field("threads", &threads.len())
+                .field("pinned", pinned)
+                .field("archived", archived)
+                .field("unread", unread)
+                .field("snooze", snooze)
+                .finish(),
+            Self::Rename { thread, .. } => {
+                f.debug_struct("Rename").field("thread", thread).finish_non_exhaustive()
+            }
+            Self::Fork { thread, turn } => {
+                f.debug_struct("Fork").field("thread", thread).field("turn", turn).finish()
+            }
+            Self::RewindPreview { thread, turn } => {
+                f.debug_struct("RewindPreview").field("thread", thread).field("turn", turn).finish()
+            }
+            Self::RewindApply { refill, .. } => {
+                f.debug_struct("RewindApply").field("refill", refill).finish_non_exhaustive()
+            }
+            Self::RewindUndo { thread } => f.debug_struct("RewindUndo").field("thread", thread).finish(),
+            Self::Found { agent, show, before_ms, limit, query } => f
+                .debug_struct("Found")
+                .field("query_bytes", &query.as_ref().map(String::len))
+                .field("agent", agent)
+                .field("show", show)
+                .field("before_ms", before_ms)
+                .field("limit", limit)
+                .finish(),
+            Self::FoundPreview { id, limit } => {
+                f.debug_struct("FoundPreview").field("id", id).field("limit", limit).finish()
+            }
+            Self::Import { ids } => f.debug_struct("Import").field("ids", &ids.len()).finish(),
+            Self::ImportCancel { job } => f.debug_struct("ImportCancel").field("job", job).finish(),
         }
     }
 }
@@ -317,6 +444,22 @@ pub enum AgentReply {
     Image(AgentImage),
     /// A JPEG.
     Thumb(Vec<u8>),
+    /// `Send` with a `key` the thread had already taken: nothing was sent.
+    Duplicate,
+    /// `Turns`, newest first.
+    Turns(Vec<AgentTurn>),
+    /// `DiffFiles`.
+    TurnFiles(AgentTurnFiles),
+    /// One page of `DiffPatch`.
+    Patch(AgentPatchPage),
+    /// `Search`.
+    Hits(AgentHits),
+    /// `RewindPreview`: the conversation part only; no file ever.
+    RewindPlan(AgentRewindPlan),
+    /// `Found`.
+    Found(AgentFoundList),
+    /// `Import`.
+    Job(AgentImportJob),
 }
 
 /// Never prints a thumbnail's bytes.
@@ -336,6 +479,14 @@ impl std::fmt::Debug for AgentReply {
             Self::DraftSaved(saved) => f.debug_tuple("DraftSaved").field(saved).finish(),
             Self::Image(image) => f.debug_tuple("Image").field(image).finish(),
             Self::Thumb(bytes) => f.debug_struct("Thumb").field("bytes", &bytes.len()).finish(),
+            Self::Duplicate => f.write_str("Duplicate"),
+            Self::Turns(turns) => f.debug_tuple("Turns").field(&turns.len()).finish(),
+            Self::TurnFiles(files) => f.debug_tuple("TurnFiles").field(&files.files.len()).finish(),
+            Self::Patch(page) => f.debug_tuple("Patch").field(page).finish(),
+            Self::Hits(hits) => f.debug_tuple("Hits").field(&hits.hits.len()).finish(),
+            Self::RewindPlan(plan) => f.debug_tuple("RewindPlan").field(plan).finish(),
+            Self::Found(found) => f.debug_tuple("Found").field(&found.found.len()).finish(),
+            Self::Job(job) => f.debug_tuple("Job").field(job).finish(),
         }
     }
 }
@@ -399,7 +550,7 @@ impl AgentFailure {
         }
     }
 
-    fn reply(self, message: &str) -> Envelope {
+    pub(crate) fn reply(self, message: &str) -> Envelope {
         Envelope::error(self.code(), message)
     }
 }
@@ -448,6 +599,9 @@ struct Inner {
     uploading: HashSet<DeviceId>,
     /// PC: the form of the catalog each phone got last: with §5 or not.
     catalog_forms: HashMap<DeviceId, bool>,
+    /// Phone: PCs whose held messages are being sent, and whether to look
+    /// once more when that's done.
+    flushing: HashMap<DeviceId, bool>,
 }
 
 /// Phone: what a PC offers on top of `agent.host`, as it last said.
@@ -510,10 +664,31 @@ impl Drop for Upload {
     }
 }
 
+/// Phone: the saved threads, opened the first time they're needed.
+#[derive(Default)]
+enum CacheSlot {
+    #[default]
+    Unopened,
+    Open(Arc<AgentCache>),
+    /// It couldn't be opened; not tried again this run.
+    Failed,
+}
+
+impl std::fmt::Debug for CacheSlot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Unopened => "Unopened",
+            Self::Open(_) => "Open",
+            Self::Failed => "Failed",
+        })
+    }
+}
+
 /// Per-node agents state, on both sides.
 #[derive(Debug, Default)]
 pub(crate) struct Agents {
     inner: Mutex<Inner>,
+    cache: Mutex<CacheSlot>,
 }
 
 impl Agents {
@@ -535,14 +710,80 @@ impl Agents {
         inner.session_watching.remove(peer).is_some()
     }
 
-    /// `peer` was unpaired. True as for [`session_ended`](Self::session_ended).
+    /// `peer` was unpaired: on a phone nothing of it stays saved. True as
+    /// for [`session_ended`](Self::session_ended).
     #[must_use]
     pub fn remove_peer(&self, peer: &DeviceId) -> bool {
         let watched = self.session_ended(peer);
-        let mut inner = self.lock();
-        inner.prompted.remove(peer);
-        inner.prompted_sessions.remove(peer);
+        {
+            let mut inner = self.lock();
+            inner.prompted.remove(peer);
+            inner.prompted_sessions.remove(peer);
+            inner.flushing.remove(peer);
+        }
+        let cache = match &*self.cache.lock().unwrap_or_else(|e| e.into_inner()) {
+            CacheSlot::Open(cache) => Some(cache.clone()),
+            _ => None,
+        };
+        if let Some(cache) = cache
+            && let Err(e) = cache.drop_pc(peer)
+        {
+            tracing::warn!(error = %e, "an unpaired PC's saved threads stayed");
+        }
         watched
+    }
+
+    /// Phone: the saved threads, opened with `open` the first time.
+    pub(crate) fn cache_or_open(&self, open: impl FnOnce() -> Result<AgentCache>) -> Option<Arc<AgentCache>> {
+        let mut slot = self.cache.lock().unwrap_or_else(|e| e.into_inner());
+        match &*slot {
+            CacheSlot::Open(cache) => return Some(cache.clone()),
+            CacheSlot::Failed => return None,
+            CacheSlot::Unopened => {}
+        }
+        match open() {
+            Ok(cache) => {
+                let cache = Arc::new(cache);
+                *slot = CacheSlot::Open(cache.clone());
+                Some(cache)
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "the saved agent threads can't be opened");
+                *slot = CacheSlot::Failed;
+                None
+            }
+        }
+    }
+
+    /// Phone: whether a flush of `peer`'s held messages may start now; while
+    /// one runs, it's asked to look once more instead.
+    pub(crate) fn begin_flush(&self, peer: DeviceId) -> bool {
+        let mut inner = self.lock();
+        match inner.flushing.get_mut(&peer) {
+            Some(again) => {
+                *again = true;
+                false
+            }
+            None => {
+                inner.flushing.insert(peer, false);
+                true
+            }
+        }
+    }
+
+    /// Phone: a flush of `peer` ended; whether it should run once more.
+    pub(crate) fn end_flush(&self, peer: DeviceId) -> bool {
+        let mut inner = self.lock();
+        match inner.flushing.get_mut(&peer) {
+            Some(again) if *again => {
+                *again = false;
+                true
+            }
+            _ => {
+                inner.flushing.remove(&peer);
+                false
+            }
+        }
     }
 
     /// PC: `peer` stops watching its session; true when it watched one.
@@ -589,7 +830,7 @@ impl Shared {
     }
 
     /// Whether the paired `peer` offers `cap`, as it last said.
-    fn peer_offers(&self, peer: &DeviceId, cap: &str) -> bool {
+    pub(crate) fn peer_offers(&self, peer: &DeviceId, cap: &str) -> bool {
         self.store.get_peer(peer).ok().flatten().is_some_and(|p| p.caps.contains(cap))
     }
 
@@ -600,12 +841,12 @@ impl Shared {
 
     /// Whether this PC and `peer` both offer `agent.control`: only then does
     /// either side use §5.
-    fn control_with(&self, peer: &DeviceId) -> bool {
+    pub(crate) fn control_with(&self, peer: &DeviceId) -> bool {
         self.offers_control() && self.peer_offers(peer, agent::CONTROL)
     }
 
     /// The live sessions this PC sends agent pushes to.
-    fn agent_recipients(&self) -> Vec<Arc<Session>> {
+    pub(crate) fn agent_recipients(&self) -> Vec<Arc<Session>> {
         self.agent_recipient_caps().into_iter().map(|r| r.session).collect()
     }
 
@@ -641,7 +882,7 @@ impl Shared {
 
     /// The live sessions this PC sends §3's pushes to: both toggles on, and
     /// the phone shows sessions.
-    fn session_recipients(&self) -> Vec<Arc<Session>> {
+    pub(crate) fn session_recipients(&self) -> Vec<Arc<Session>> {
         self.session_recipient_caps().into_iter().map(|r| r.session).collect()
     }
 
@@ -888,7 +1129,7 @@ pub(crate) fn set_catalog(shared: &Arc<Shared>, catalog: Option<AgentCatalog>) {
 }
 
 /// `thread` as a phone takes it: its legacy form without `agent.control`.
-fn thread_for(thread: AgentThread, control: bool) -> AgentThread {
+pub(crate) fn thread_for(thread: AgentThread, control: bool) -> AgentThread {
     if control { thread } else { thread.for_legacy() }
 }
 
@@ -1106,7 +1347,10 @@ fn clean_typed(text: String) -> String {
 }
 
 /// A request's body if it decodes and is within its limits.
-fn decode<T: serde::de::DeserializeOwned>(env: &Envelope, valid: impl Fn(&T) -> bool) -> Option<T> {
+pub(crate) fn decode<T: serde::de::DeserializeOwned>(
+    env: &Envelope,
+    valid: impl Fn(&T) -> bool,
+) -> Option<T> {
     env.body::<T>().ok().filter(|body| valid(body))
 }
 
@@ -1124,7 +1368,7 @@ fn is_session_request(t: &str) -> bool {
 /// PC: the refusal for a request from `peer` (of §3 when `sessions`) while
 /// this PC doesn't offer it or a toggle is off; the first refusal of each
 /// kind shows the PC's user a prompt.
-fn refusal(shared: &Arc<Shared>, peer: DeviceId, sessions: bool) -> Option<Envelope> {
+pub(crate) fn refusal(shared: &Arc<Shared>, peer: DeviceId, sessions: bool) -> Option<Envelope> {
     let offered = if sessions { shared.we_offer(agent::SESSIONS) } else { shared.offers_agents() };
     if !offered {
         return Some(Envelope::error(ErrorCode::Unsupported, "agents are not available here"));
@@ -1212,7 +1456,16 @@ async fn answer_envelope(shared: &Arc<Shared>, peer: DeviceId, env: &Envelope) -
     }
     let bad = || Envelope::error(ErrorCode::BadMessage, "invalid agent request");
     let request = match env.t.as_str() {
-        types::AGENT_THREADS => AgentRequest::Threads,
+        types::AGENT_THREADS => {
+            let Some(list) = decode::<AgentThreadsRequest>(env, AgentThreadsRequest::is_valid) else {
+                return bad().into();
+            };
+            if list.is_paged() {
+                AgentRequest::ThreadsPage { show: list.show, before_ms: list.before_ms }
+            } else {
+                AgentRequest::Threads
+            }
+        }
         types::AGENT_START => {
             let Some(start) = decode::<AgentStart>(env, AgentStart::is_valid) else { return bad().into() };
             if let Some(refused) = mode_refusal(shared, &peer, &start.mode) {
@@ -1232,6 +1485,7 @@ async fn answer_envelope(shared: &Arc<Shared>, peer: DeviceId, env: &Envelope) -
                 effort: start.effort,
                 images: start.images,
                 custom_model: start.custom_model,
+                key: start.key,
             }
         }
         types::AGENT_SEND => {
@@ -1246,6 +1500,7 @@ async fn answer_envelope(shared: &Arc<Shared>, peer: DeviceId, env: &Envelope) -
                 text: clean_typed(send.text),
                 dispatch: send.dispatch,
                 images: send.images,
+                key: send.key,
             }
         }
         types::AGENT_CANCEL => {
@@ -1382,7 +1637,7 @@ async fn answer_envelope(shared: &Arc<Shared>, peer: DeviceId, env: &Envelope) -
         _ => return Envelope::error(ErrorCode::Unsupported, "unknown agent request").into(),
     };
     let expects = match &request {
-        AgentRequest::Threads => types::AGENT_THREADS,
+        AgentRequest::Threads | AgentRequest::ThreadsPage { .. } => types::AGENT_THREADS,
         AgentRequest::Start { .. }
         | AgentRequest::SessionContinue { .. }
         | AgentRequest::Configure { .. } => types::AGENT_THREAD,
@@ -1404,6 +1659,9 @@ async fn answer_envelope(shared: &Arc<Shared>, peer: DeviceId, env: &Envelope) -
     let reply = ask_platform(shared, peer, request).await;
     let built = match reply {
         Ok(AgentReply::Ok) if expects == types::OK => Ok(Envelope::empty(types::OK).into()),
+        Ok(AgentReply::Duplicate) if env.t == types::AGENT_SEND => {
+            Envelope::new(types::OK, &AgentSent { duplicate: true }).map(PcAnswer::from)
+        }
         Ok(AgentReply::Threads(threads)) if expects == types::AGENT_THREADS => {
             let threads = threads.into_iter().map(|t| thread_for(t, control)).collect();
             Ok(PcAnswer::Threads(AgentThreads { threads }.sanitized()))
@@ -1473,7 +1731,7 @@ async fn answer_envelope(shared: &Arc<Shared>, peer: DeviceId, env: &Envelope) -
 
 /// Hands `request` to the platform on a blocking thread, giving up after
 /// [`PLATFORM_LIMIT`].
-async fn ask_platform(
+pub(crate) async fn ask_platform(
     shared: &Arc<Shared>,
     peer: DeviceId,
     request: AgentRequest,
@@ -1489,7 +1747,7 @@ async fn ask_platform(
     }
 }
 
-fn failure_message(failure: AgentFailure) -> &'static str {
+pub(crate) fn failure_message(failure: AgentFailure) -> &'static str {
     match failure {
         AgentFailure::Unsupported => "the agent can't run here now",
         AgentFailure::Denied => "refused",
@@ -1753,6 +2011,10 @@ pub(crate) async fn handle(
             PcAnswer::Files(body) => rsp.paged(body).await?,
             PcAnswer::Commands(body) => rsp.paged(body).await?,
         },
+        t if crate::agent_history::is_request(t) => {
+            crate::agent_history::handle_request(shared, peer, env, rsp).await?;
+        }
+        t if crate::agent_history::is_event(t) => crate::agent_history::handle_event(shared, peer, env).await,
         types::AGENT_CATALOG if shared.we_offer(agent::REMOTE) => {
             let Ok(catalog) = env.body::<AgentCatalog>() else { return Ok(true) };
             if !catalog.is_valid() {
@@ -1760,6 +2022,7 @@ pub(crate) async fn handle(
             }
             let catalog = catalog.sanitized();
             let catalog = (!catalog.agents.is_empty()).then_some(catalog);
+            crate::agent_history::catalog_arrived(shared, peer, catalog.is_some());
             let offers = peer_offers_now(shared, &peer);
             {
                 let mut inner = shared.agents.lock();
@@ -1780,6 +2043,7 @@ pub(crate) async fn handle(
                 && event.is_valid()
                 && let Some(event) = event.sanitized()
             {
+                crate::agent_history::event_arrived(shared, peer, &event).await;
                 shared.emit(NodeEvent::AgentEvent { device: peer, event: Box::new(event) });
             }
         }
@@ -1910,7 +2174,7 @@ fn session_offering(shared: &Arc<Shared>, peer: &DeviceId, cap: &str) -> Result<
 }
 
 /// A request to `peer`, which must offer `cap`: the body of its `ok`.
-async fn request_of<T: serde::de::DeserializeOwned>(
+pub(crate) async fn request_of<T: serde::de::DeserializeOwned>(
     shared: &Arc<Shared>,
     peer: DeviceId,
     env: Envelope,
@@ -1922,7 +2186,12 @@ async fn request_of<T: serde::de::DeserializeOwned>(
 }
 
 /// A request to `peer` whose answer is a list that may come in parts.
-async fn request_paged_of<T>(shared: &Arc<Shared>, peer: DeviceId, env: Envelope, cap: &str) -> Result<T>
+pub(crate) async fn request_paged_of<T>(
+    shared: &Arc<Shared>,
+    peer: DeviceId,
+    env: Envelope,
+    cap: &str,
+) -> Result<T>
 where
     T: g7link_protocol::lanes::Paged + serde::de::DeserializeOwned + Send + 'static,
 {
@@ -1937,17 +2206,19 @@ async fn request_ok(shared: &Arc<Shared>, peer: DeviceId, env: Envelope) -> Resu
     request::<g7link_protocol::messages::Empty>(shared, peer, env).await.map(|_| ())
 }
 
-fn invalid(what: &str) -> Error {
+pub(crate) fn invalid(what: &str) -> Error {
     Error::Protocol(format!("invalid {what}"))
 }
 
 pub(crate) async fn threads(shared: &Arc<Shared>, peer: DeviceId) -> Result<Vec<AgentThread>> {
     let env = Envelope::empty(types::AGENT_THREADS);
-    let reply: AgentThreads = request_paged(shared, peer, env).await?;
-    if !reply.is_valid() {
-        return Err(invalid("agent.threads reply"));
-    }
-    Ok(reply.sanitized().threads)
+    let threads = match request_paged::<AgentThreads>(shared, peer, env).await {
+        Ok(reply) if reply.is_valid() => Ok(reply.sanitized().threads),
+        Ok(_) => Err(invalid("agent.threads reply")),
+        Err(e) => Err(e),
+    };
+    crate::agent_history::threads_arrived(shared, peer, &threads).await;
+    threads
 }
 
 /// Phone: `Unsupported` without sending anything when `uses` needs §5 and
@@ -1969,7 +2240,9 @@ pub(crate) async fn start(shared: &Arc<Shared>, peer: DeviceId, start: AgentStar
     if !thread.is_valid() {
         return Err(invalid("agent.thread reply"));
     }
-    thread.sanitized().ok_or_else(|| invalid("agent.thread reply"))
+    let thread = thread.sanitized().ok_or_else(|| invalid("agent.thread reply"))?;
+    crate::agent_history::thread_arrived(shared, peer, &thread).await;
+    Ok(thread)
 }
 
 pub(crate) async fn send(shared: &Arc<Shared>, peer: DeviceId, body: AgentSend) -> Result<()> {
@@ -1978,6 +2251,17 @@ pub(crate) async fn send(shared: &Arc<Shared>, peer: DeviceId, body: AgentSend) 
     }
     needs_control(shared, &peer, body.uses_control())?;
     request_ok(shared, peer, Envelope::new(types::AGENT_SEND, &body)?).await
+}
+
+/// Phone: [`send`], answering whether the PC had already taken a message
+/// with the body's `key` (and so sent nothing now).
+pub(crate) async fn send_keyed(shared: &Arc<Shared>, peer: DeviceId, body: AgentSend) -> Result<bool> {
+    if !body.is_valid() {
+        return Err(invalid("agent.send"));
+    }
+    needs_control(shared, &peer, body.uses_control())?;
+    let sent: AgentSent = request(shared, peer, Envelope::new(types::AGENT_SEND, &body)?).await?;
+    Ok(sent.duplicate)
 }
 
 // ---- Phone side of §5 (`agent.control`) ----
@@ -2018,7 +2302,9 @@ pub(crate) async fn configure(
     if !thread.is_valid() {
         return Err(invalid("agent.thread reply"));
     }
-    thread.sanitized().ok_or_else(|| invalid("agent.thread reply"))
+    let thread = thread.sanitized().ok_or_else(|| invalid("agent.thread reply"))?;
+    crate::agent_history::thread_arrived(shared, peer, &thread).await;
+    Ok(thread)
 }
 
 pub(crate) async fn queue(shared: &Arc<Shared>, peer: DeviceId, body: AgentQueueChange) -> Result<()> {
@@ -2212,11 +2498,14 @@ pub(crate) async fn read(
     if !body.is_valid() {
         return Err(invalid("agent.read"));
     }
+    let opened = body.before.is_none();
     let items: AgentItems = request_paged(shared, peer, Envelope::new(types::AGENT_READ, &body)?).await?;
     if !items.is_valid() {
         return Err(invalid("agent.items reply"));
     }
-    items.sanitized().ok_or_else(|| invalid("agent.items reply"))
+    let items = items.sanitized().ok_or_else(|| invalid("agent.items reply"))?;
+    crate::agent_history::page_arrived(shared, peer, &items, opened).await;
+    Ok(items)
 }
 
 pub(crate) async fn watch(shared: &Arc<Shared>, peer: DeviceId, thread: Option<String>) -> Result<()> {
@@ -2464,14 +2753,32 @@ mod tests {
             effort: None,
             images: Vec::new(),
             custom_model: false,
+            key: Some("0123456789abcdef".into()),
         };
         let answer = AgentRequest::Answer {
             token: "0123abcd".into(),
             allow: false,
             message: Some("secret instead".into()),
         };
-        let shown = format!("{start:?} {answer:?}");
+        let search = AgentRequest::Search { query: "secret".into(), limit: 1, cursor: None, archived: false };
+        let rename = AgentRequest::Rename { thread: "abc".into(), title: "secret".into() };
+        let patch = AgentRequest::DiffPatch {
+            thread: "abc".into(),
+            range: TurnRange::Turn(1),
+            path: "secret/x.rs".into(),
+            offset: None,
+        };
+        let apply = AgentRequest::RewindApply { token: "0123abcd".into(), refill: true };
+        let found = AgentRequest::Found {
+            query: Some("secret".into()),
+            agent: None,
+            show: None,
+            before_ms: None,
+            limit: 1,
+        };
+        let shown = format!("{start:?} {answer:?} {search:?} {rename:?} {patch:?} {apply:?} {found:?}");
         assert!(!shown.contains("secret") && !shown.contains("0123abcd"), "{shown}");
+        assert!(!shown.contains("0123456789abcdef"), "a message's key is not printed: {shown}");
         let export = AgentExport {
             text: "# secret plan".into(),
             truncated: false,

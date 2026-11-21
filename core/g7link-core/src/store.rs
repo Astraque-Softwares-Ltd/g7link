@@ -12,6 +12,7 @@ use std::{
 use g7link_protocol::{
     DeviceId,
     ble::LINK_SECRET_LEN,
+    chat_identity::{conversation_key, is_conversation_id, strip_count},
     messages::{DeviceInfo, DeviceKind, Notification, PcWakeInfo, PowerLevel, ScreenShape},
 };
 use rusqlite::{Connection, OptionalExtension, params};
@@ -406,16 +407,24 @@ pub struct QueueItem {
     pub files: Vec<QueuedFileSpec>,
 }
 
-/// Retention window for persisted notification-backed chat threads (90 days).
-pub const CHAT_RETENTION_SECS: i64 = 90 * 86_400;
+/// How long a chat whose notification left the phone, and that isn't kept,
+/// stays stored (unlisted): long enough for a notification listener that
+/// rebinds (an empty snapshot, then a full one) to bring it back whole.
+pub const CHAT_RETIRED_GRACE_SECS: i64 = 86_400;
+/// How long a kept chat whose notification left the phone stays with nothing new.
+pub const CHAT_KEPT_IDLE_SECS: i64 = 30 * 86_400;
 /// Maximum persisted notification-backed chat threads per paired phone.
 pub const MAX_CHAT_THREADS_PER_PEER: usize = 200;
 /// Maximum persisted messages per notification-backed chat thread.
 pub const MAX_CHAT_MESSAGES_PER_THREAD: usize = 200;
 
-/// Deterministic thread ID for a notification-backed messaging conversation.
-pub fn chat_thread_id(app: &str, title: &str) -> String {
-    format!("chat:{}:{}", app.trim(), title.trim().to_lowercase())
+/// The schema version that keys chats by conversation and gives them a lifetime.
+const CHAT_IDENTITY_VERSION: usize = 11;
+
+/// The thread ID of an app's conversation: `chat:<app>:` and its
+/// [`conversation_key`] (`i:<id>`, or `t:<title without its count, lowercased>`).
+pub fn chat_thread_id(app: &str, conversation_id: Option<&str>, title: &str) -> String {
+    format!("chat:{}:{}", app.trim(), conversation_key(conversation_id, title))
 }
 
 /// A persisted conversation from a messaging app notification (`MessagingStyle`).
@@ -433,22 +442,31 @@ pub struct ChatThreadRecord {
     pub last_sender: Option<String>,
     pub updated_ms: i64,
     pub unread: u32,
+    /// Its notification is on the phone now ("live"). Always `retired_ms.is_none()`.
     pub active: bool,
     pub avatar: Option<Vec<u8>>,
     pub app_icon: Option<Vec<u8>>,
+    /// Replied to from this PC, or pinned: listed after its notification
+    /// leaves the phone, until [`CHAT_KEPT_IDLE_SECS`] pass with nothing new.
+    pub kept: bool,
+    /// When its notification left the phone, Unix ms on this PC's clock;
+    /// `None` while live.
+    pub retired_ms: Option<i64>,
 }
 
-/// Never prints conversation titles, snippets, or sender names (protocol v0 §11).
+/// Never prints conversation titles, snippets, or sender names (protocol v1 §11).
+/// The thread ID holds a title or a conversation ID, so it isn't printed either.
 impl std::fmt::Debug for ChatThreadRecord {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ChatThreadRecord")
             .field("peer", &self.peer)
-            .field("thread_id", &self.thread_id)
             .field("app", &self.app)
             .field("is_group", &self.is_group)
             .field("updated_ms", &self.updated_ms)
             .field("unread", &self.unread)
             .field("active", &self.active)
+            .field("kept", &self.kept)
+            .field("retired_ms", &self.retired_ms)
             .finish_non_exhaustive()
     }
 }
@@ -606,6 +624,14 @@ const MIGRATIONS: &[&str] = &[
     // v10: the secret a phone and a PC share for Bluetooth (its beacon and its
     // channel), sealed; it goes with the device.
     "ALTER TABLE peers ADD COLUMN link_secret BLOB;",
+    // v11: chats keyed by conversation (`conv_id`, the phone's ID for it, when it
+    // has one), with a lifetime: `retired_ms` is when the notification left the
+    // phone (NULL exactly while `active`), and `kept` holds a chat replied to from
+    // this PC, or pinned. `merge_chat_rows` runs with it.
+    "ALTER TABLE chat_threads ADD COLUMN conv_id    TEXT;
+     ALTER TABLE chat_threads ADD COLUMN kept       INTEGER NOT NULL DEFAULT 0;
+     ALTER TABLE chat_threads ADD COLUMN retired_ms INTEGER;
+     CREATE INDEX IF NOT EXISTS idx_chat_threads_peer_key ON chat_threads (peer, notification_key);",
 ];
 
 /// A paired device as stored on disk.
@@ -1364,6 +1390,9 @@ impl Store {
 
     // ---- Unified conversations (`MessagingStyle` notifications) ----
 
+    /// Stores a chat notification's conversation (`None` when it has none):
+    /// the thread it belongs to, now live, and the messages it hasn't seen.
+    /// Returns the thread's ID.
     pub fn upsert_chat_notification(
         &self,
         peer: &DeviceId,
@@ -1371,161 +1400,70 @@ impl Store {
         app_icon: Option<&[u8]>,
         is_snapshot: bool,
     ) -> Result<Option<String>> {
-        let Some(conv) = &n.conversation else {
-            return Ok(None);
-        };
-        if conv.messages.is_empty() || conv.title.trim().is_empty() {
-            return Ok(None);
-        };
-        let thread_id = chat_thread_id(&n.app, &conv.title);
-        let reply_action_id = n.actions.iter().find(|a| a.reply).map(|a| a.id.clone());
-        let Some(latest) = conv.messages.last() else {
-            return Ok(None);
-        };
-        let snippet = latest.text.clone();
-        let last_sender = if latest.self_sent { None } else { latest.sender.clone() };
-        let updated_ms = conv.messages.iter().map(|m| m.time).max().unwrap_or(n.when).max(n.when);
         let peer_str = peer.to_string();
-        let icon_bytes = app_icon.or(n.icon.as_deref());
-
+        let now_ms = crate::now_unix_ms();
         self.with(|c| {
             let tx = c.unchecked_transaction()?;
-            let existing: Vec<(String, String, bool)> = {
-                let mut stmt = tx.prepare_cached(
-                    "SELECT IFNULL(sender, ''), text, self_sent
-                     FROM (
-                         SELECT id, sender, text, time_ms, self_sent
-                         FROM chat_messages
-                         WHERE peer = ?1 AND thread_id = ?2
-                         ORDER BY time_ms DESC, id DESC
-                         LIMIT 50
-                     )
-                     ORDER BY time_ms ASC, id ASC",
-                )?;
-                stmt.query_map(params![peer_str, thread_id], |r| {
-                    Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)? != 0))
-                })?
-                .collect::<rusqlite::Result<Vec<_>>>()?
-            };
-
-            let incoming_keys: Vec<(String, String, bool)> = conv
-                .messages
-                .iter()
-                .map(|m| (m.sender.clone().unwrap_or_default(), m.text.clone(), m.self_sent))
-                .collect();
-
-            let mut matched_prefix = 0usize;
-            for p in (1..=incoming_keys.len().min(existing.len())).rev() {
-                let prefix = &incoming_keys[..p];
-                if existing.windows(p).any(|w| w == prefix) {
-                    matched_prefix = p;
-                    break;
-                }
+            let thread_id = upsert_chat_conn(&tx, &peer_str, n, app_icon, is_snapshot)?;
+            if let Some(tid) = &thread_id {
+                prune_chat_messages_conn(&tx, &peer_str, tid)?;
+                prune_chat_conn(&tx, &peer_str, now_ms)?;
             }
-
-            let mut new_incoming_count = 0i64;
-            for msg in conv.messages.iter().skip(matched_prefix) {
-                let exists: Option<i64> = tx
-                    .query_row(
-                        "SELECT id FROM chat_messages
-                         WHERE peer = ?1 AND thread_id = ?2
-                           AND IFNULL(sender, '') = IFNULL(?3, '')
-                           AND text = ?4
-                           AND self_sent = ?5
-                           AND (time_ms = ?6 OR (self_sent != 0 AND ABS(time_ms - ?6) <= 5000))
-                         LIMIT 1",
-                        params![
-                            peer_str,
-                            thread_id,
-                            msg.sender,
-                            msg.text,
-                            i64::from(msg.self_sent),
-                            msg.time,
-                        ],
-                        |r| r.get(0),
-                    )
-                    .optional()?;
-                if exists.is_none() {
-                    tx.execute(
-                        "INSERT INTO chat_messages (peer, thread_id, sender, text, time_ms, self_sent, avatar)
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                        params![
-                            peer_str,
-                            thread_id,
-                            msg.sender,
-                            msg.text,
-                            msg.time,
-                            i64::from(msg.self_sent),
-                            msg.avatar,
-                        ],
-                    )?;
-                    if !msg.self_sent {
-                        new_incoming_count += 1;
-                    }
-                }
-            }
-
-            let snapshot_unread = new_incoming_count.min(conv.messages.len() as i64);
-            let initial_unread = if is_snapshot { snapshot_unread } else { new_incoming_count };
-            tx.execute(
-                "INSERT INTO chat_threads (
-                    peer, thread_id, app, app_name, notification_key, reply_action_id,
-                    title, is_group, snippet, last_sender, updated_ms, unread, active, avatar, app_icon
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 1, ?13, ?14)
-                 ON CONFLICT(peer, thread_id) DO UPDATE SET
-                    app = excluded.app,
-                    app_name = excluded.app_name,
-                    notification_key = CASE WHEN excluded.updated_ms >= chat_threads.updated_ms
-                        THEN excluded.notification_key ELSE chat_threads.notification_key END,
-                    reply_action_id = CASE WHEN excluded.updated_ms >= chat_threads.updated_ms
-                        THEN excluded.reply_action_id ELSE chat_threads.reply_action_id END,
-                    title = CASE WHEN excluded.updated_ms >= chat_threads.updated_ms
-                        THEN excluded.title ELSE chat_threads.title END,
-                    is_group = excluded.is_group,
-                    -- An older notification (a replay after reconnecting) doesn't
-                    -- replace what the newest one said.
-                    snippet = CASE WHEN excluded.updated_ms >= chat_threads.updated_ms
-                        THEN excluded.snippet ELSE chat_threads.snippet END,
-                    last_sender = CASE WHEN excluded.updated_ms >= chat_threads.updated_ms
-                        THEN excluded.last_sender ELSE chat_threads.last_sender END,
-                    updated_ms = MAX(chat_threads.updated_ms, excluded.updated_ms),
-                    unread = CASE
-                        WHEN ?15 != 0 THEN CASE
-                            WHEN ?16 > 0 THEN ?16
-                            ELSE chat_threads.unread
-                        END
-                        ELSE chat_threads.unread + ?17
-                    END,
-                    active = 1,
-                    avatar = COALESCE(excluded.avatar, chat_threads.avatar),
-                    app_icon = COALESCE(excluded.app_icon, chat_threads.app_icon)",
-                params![
-                    peer_str,
-                    thread_id,
-                    n.app,
-                    n.app_name,
-                    n.key,
-                    reply_action_id,
-                    conv.title.trim(),
-                    i64::from(conv.group),
-                    snippet,
-                    last_sender,
-                    updated_ms,
-                    initial_unread,
-                    conv.avatar,
-                    icon_bytes,
-                    i64::from(is_snapshot),
-                    snapshot_unread,
-                    new_incoming_count,
-                ],
-            )?;
-
-            prune_chat_conn(&tx, &peer_str, &thread_id)?;
             tx.commit()?;
-            Ok(Some(thread_id))
+            Ok(thread_id)
         })
     }
 
+    /// A phone's `notify.snapshot`, in one transaction: stores each item's
+    /// conversation, then, unless the phone said it left some out, retires
+    /// every live chat whose notification isn't in it (with a conversation or
+    /// not), then prunes.
+    pub fn apply_chat_snapshot(
+        &self,
+        peer: &DeviceId,
+        items: &[(&Notification, Option<&[u8]>)],
+        truncated: bool,
+    ) -> Result<ChatSnapshotChanges> {
+        let peer_str = peer.to_string();
+        let now_ms = crate::now_unix_ms();
+        self.with(|c| {
+            let tx = c.unchecked_transaction()?;
+            let mut changes = ChatSnapshotChanges::default();
+            for (n, icon) in items {
+                if let Some(tid) = upsert_chat_conn(&tx, &peer_str, n, *icon, true)? {
+                    prune_chat_messages_conn(&tx, &peer_str, &tid)?;
+                    changes.stored.push(tid);
+                }
+            }
+            if !truncated {
+                let present: std::collections::HashSet<&str> =
+                    items.iter().map(|(n, _)| n.key.as_str()).collect();
+                let live: Vec<(String, String)> = {
+                    let mut stmt = tx.prepare_cached(
+                        "SELECT thread_id, notification_key FROM chat_threads
+                         WHERE peer = ?1 AND active = 1 ORDER BY thread_id",
+                    )?;
+                    stmt.query_map([&peer_str], |r| Ok((r.get(0)?, r.get(1)?)))?
+                        .collect::<rusqlite::Result<Vec<_>>>()?
+                };
+                for (tid, key) in live {
+                    if !present.contains(key.as_str()) {
+                        tx.execute(
+                            "UPDATE chat_threads SET active = 0, unread = 0, retired_ms = ?3
+                             WHERE peer = ?1 AND thread_id = ?2",
+                            params![peer_str, tid, now_ms],
+                        )?;
+                        changes.retired.push(tid);
+                    }
+                }
+            }
+            prune_chat_conn(&tx, &peer_str, now_ms)?;
+            tx.commit()?;
+            Ok(changes)
+        })
+    }
+
+    /// Stores a reply sent from this PC, which keeps the chat.
     pub fn append_chat_reply(
         &self,
         peer: &DeviceId,
@@ -1573,7 +1511,8 @@ impl Store {
                  SET snippet = ?3,
                      last_sender = NULL,
                      updated_ms = MAX(updated_ms, ?4),
-                     unread = 0
+                     unread = 0,
+                     kept = 1
                  WHERE peer = ?1 AND thread_id = ?2",
                 params![peer_str, thread_id, snippet, time_ms],
             )?;
@@ -1595,7 +1534,7 @@ impl Store {
             c.query_row(
                 "SELECT thread_id FROM chat_threads
                  WHERE peer = ?1 AND notification_key = ?2
-                 ORDER BY updated_ms DESC LIMIT 1",
+                 ORDER BY active DESC, updated_ms DESC LIMIT 1",
                 params![peer_str, notification_key],
                 |r| r.get(0),
             )
@@ -1607,44 +1546,52 @@ impl Store {
         if self.append_chat_reply(peer, &tid, text, time_ms)? { Ok(Some(tid)) } else { Ok(None) }
     }
 
+    /// The phone's notification `notification_key` left: retires every live
+    /// thread it belonged to, then prunes. Returns the threads it retired.
     pub fn mark_chat_notification_removed(
         &self,
         peer: &DeviceId,
         notification_key: &str,
-    ) -> Result<Option<String>> {
+    ) -> Result<Vec<String>> {
         let peer_str = peer.to_string();
+        let now_ms = crate::now_unix_ms();
         self.with(|c| {
-            let thread_id: Option<String> = c
-                .query_row(
+            let tx = c.unchecked_transaction()?;
+            let retired: Vec<String> = {
+                let mut stmt = tx.prepare_cached(
                     "SELECT thread_id FROM chat_threads
                      WHERE peer = ?1 AND notification_key = ?2 AND active = 1
-                     ORDER BY updated_ms DESC LIMIT 1",
-                    params![peer_str, notification_key],
-                    |r| r.get(0),
-                )
-                .optional()?;
-            if let Some(ref tid) = thread_id {
-                c.execute(
-                    "UPDATE chat_threads SET active = 0, unread = 0
-                     WHERE peer = ?1 AND thread_id = ?2",
-                    params![peer_str, tid],
+                     ORDER BY thread_id",
                 )?;
-            }
-            Ok(thread_id)
+                stmt.query_map(params![peer_str, notification_key], |r| r.get(0))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?
+            };
+            tx.execute(
+                "UPDATE chat_threads SET active = 0, unread = 0, retired_ms = ?3
+                 WHERE peer = ?1 AND notification_key = ?2 AND active = 1",
+                params![peer_str, notification_key, now_ms],
+            )?;
+            prune_chat_conn(&tx, &peer_str, now_ms)?;
+            tx.commit()?;
+            Ok(retired)
         })
     }
 
+    /// The threads the Messages list shows, newest first: live ones, and
+    /// kept ones whose notification left the phone.
     pub fn chat_threads(&self, peer: &DeviceId) -> Result<Vec<ChatThreadRecord>> {
         let peer_str = peer.to_string();
         let peer_id = *peer;
         self.with(|c| {
             let mut stmt = c.prepare_cached(&format!(
-                "{SELECT_CHAT_THREADS} WHERE peer = ?1 ORDER BY updated_ms DESC, thread_id ASC"
+                "{SELECT_CHAT_THREADS} WHERE peer = ?1 AND (active = 1 OR kept != 0)
+                 ORDER BY updated_ms DESC, thread_id ASC"
             ))?;
             stmt.query_map([&peer_str], |r| row_to_chat_thread(&peer_id, r))?.collect()
         })
     }
 
+    /// Any stored thread, listed or not (a cleared chat still open on the PC).
     pub fn chat_thread(&self, peer: &DeviceId, thread_id: &str) -> Result<Option<ChatThreadRecord>> {
         let peer_str = peer.to_string();
         let peer_id = *peer;
@@ -1705,6 +1652,64 @@ impl Store {
             )? > 0;
             tx.commit()?;
             Ok(removed)
+        })
+    }
+
+    /// Removes a thread and its messages, returning what it was.
+    pub fn take_chat_thread(&self, peer: &DeviceId, thread_id: &str) -> Result<Option<ChatThreadRecord>> {
+        let peer_str = peer.to_string();
+        let peer_id = *peer;
+        self.with(|c| {
+            let tx = c.unchecked_transaction()?;
+            let thread = tx
+                .query_row(
+                    &format!("{SELECT_CHAT_THREADS} WHERE peer = ?1 AND thread_id = ?2"),
+                    params![peer_str, thread_id],
+                    |r| row_to_chat_thread(&peer_id, r),
+                )
+                .optional()?;
+            if thread.is_some() {
+                tx.execute(
+                    "DELETE FROM chat_messages WHERE peer = ?1 AND thread_id = ?2",
+                    params![peer_str, thread_id],
+                )?;
+                tx.execute(
+                    "DELETE FROM chat_threads WHERE peer = ?1 AND thread_id = ?2",
+                    params![peer_str, thread_id],
+                )?;
+            }
+            tx.commit()?;
+            Ok(thread)
+        })
+    }
+
+    /// Pins (`kept`) or unpins a thread. True when it changed. An unpinned
+    /// chat whose notification left the phone goes at the next prune.
+    pub fn set_chat_kept(&self, peer: &DeviceId, thread_id: &str, kept: bool) -> Result<bool> {
+        let peer_str = peer.to_string();
+        self.with(|c| {
+            c.execute(
+                "UPDATE chat_threads SET kept = ?3 WHERE peer = ?1 AND thread_id = ?2 AND kept != ?3",
+                params![peer_str, thread_id, i64::from(kept)],
+            )
+            .map(|n| n > 0)
+        })
+    }
+
+    /// Applies the chat lifetimes to every device's threads (at startup).
+    pub fn prune_chats(&self) -> Result<()> {
+        let now_ms = crate::now_unix_ms();
+        self.with(|c| {
+            let tx = c.unchecked_transaction()?;
+            let peers: Vec<String> = {
+                let mut stmt =
+                    tx.prepare("SELECT peer FROM chat_threads UNION SELECT peer FROM chat_messages")?;
+                stmt.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<Vec<_>>>()?
+            };
+            for peer in &peers {
+                prune_chat_conn(&tx, peer, now_ms)?;
+            }
+            tx.commit()
         })
     }
 
@@ -2593,8 +2598,214 @@ const SELECT_TIMELINE: &str = "SELECT id, kind, device_id, device_name, incoming
      title, detail, target, size_bytes, duration_secs, ref_id FROM timeline";
 
 const SELECT_CHAT_THREADS: &str = "SELECT thread_id, app, app_name, notification_key, reply_action_id, \
-     title, is_group, snippet, last_sender, updated_ms, unread, active, avatar, app_icon \
+     title, is_group, snippet, last_sender, updated_ms, unread, active, avatar, app_icon, kept, retired_ms \
      FROM chat_threads";
+
+/// What a snapshot changed: the threads it stored, and the live ones it retired.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(crate) struct ChatSnapshotChanges {
+    pub stored: Vec<String>,
+    pub retired: Vec<String>,
+}
+
+/// Stores `n`'s conversation in the thread it belongs to (contract §1.2) and
+/// makes that thread live; `kept` is left as it is. Neither prunes nor commits.
+fn upsert_chat_conn(
+    c: &Connection,
+    peer_str: &str,
+    n: &Notification,
+    app_icon: Option<&[u8]>,
+    is_snapshot: bool,
+) -> rusqlite::Result<Option<String>> {
+    let Some(conv) = &n.conversation else {
+        return Ok(None);
+    };
+    let title = strip_count(&conv.title);
+    if title.is_empty() {
+        return Ok(None);
+    }
+    let Some(latest) = conv.messages.last() else {
+        return Ok(None);
+    };
+    let conv_id = conv.id.as_deref().filter(|id| is_conversation_id(id));
+    let title_thread_id = chat_thread_id(&n.app, None, title);
+    let thread_id = match conv_id {
+        Some(id) => {
+            let thread_id = chat_thread_id(&n.app, Some(id), title);
+            adopt_conversation_id(c, peer_str, &title_thread_id, &thread_id, id)?;
+            thread_id
+        }
+        None => title_thread_id,
+    };
+    let reply_action_id = n.actions.iter().find(|a| a.reply).map(|a| a.id.clone());
+    let snippet = latest.text.clone();
+    let last_sender = if latest.self_sent { None } else { latest.sender.clone() };
+    let updated_ms = conv.messages.iter().map(|m| m.time).max().unwrap_or(n.when).max(n.when);
+    let icon_bytes = app_icon.or(n.icon.as_deref());
+
+    let existing: Vec<(String, String, bool)> = {
+        let mut stmt = c.prepare_cached(
+            "SELECT IFNULL(sender, ''), text, self_sent
+             FROM (
+                 SELECT id, sender, text, time_ms, self_sent
+                 FROM chat_messages
+                 WHERE peer = ?1 AND thread_id = ?2
+                 ORDER BY time_ms DESC, id DESC
+                 LIMIT 50
+             )
+             ORDER BY time_ms ASC, id ASC",
+        )?;
+        stmt.query_map(params![peer_str, thread_id], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)? != 0))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?
+    };
+
+    let incoming_keys: Vec<(String, String, bool)> = conv
+        .messages
+        .iter()
+        .map(|m| (m.sender.clone().unwrap_or_default(), m.text.clone(), m.self_sent))
+        .collect();
+
+    let mut matched_prefix = 0usize;
+    for p in (1..=incoming_keys.len().min(existing.len())).rev() {
+        let prefix = &incoming_keys[..p];
+        if existing.windows(p).any(|w| w == prefix) {
+            matched_prefix = p;
+            break;
+        }
+    }
+
+    // Only messages inserted now count towards `unread`: a re-post of what's
+    // stored, or a thread moved to its ID, adds nothing.
+    let mut new_incoming_count = 0i64;
+    for msg in conv.messages.iter().skip(matched_prefix) {
+        let exists: Option<i64> = c
+            .query_row(
+                "SELECT id FROM chat_messages
+                 WHERE peer = ?1 AND thread_id = ?2
+                   AND IFNULL(sender, '') = IFNULL(?3, '')
+                   AND text = ?4
+                   AND self_sent = ?5
+                   AND (time_ms = ?6 OR (self_sent != 0 AND ABS(time_ms - ?6) <= 5000))
+                 LIMIT 1",
+                params![peer_str, thread_id, msg.sender, msg.text, i64::from(msg.self_sent), msg.time],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if exists.is_none() {
+            c.execute(
+                "INSERT INTO chat_messages (peer, thread_id, sender, text, time_ms, self_sent, avatar)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    peer_str,
+                    thread_id,
+                    msg.sender,
+                    msg.text,
+                    msg.time,
+                    i64::from(msg.self_sent),
+                    msg.avatar,
+                ],
+            )?;
+            if !msg.self_sent {
+                new_incoming_count += 1;
+            }
+        }
+    }
+
+    let snapshot_unread = new_incoming_count.min(conv.messages.len() as i64);
+    let initial_unread = if is_snapshot { snapshot_unread } else { new_incoming_count };
+    c.execute(
+        "INSERT INTO chat_threads (
+            peer, thread_id, app, app_name, notification_key, reply_action_id,
+            title, is_group, snippet, last_sender, updated_ms, unread, active, avatar, app_icon,
+            conv_id, retired_ms
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 1, ?13, ?14, ?18, NULL)
+         ON CONFLICT(peer, thread_id) DO UPDATE SET
+            app = excluded.app,
+            app_name = excluded.app_name,
+            notification_key = CASE WHEN excluded.updated_ms >= chat_threads.updated_ms
+                THEN excluded.notification_key ELSE chat_threads.notification_key END,
+            reply_action_id = CASE WHEN excluded.updated_ms >= chat_threads.updated_ms
+                THEN excluded.reply_action_id ELSE chat_threads.reply_action_id END,
+            -- A renamed group stays one thread, under its newest name.
+            title = CASE WHEN excluded.updated_ms >= chat_threads.updated_ms
+                THEN excluded.title ELSE chat_threads.title END,
+            is_group = excluded.is_group,
+            -- An older notification (a replay after reconnecting) doesn't
+            -- replace what the newest one said.
+            snippet = CASE WHEN excluded.updated_ms >= chat_threads.updated_ms
+                THEN excluded.snippet ELSE chat_threads.snippet END,
+            last_sender = CASE WHEN excluded.updated_ms >= chat_threads.updated_ms
+                THEN excluded.last_sender ELSE chat_threads.last_sender END,
+            updated_ms = MAX(chat_threads.updated_ms, excluded.updated_ms),
+            unread = CASE
+                WHEN ?15 != 0 THEN CASE
+                    WHEN ?16 > 0 THEN ?16
+                    ELSE chat_threads.unread
+                END
+                ELSE chat_threads.unread + ?17
+            END,
+            active = 1,
+            retired_ms = NULL,
+            conv_id = COALESCE(excluded.conv_id, chat_threads.conv_id),
+            avatar = COALESCE(excluded.avatar, chat_threads.avatar),
+            app_icon = COALESCE(excluded.app_icon, chat_threads.app_icon)",
+        params![
+            peer_str,
+            thread_id,
+            n.app,
+            n.app_name,
+            n.key,
+            reply_action_id,
+            title,
+            i64::from(conv.group),
+            snippet,
+            last_sender,
+            updated_ms,
+            initial_unread,
+            conv.avatar,
+            icon_bytes,
+            i64::from(is_snapshot),
+            snapshot_unread,
+            new_incoming_count,
+            conv_id,
+        ],
+    )?;
+    Ok(Some(thread_id))
+}
+
+/// Moves a thread first seen by its title (or kept apart by the v11 merge)
+/// to its conversation's ID, with its messages and `kept`, the first time a
+/// notification brings that ID and no thread has it yet.
+fn adopt_conversation_id(
+    c: &Connection,
+    peer_str: &str,
+    title_thread_id: &str,
+    id_thread_id: &str,
+    conv_id: &str,
+) -> rusqlite::Result<()> {
+    let has_id_thread: bool = c.query_row(
+        "SELECT EXISTS(SELECT 1 FROM chat_threads WHERE peer = ?1 AND thread_id = ?2)",
+        params![peer_str, id_thread_id],
+        |r| r.get(0),
+    )?;
+    if has_id_thread {
+        return Ok(());
+    }
+    let moved = c.execute(
+        "UPDATE chat_threads SET thread_id = ?3, conv_id = ?4
+         WHERE peer = ?1 AND thread_id = ?2 AND conv_id IS NULL",
+        params![peer_str, title_thread_id, id_thread_id, conv_id],
+    )?;
+    if moved > 0 {
+        c.execute(
+            "UPDATE chat_messages SET thread_id = ?3 WHERE peer = ?1 AND thread_id = ?2",
+            params![peer_str, title_thread_id, id_thread_id],
+        )?;
+    }
+    Ok(())
+}
 
 fn prune_chat_messages_conn(c: &Connection, peer_str: &str, thread_id: &str) -> rusqlite::Result<()> {
     c.execute(
@@ -2611,26 +2822,19 @@ fn prune_chat_messages_conn(c: &Connection, peer_str: &str, thread_id: &str) -> 
     Ok(())
 }
 
-fn prune_chat_conn(c: &Connection, peer_str: &str, thread_id: &str) -> rusqlite::Result<()> {
-    prune_chat_messages_conn(c, peer_str, thread_id)?;
-    let max_updated: Option<i64> = c
-        .query_row("SELECT MAX(updated_ms) FROM chat_threads WHERE peer = ?1", [peer_str], |r| r.get(0))
-        .optional()?
-        .flatten();
-    if let Some(latest_ms) = max_updated {
-        let retention_ms = CHAT_RETENTION_SECS * 1000;
-        // Never later than now: one message stamped in the future (a phone
-        // whose clock is wrong) would otherwise age out every other thread.
-        let now_ms = crate::now_unix().saturating_mul(1000);
-        let latest_ms = latest_ms.min(now_ms);
-        if latest_ms > retention_ms {
-            let cutoff_ms = latest_ms - retention_ms;
-            c.execute(
-                "DELETE FROM chat_threads WHERE peer = ?1 AND updated_ms < ?2",
-                params![peer_str, cutoff_ms],
-            )?;
-        }
-    }
+/// Applies the chat lifetimes to `peer`'s threads, on this PC's clock: a
+/// retired chat that isn't kept goes [`CHAT_RETIRED_GRACE_SECS`] after it
+/// retired, a retired kept one [`CHAT_KEPT_IDLE_SECS`] after its latest
+/// message or retirement, and a live one never by age. Then the thread cap,
+/// and the messages of every thread that's gone.
+fn prune_chat_conn(c: &Connection, peer_str: &str, now_ms: i64) -> rusqlite::Result<()> {
+    c.execute(
+        "DELETE FROM chat_threads
+         WHERE peer = ?1 AND active = 0 AND retired_ms IS NOT NULL
+           AND ((kept = 0 AND ?2 - retired_ms > ?3)
+             OR (kept != 0 AND ?2 - MAX(updated_ms, retired_ms) > ?4))",
+        params![peer_str, now_ms, CHAT_RETIRED_GRACE_SECS * 1000, CHAT_KEPT_IDLE_SECS * 1000],
+    )?;
     c.execute(
         "DELETE FROM chat_threads
          WHERE peer = ?1
@@ -2673,6 +2877,8 @@ fn row_to_chat_thread(peer: &DeviceId, row: &rusqlite::Row<'_>) -> rusqlite::Res
         active: active != 0,
         avatar: row.get(12)?,
         app_icon: row.get(13)?,
+        kept: row.get::<_, i64>(14)? != 0,
+        retired_ms: row.get(15)?,
     })
 }
 
@@ -2879,13 +3085,234 @@ fn migrate(conn: &Connection) -> Result<()> {
     }
     for (index, sql) in MIGRATIONS.iter().enumerate().skip(current) {
         let version = index + 1;
-        let tx = conn.unchecked_transaction()?;
+        let mut tx = conn.unchecked_transaction()?;
         tx.execute_batch(sql)?;
+        if version == CHAT_IDENTITY_VERSION {
+            migrate_chat_rows(&mut tx, crate::now_unix_ms())?;
+        }
         tx.pragma_update(None, "user_version", version as i64)?;
         tx.commit()?;
         tracing::debug!(version, "applied storage migration");
     }
     cleanup_peers(conn, None, &[])?;
+    Ok(())
+}
+
+/// Why v11 left the chat rows as they were.
+#[derive(Debug)]
+enum MergeFailure {
+    /// The merge would lose a message, or two conversations would share a thread.
+    Check {
+        expected: usize,
+        found: usize,
+    },
+    Sql(rusqlite::Error),
+}
+
+impl From<rusqlite::Error> for MergeFailure {
+    fn from(e: rusqlite::Error) -> Self {
+        MergeFailure::Sql(e)
+    }
+}
+
+/// The v11 step after its SQL: one row per conversation ([`merge_chat_rows`]),
+/// then every chat retired with nothing unread, so the first snapshot brings
+/// back the ones that are on the phone. If the merge can't be made safely it's
+/// undone, and only the retiring happens. Touches `chat_threads` and
+/// `chat_messages` only, and sends nothing.
+fn migrate_chat_rows(tx: &mut rusqlite::Transaction<'_>, now_ms: i64) -> rusqlite::Result<()> {
+    let mut merge = tx.savepoint()?;
+    match merge_chat_rows(&merge, now_ms) {
+        Ok(()) => merge.commit()?,
+        Err(failure) => {
+            merge.rollback()?;
+            merge.finish()?;
+            match failure {
+                MergeFailure::Check { expected, found } => {
+                    tracing::warn!(expected, found, "conversations left unmerged: the check failed");
+                }
+                MergeFailure::Sql(e) => tracing::warn!(error = %e, "conversations left unmerged"),
+            }
+        }
+    }
+    tx.execute("UPDATE chat_threads SET unread = 0, active = 0, retired_ms = ?1", [now_ms])?;
+    Ok(())
+}
+
+/// Merges the chat rows of one conversation into one, keyed by its title
+/// without the count (`chat:<app>:t:<title>`), with every distinct message
+/// once. Fails, having written what it wrote, when two conversations would
+/// share a thread or the messages after it aren't exactly the distinct ones
+/// before.
+fn merge_chat_rows(c: &Connection, now_ms: i64) -> std::result::Result<(), MergeFailure> {
+    struct Row {
+        peer: String,
+        thread_id: String,
+        app: String,
+        app_name: String,
+        notification_key: String,
+        reply_action_id: Option<String>,
+        title: String,
+        is_group: i64,
+        snippet: String,
+        last_sender: Option<String>,
+        updated_ms: i64,
+        avatar: Option<Vec<u8>>,
+        app_icon: Option<Vec<u8>>,
+    }
+    let rows: Vec<Row> = {
+        let mut stmt = c.prepare(
+            "SELECT peer, thread_id, app, app_name, notification_key, reply_action_id, title, is_group,
+                    snippet, last_sender, updated_ms, avatar, app_icon
+             FROM chat_threads ORDER BY peer, thread_id",
+        )?;
+        stmt.query_map([], |r| {
+            Ok(Row {
+                peer: r.get(0)?,
+                thread_id: r.get(1)?,
+                app: r.get(2)?,
+                app_name: r.get(3)?,
+                notification_key: r.get(4)?,
+                reply_action_id: r.get(5)?,
+                title: r.get(6)?,
+                is_group: r.get(7)?,
+                snippet: r.get(8)?,
+                last_sender: r.get(9)?,
+                updated_ms: r.get(10)?,
+                avatar: r.get(11)?,
+                app_icon: r.get(12)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?
+    };
+    if rows.is_empty() {
+        return Ok(());
+    }
+
+    // 1. One group per (peer, app, title without its count, lowercased).
+    let mut groups: std::collections::BTreeMap<(String, String, String), Vec<usize>> = Default::default();
+    for (i, row) in rows.iter().enumerate() {
+        let key = (row.peer.clone(), row.app.trim().to_owned(), conversation_key(None, &row.title));
+        groups.entry(key).or_default().push(i);
+    }
+    let groups: Vec<(String, Vec<usize>)> = groups
+        .into_values()
+        .map(|members| {
+            let first = &rows[members[0]];
+            (chat_thread_id(&first.app, None, &first.title), members)
+        })
+        .collect();
+    // 2. Each group its own thread.
+    let distinct_ids: std::collections::HashSet<(&str, &str)> =
+        groups.iter().map(|(tid, members)| (rows[members[0]].peer.as_str(), tid.as_str())).collect();
+    if distinct_ids.len() != groups.len() {
+        return Err(MergeFailure::Check { expected: groups.len(), found: distinct_ids.len() });
+    }
+
+    let in_list = |n: usize| vec!["?"; n].join(", ");
+    let count = |sql: &str, args: Vec<&dyn rusqlite::ToSql>| -> rusqlite::Result<usize> {
+        let n: i64 = c.query_row(sql, args.as_slice(), |r| r.get(0))?;
+        Ok(usize::try_from(n).unwrap_or(usize::MAX))
+    };
+
+    // The distinct messages, as they'll be keyed after the merge, and whether
+    // each group holds one sent from the phone's side.
+    let mut expected = count(
+        "SELECT COUNT(*) FROM (
+             SELECT DISTINCT peer, thread_id, IFNULL(sender, ''), text, time_ms, self_sent
+             FROM chat_messages m
+             WHERE NOT EXISTS (
+                 SELECT 1 FROM chat_threads t WHERE t.peer = m.peer AND t.thread_id = m.thread_id
+             )
+         )",
+        Vec::new(),
+    )?;
+    let mut kept = Vec::with_capacity(groups.len());
+    for (_, members) in &groups {
+        let peer = &rows[members[0]].peer;
+        let mut args: Vec<&dyn rusqlite::ToSql> = vec![peer as &dyn rusqlite::ToSql];
+        args.extend(members.iter().map(|&i| &rows[i].thread_id as &dyn rusqlite::ToSql));
+        let olds = in_list(members.len());
+        expected += count(
+            &format!(
+                "SELECT COUNT(*) FROM (
+                     SELECT DISTINCT IFNULL(sender, ''), text, time_ms, self_sent FROM chat_messages
+                     WHERE peer = ?1 AND thread_id IN ({olds})
+                 )"
+            ),
+            args.clone(),
+        )?;
+        // 5. Kept when it holds a message sent from the phone's side: v10 can't
+        // tell a reply from this PC from one sent on the phone.
+        kept.push(
+            count(
+                &format!(
+                    "SELECT EXISTS(SELECT 1 FROM chat_messages
+                                   WHERE peer = ?1 AND thread_id IN ({olds}) AND self_sent != 0)"
+                ),
+                args,
+            )? > 0,
+        );
+    }
+
+    // 4. Every message of a group to its new thread, through a name no thread
+    // has, so that no group's new ID catches another's messages on the way.
+    for (g, (_, members)) in groups.iter().enumerate() {
+        for &i in members {
+            c.execute(
+                "UPDATE chat_messages SET thread_id = ?3 WHERE peer = ?1 AND thread_id = ?2",
+                params![rows[i].peer, rows[i].thread_id, format!("\u{1}v11:{g}")],
+            )?;
+        }
+    }
+    c.execute("DELETE FROM chat_threads", [])?;
+    // 3. The survivor: the newest row's header, the newest avatar and icon.
+    for (g, (thread_id, members)) in groups.iter().enumerate() {
+        let mut by_age: Vec<&Row> = members.iter().map(|&i| &rows[i]).collect();
+        by_age.sort_by(|a, b| b.updated_ms.cmp(&a.updated_ms).then_with(|| b.thread_id.cmp(&a.thread_id)));
+        let newest = by_age[0];
+        let avatar = by_age.iter().find_map(|r| r.avatar.as_ref());
+        let app_icon = by_age.iter().find_map(|r| r.app_icon.as_ref());
+        c.execute(
+            "INSERT INTO chat_threads (
+                peer, thread_id, app, app_name, notification_key, reply_action_id, title, is_group,
+                snippet, last_sender, updated_ms, unread, active, avatar, app_icon, conv_id, kept, retired_ms
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 0, 0, ?12, ?13, NULL, ?14, ?15)",
+            params![
+                newest.peer,
+                thread_id,
+                newest.app,
+                newest.app_name,
+                newest.notification_key,
+                newest.reply_action_id,
+                strip_count(&newest.title),
+                newest.is_group,
+                newest.snippet,
+                newest.last_sender,
+                newest.updated_ms,
+                avatar,
+                app_icon,
+                i64::from(kept[g]),
+                now_ms,
+            ],
+        )?;
+        c.execute(
+            "UPDATE chat_messages SET thread_id = ?3 WHERE peer = ?1 AND thread_id = ?2",
+            params![newest.peer, format!("\u{1}v11:{g}"), thread_id],
+        )?;
+    }
+    // Exact duplicates only, keeping the first stored.
+    c.execute(
+        "DELETE FROM chat_messages WHERE id NOT IN (
+             SELECT MIN(id) FROM chat_messages
+             GROUP BY peer, thread_id, IFNULL(sender, ''), text, time_ms, self_sent
+         )",
+        [],
+    )?;
+    let found = count("SELECT COUNT(*) FROM chat_messages", Vec::new())?;
+    if found != expected {
+        return Err(MergeFailure::Check { expected, found });
+    }
     Ok(())
 }
 
@@ -3373,6 +3800,7 @@ mod tests {
 
         let conv = NotificationConversation {
             v: 1,
+            id: None,
             title: "Design Team".into(),
             group: true,
             avatar: Some(vec![0xff, 0xd8, 1]),
@@ -3444,7 +3872,7 @@ mod tests {
 
         // Removing the notification clears the active reply target while keeping history.
         let cleared = store.mark_chat_notification_removed(&peer, "wa|design").unwrap();
-        assert_eq!(cleared.as_deref(), Some(tid.as_str()));
+        assert_eq!(cleared, vec![tid.clone()]);
         let thread = store.chat_thread(&peer, &tid).unwrap().unwrap();
         assert!(!thread.can_reply());
         assert_eq!(store.chat_messages(&peer, &tid, 20).unwrap().len(), 3);
@@ -3505,6 +3933,7 @@ mod tests {
             live: None,
             conversation: Some(NotificationConversation {
                 v: 1,
+                id: None,
                 title: "Alex".into(),
                 group: false,
                 avatar: None,
@@ -3548,13 +3977,13 @@ mod tests {
     }
 
     #[test]
-    fn migrates_from_every_historical_schema_version_v1_through_v6_to_v7() {
+    fn migrates_from_every_historical_schema_version_to_the_latest() {
         use g7link_protocol::messages::{
             Notification, NotificationChatMessage, NotificationConversation, ScreenCorners, ScreenRect,
             ScreenShape,
         };
 
-        for start_version in 1..=6usize {
+        for start_version in 1..MIGRATIONS.len() {
             let conn = Connection::open_in_memory().unwrap();
             conn.pragma_update(None, "foreign_keys", "ON").unwrap();
             for sql in &MIGRATIONS[..start_version] {
@@ -3640,11 +4069,37 @@ mod tests {
                 .unwrap();
             }
 
-            // Run Store::init to migrate from `start_version` -> latest (v7).
+            // Seed a v6 chat, titled with its count as WhatsApp titles groups.
+            if start_version >= 6 {
+                conn.execute(
+                    "INSERT INTO chat_threads (peer, thread_id, app, app_name, notification_key, title,
+                         updated_ms, unread, active)
+                     VALUES (?1, 'chat:com.whatsapp:book club (3 messages)', 'com.whatsapp', 'WhatsApp',
+                         'wa|club', 'Book Club (3 messages)', ?2, 3, 1)",
+                    params![peer.to_string(), paired_at * 1000],
+                )
+                .unwrap();
+                conn.execute(
+                    "INSERT INTO chat_messages (peer, thread_id, sender, text, time_ms)
+                     VALUES (?1, 'chat:com.whatsapp:book club (3 messages)', 'Ana', 'Hi', ?2)",
+                    params![peer.to_string(), paired_at * 1000],
+                )
+                .unwrap();
+            }
+
+            // Run Store::init to migrate from `start_version` to the latest.
             let store = Store::init(conn).unwrap();
             let final_ver: i64 =
                 store.with(|c| c.pragma_query_value(None, "user_version", |r| r.get(0))).unwrap();
-            assert_eq!(final_ver as usize, MIGRATIONS.len(), "migrated from v{start_version} to v7");
+            assert_eq!(final_ver as usize, MIGRATIONS.len(), "migrated from v{start_version} to the latest");
+
+            if start_version >= 6 {
+                let club =
+                    store.chat_thread(&peer, "chat:com.whatsapp:t:book club").unwrap().expect("merged");
+                assert_eq!(club.title, "Book Club");
+                assert!(!club.active && club.unread == 0 && club.retired_ms.is_some());
+                assert_eq!(store.chat_messages(&peer, &club.thread_id, 10).unwrap().len(), 1);
+            }
 
             // Verify v1..v4 peer record survived intact.
             let rec = store.get_peer(&peer).unwrap().expect("peer preserved across migration");
@@ -3724,6 +4179,7 @@ mod tests {
                 live: None,
                 conversation: Some(NotificationConversation {
                     v: 1,
+                    id: None,
                     title: "Sam".into(),
                     group: false,
                     avatar: None,
@@ -3891,6 +4347,7 @@ mod tests {
             live: None,
             conversation: Some(NotificationConversation {
                 v: 1,
+                id: None,
                 title: "Maya".into(),
                 group: false,
                 avatar: None,
@@ -3932,6 +4389,7 @@ mod tests {
             live: None,
             conversation: Some(NotificationConversation {
                 v: 1,
+                id: None,
                 title: title.into(),
                 group: false,
                 avatar: None,
@@ -3949,6 +4407,975 @@ mod tests {
         store.upsert_chat_notification(&peer, &chat("Sam", now_ms + 365 * 86_400_000), None, false).unwrap();
         let titles: Vec<String> = store.chat_threads(&peer).unwrap().into_iter().map(|t| t.title).collect();
         assert!(titles.contains(&"Maya".to_owned()), "{titles:?}");
+    }
+
+    // ---- Conversations: identity, lifetime, kept (Direction B) ----
+
+    mod chats {
+        use super::*;
+        use g7link_protocol::messages::{
+            NotificationAction, NotificationChatMessage, NotificationConversation,
+        };
+
+        pub(super) const T0: i64 = 1_760_000_000_000;
+        const HOUR_MS: i64 = 3_600_000;
+        const DAY_MS: i64 = 24 * HOUR_MS;
+
+        pub(super) fn said(sender: &str, text: &str, time: i64) -> NotificationChatMessage {
+            NotificationChatMessage {
+                sender: Some(sender.into()),
+                text: text.into(),
+                time,
+                self_sent: false,
+                avatar: None,
+            }
+        }
+
+        pub(super) fn sent(text: &str, time: i64) -> NotificationChatMessage {
+            NotificationChatMessage { sender: None, text: text.into(), time, self_sent: true, avatar: None }
+        }
+
+        /// A WhatsApp chat notification, as the phone wrote it (counts and all).
+        pub(super) fn chat_note(
+            key: &str,
+            id: Option<&str>,
+            title: &str,
+            messages: Vec<NotificationChatMessage>,
+        ) -> Notification {
+            let when = messages.iter().map(|m| m.time).max().unwrap_or(T0);
+            Notification {
+                key: key.into(),
+                app: "com.whatsapp".into(),
+                app_name: "WhatsApp".into(),
+                title: Some(title.into()),
+                text: None,
+                sub: None,
+                when,
+                actions: vec![NotificationAction { id: "reply".into(), title: "Reply".into(), reply: true }],
+                silent: false,
+                ongoing: false,
+                icon: None,
+                image: None,
+                live: None,
+                conversation: Some(NotificationConversation {
+                    v: 1,
+                    id: id.map(Into::into),
+                    title: title.into(),
+                    group: true,
+                    avatar: None,
+                    messages,
+                }),
+            }
+        }
+
+        fn post(store: &Store, peer: &DeviceId, n: &Notification) -> String {
+            store.upsert_chat_notification(peer, n, None, false).unwrap().expect("a chat")
+        }
+
+        fn listed(store: &Store, peer: &DeviceId) -> Vec<String> {
+            store.chat_threads(peer).unwrap().into_iter().map(|t| t.thread_id).collect()
+        }
+
+        fn thread(store: &Store, peer: &DeviceId, thread_id: &str) -> ChatThreadRecord {
+            store.chat_thread(peer, thread_id).unwrap().expect("stored")
+        }
+
+        fn texts(store: &Store, peer: &DeviceId, thread_id: &str) -> Vec<String> {
+            let mut texts: Vec<String> =
+                store.chat_messages(peer, thread_id, 200).unwrap().into_iter().map(|m| m.text).collect();
+            texts.reverse();
+            texts
+        }
+
+        /// Moves a thread's clocks back: as if it retired, or last changed, `ago` ms before now.
+        fn backdate(store: &Store, peer: &DeviceId, thread_id: &str, column: &str, ago: i64) {
+            let at = crate::now_unix_ms() - ago;
+            store
+                .with(|c| {
+                    c.execute(
+                        &format!("UPDATE chat_threads SET {column} = ?3 WHERE peer = ?1 AND thread_id = ?2"),
+                        params![peer.to_string(), thread_id, at],
+                    )
+                })
+                .unwrap();
+        }
+
+        fn snapshot(
+            store: &Store,
+            peer: &DeviceId,
+            items: &[&Notification],
+            truncated: bool,
+        ) -> ChatSnapshotChanges {
+            let items: Vec<(&Notification, Option<&[u8]>)> = items.iter().map(|n| (*n, None)).collect();
+            store.apply_chat_snapshot(peer, &items, truncated).unwrap()
+        }
+
+        pub(super) fn assert_live_and_retired_agree(store: &Store) {
+            let disagree: i64 = store
+                .with(|c| {
+                    c.query_row(
+                        "SELECT COUNT(*) FROM chat_threads WHERE (active = 1) != (retired_ms IS NULL)",
+                        [],
+                        |r| r.get(0),
+                    )
+                })
+                .unwrap();
+            assert_eq!(disagree, 0, "active = 1 exactly when retired_ms is NULL");
+        }
+
+        #[test]
+        fn a_count_in_the_title_is_the_same_conversation() {
+            let store = Store::in_memory().unwrap();
+            let peer = DeviceId([21; 32]);
+            let (a, b, c) = (
+                said("Ana", "Bring snacks", T0),
+                said("Ben", "On it", T0 + 1_000),
+                said("Ana", "Thanks", T0 + 2_000),
+            );
+            let first = post(
+                &store,
+                &peer,
+                &chat_note("wa|club", None, "Book Club (2 messages)", vec![a.clone(), b.clone()]),
+            );
+            let second = post(
+                &store,
+                &peer,
+                &chat_note("wa|club", None, "BOOK CLUB (3 MESSAGES)", vec![a, b.clone(), c.clone()]),
+            );
+            let third = post(&store, &peer, &chat_note("wa|club", None, "Book Club", vec![b, c]));
+            assert_eq!(first, "chat:com.whatsapp:t:book club");
+            assert_eq!((second.as_str(), third.as_str()), (first.as_str(), first.as_str()));
+            let threads = store.chat_threads(&peer).unwrap();
+            assert_eq!(threads.len(), 1);
+            assert_eq!(threads[0].title, "Book Club");
+            assert_eq!(threads[0].unread, 3, "each distinct incoming message once");
+            assert_eq!(texts(&store, &peer, &first), ["Bring snacks", "On it", "Thanks"]);
+        }
+
+        #[test]
+        fn a_renamed_group_with_the_same_id_is_one_conversation() {
+            let store = Store::in_memory().unwrap();
+            let peer = DeviceId([22; 32]);
+            let a = said("Ana", "Bring snacks", T0);
+            let before = post(&store, &peer, &chat_note("wa|club", Some("g1"), "Book Club", vec![a.clone()]));
+            let after = post(
+                &store,
+                &peer,
+                &chat_note(
+                    "wa|club",
+                    Some("g1"),
+                    "Reading Circle (2 messages)",
+                    vec![a, said("Ben", "New name!", T0 + 1)],
+                ),
+            );
+            assert_eq!(before, "chat:com.whatsapp:i:g1");
+            assert_eq!(after, before);
+            let threads = store.chat_threads(&peer).unwrap();
+            assert_eq!(threads.len(), 1);
+            assert_eq!(threads[0].title, "Reading Circle");
+            assert_eq!(threads[0].unread, 2);
+            // Another conversation of the same name is another thread.
+            let other = post(
+                &store,
+                &peer,
+                &chat_note("wa|club2", Some("g2"), "Reading Circle", vec![said("Cy", "Hi", T0)]),
+            );
+            assert_ne!(other, before);
+            assert_eq!(listed(&store, &peer).len(), 2);
+        }
+
+        #[test]
+        fn a_title_thread_adopts_its_id_and_keeps_its_messages_and_kept() {
+            let store = Store::in_memory().unwrap();
+            let peer = DeviceId([23; 32]);
+            let (a, b) = (said("Ana", "Bring snacks", T0), said("Ben", "On it", T0 + 1_000));
+            let by_title = post(
+                &store,
+                &peer,
+                &chat_note("wa|club", None, "Book Club (2 messages)", vec![a.clone(), b.clone()]),
+            );
+            assert!(store.append_chat_reply(&peer, &by_title, "See you", T0 + 1_500).unwrap());
+            let by_id = post(
+                &store,
+                &peer,
+                &chat_note(
+                    "wa|club",
+                    Some("Gx_1"),
+                    "Book Club (3 messages)",
+                    vec![a, b, said("Ana", "Thanks", T0 + 2_000)],
+                ),
+            );
+            assert_eq!(by_id, "chat:com.whatsapp:i:Gx_1");
+            assert!(store.chat_thread(&peer, &by_title).unwrap().is_none(), "moved, not copied");
+            let t = thread(&store, &peer, &by_id);
+            assert!(t.kept, "kept goes with it");
+            assert_eq!(t.unread, 1, "moved messages aren't new");
+            assert_eq!(texts(&store, &peer, &by_id), ["Bring snacks", "On it", "See you", "Thanks"]);
+            assert_eq!(listed(&store, &peer), [by_id.as_str()]);
+        }
+
+        #[test]
+        fn a_repost_with_nothing_new_adds_no_unread() {
+            let store = Store::in_memory().unwrap();
+            let peer = DeviceId([24; 32]);
+            let (a, b) = (said("Ana", "Bring snacks", T0), said("Ben", "On it", T0 + 1_000));
+            let note = chat_note("wa|club", Some("g1"), "Book Club (2 messages)", vec![a.clone(), b.clone()]);
+            let tid = post(&store, &peer, &note);
+            assert_eq!(thread(&store, &peer, &tid).unread, 2);
+            post(&store, &peer, &note);
+            post(&store, &peer, &chat_note("wa|club", Some("g1"), "Book Club (7 messages)", vec![b.clone()]));
+            assert_eq!(thread(&store, &peer, &tid).unread, 2, "nothing new, nothing added");
+            assert!(store.mark_chat_thread_read(&peer, &tid).unwrap());
+            post(&store, &peer, &note);
+            assert_eq!(thread(&store, &peer, &tid).unread, 0);
+            post(
+                &store,
+                &peer,
+                &chat_note("wa|club", Some("g1"), "Book Club", vec![a, b, said("Cy", "Late", T0 + 2_000)]),
+            );
+            assert_eq!(thread(&store, &peer, &tid).unread, 1);
+            assert_eq!(texts(&store, &peer, &tid).len(), 3);
+        }
+
+        #[test]
+        fn removal_retires_every_row_for_the_key() {
+            let store = Store::in_memory().unwrap();
+            let peer = DeviceId([25; 32]);
+            // One notification under two threads (one from before its ID, say).
+            let by_title =
+                post(&store, &peer, &chat_note("wa|club", None, "Book Club", vec![said("Ana", "Hi", T0)]));
+            let by_id = post(
+                &store,
+                &peer,
+                &chat_note("wa|club", Some("g1"), "Book Club Two", vec![said("Ben", "Yo", T0 + 1)]),
+            );
+            let other =
+                post(&store, &peer, &chat_note("wa|maya", None, "Maya", vec![said("Maya", "Lunch?", T0)]));
+            let before = crate::now_unix_ms();
+            let mut retired = store.mark_chat_notification_removed(&peer, "wa|club").unwrap();
+            retired.sort();
+            let mut both = vec![by_title.clone(), by_id.clone()];
+            both.sort();
+            assert_eq!(retired, both);
+            for tid in [&by_title, &by_id] {
+                let t = thread(&store, &peer, tid);
+                assert!(!t.active && t.unread == 0 && !t.can_reply());
+                assert!(t.retired_ms.is_some_and(|at| at >= before));
+            }
+            assert_eq!(listed(&store, &peer), [other]);
+            assert!(store.mark_chat_notification_removed(&peer, "wa|club").unwrap().is_empty(), "once");
+            assert_live_and_retired_agree(&store);
+        }
+
+        #[test]
+        fn a_snapshot_retires_what_it_omits() {
+            let store = Store::in_memory().unwrap();
+            let peer = DeviceId([26; 32]);
+            let (club, maya) = (
+                chat_note("wa|club", Some("g1"), "Book Club", vec![said("Ana", "Hi", T0)]),
+                chat_note("wa|maya", None, "Maya", vec![said("Maya", "Lunch?", T0)]),
+            );
+            let (club_id, maya_id) = (post(&store, &peer, &club), post(&store, &peer, &maya));
+            let changes = snapshot(&store, &peer, &[&maya], false);
+            assert_eq!(
+                changes,
+                ChatSnapshotChanges { stored: vec![maya_id.clone()], retired: vec![club_id.clone()] }
+            );
+            assert_eq!(listed(&store, &peer), [maya_id]);
+            assert!(thread(&store, &peer, &club_id).retired_ms.is_some());
+            assert_live_and_retired_agree(&store);
+        }
+
+        #[test]
+        fn a_truncated_snapshot_retires_nothing() {
+            let store = Store::in_memory().unwrap();
+            let peer = DeviceId([27; 32]);
+            let (club, maya) = (
+                chat_note("wa|club", Some("g1"), "Book Club", vec![said("Ana", "Hi", T0)]),
+                chat_note("wa|maya", None, "Maya", vec![said("Maya", "Lunch?", T0)]),
+            );
+            let (club_id, maya_id) = (post(&store, &peer, &club), post(&store, &peer, &maya));
+            assert!(snapshot(&store, &peer, &[&maya], true).retired.is_empty());
+            assert!(snapshot(&store, &peer, &[], true).retired.is_empty());
+            let mut both = vec![club_id, maya_id];
+            both.sort();
+            let mut now = listed(&store, &peer);
+            now.sort();
+            assert_eq!(now, both);
+        }
+
+        #[test]
+        fn an_empty_snapshot_retires_everything_and_kept_chats_stay_listed() {
+            let store = Store::in_memory().unwrap();
+            let peer = DeviceId([28; 32]);
+            let club = post(
+                &store,
+                &peer,
+                &chat_note("wa|club", Some("g1"), "Book Club", vec![said("Ana", "Hi", T0)]),
+            );
+            let maya =
+                post(&store, &peer, &chat_note("wa|maya", None, "Maya", vec![said("Maya", "Lunch?", T0)]));
+            assert!(store.append_chat_reply(&peer, &maya, "Sure", T0 + 5).unwrap());
+            let changes = snapshot(&store, &peer, &[], false);
+            assert_eq!(changes.retired.len(), 2);
+            let threads = store.chat_threads(&peer).unwrap();
+            assert_eq!(threads.len(), 1, "only the kept one");
+            assert_eq!(threads[0].thread_id, maya);
+            assert!(threads[0].kept && !threads[0].active && !threads[0].can_reply());
+            assert!(store.chat_thread(&peer, &club).unwrap().is_some(), "kept for the grace");
+            assert_live_and_retired_agree(&store);
+        }
+
+        #[test]
+        fn a_notification_without_a_conversation_still_counts_as_present() {
+            let store = Store::in_memory().unwrap();
+            let peer = DeviceId([29; 32]);
+            let club = post(
+                &store,
+                &peer,
+                &chat_note("wa|club", Some("g1"), "Book Club", vec![said("Ana", "Hi", T0)]),
+            );
+            let mut plain = chat_note("wa|club", None, "Book Club", Vec::new());
+            plain.conversation = None;
+            plain.text = Some("2 new messages".into());
+            let changes = snapshot(&store, &peer, &[&plain], false);
+            assert_eq!(changes, ChatSnapshotChanges::default());
+            assert_eq!(listed(&store, &peer), [club.as_str()]);
+            assert!(thread(&store, &peer, &club).active);
+        }
+
+        #[test]
+        fn a_cleared_chat_is_unlisted_at_once_and_deleted_after_the_grace() {
+            let store = Store::in_memory().unwrap();
+            let peer = DeviceId([30; 32]);
+            let club = post(
+                &store,
+                &peer,
+                &chat_note("wa|club", Some("g1"), "Book Club", vec![said("Ana", "Hi", T0)]),
+            );
+            store.mark_chat_notification_removed(&peer, "wa|club").unwrap();
+            assert!(listed(&store, &peer).is_empty(), "unlisted at once");
+            assert_eq!(texts(&store, &peer, &club), ["Hi"], "its messages stay for now");
+            backdate(&store, &peer, &club, "retired_ms", 23 * HOUR_MS);
+            store.prune_chats().unwrap();
+            assert!(store.chat_thread(&peer, &club).unwrap().is_some(), "inside the grace");
+            backdate(&store, &peer, &club, "retired_ms", CHAT_RETIRED_GRACE_SECS * 1000 + HOUR_MS);
+            store.prune_chats().unwrap();
+            assert!(store.chat_thread(&peer, &club).unwrap().is_none());
+            assert_eq!(store.chat_cache_counts().unwrap(), (0, 0), "its messages went with it");
+        }
+
+        #[test]
+        fn a_rebind_within_the_grace_brings_the_messages_back() {
+            let store = Store::in_memory().unwrap();
+            let peer = DeviceId([31; 32]);
+            let note = chat_note(
+                "wa|club",
+                Some("g1"),
+                "Book Club (2 messages)",
+                vec![said("Ana", "Hi", T0), said("Ben", "Yo", T0 + 1)],
+            );
+            let club = post(&store, &peer, &note);
+            // The listener rebinds: an empty snapshot, then a full one.
+            snapshot(&store, &peer, &[], false);
+            assert!(listed(&store, &peer).is_empty());
+            backdate(&store, &peer, &club, "retired_ms", 20 * HOUR_MS);
+            let changes = snapshot(&store, &peer, &[&note], false);
+            assert_eq!(changes.stored, [club.as_str()]);
+            assert_eq!(listed(&store, &peer), [club.as_str()]);
+            let t = thread(&store, &peer, &club);
+            assert!(t.active && t.retired_ms.is_none() && t.can_reply());
+            assert_eq!(t.unread, 0, "nothing new came");
+            assert_eq!(texts(&store, &peer, &club), ["Hi", "Yo"]);
+        }
+
+        #[test]
+        fn a_reply_from_the_pc_keeps_the_chat() {
+            let store = Store::in_memory().unwrap();
+            let peer = DeviceId([32; 32]);
+            let club = post(
+                &store,
+                &peer,
+                &chat_note("wa|club", Some("g1"), "Book Club", vec![said("Ana", "Hi", T0)]),
+            );
+            assert!(!thread(&store, &peer, &club).kept);
+            assert!(store.append_chat_reply(&peer, &club, "Hello", T0 + 10).unwrap());
+            assert!(thread(&store, &peer, &club).kept);
+            store.mark_chat_notification_removed(&peer, "wa|club").unwrap();
+            assert_eq!(listed(&store, &peer), [club.as_str()]);
+            // A reply from the PC's notification, by its key, keeps it too.
+            let maya =
+                post(&store, &peer, &chat_note("wa|maya", None, "Maya", vec![said("Maya", "Lunch?", T0)]));
+            assert_eq!(
+                store.append_chat_reply_by_key(&peer, "wa|maya", "Yes", T0 + 20).unwrap(),
+                Some(maya.clone())
+            );
+            assert!(thread(&store, &peer, &maya).kept);
+        }
+
+        #[test]
+        fn a_message_sent_on_the_phone_does_not() {
+            let store = Store::in_memory().unwrap();
+            let peer = DeviceId([33; 32]);
+            let club = post(
+                &store,
+                &peer,
+                &chat_note(
+                    "wa|club",
+                    Some("g1"),
+                    "Book Club",
+                    vec![said("Ana", "Hi", T0), sent("Hello from the phone", T0 + 1)],
+                ),
+            );
+            assert!(!thread(&store, &peer, &club).kept);
+            store.mark_chat_notification_removed(&peer, "wa|club").unwrap();
+            assert!(listed(&store, &peer).is_empty());
+        }
+
+        #[test]
+        fn a_kept_chat_leaves_after_thirty_idle_days() {
+            let store = Store::in_memory().unwrap();
+            let peer = DeviceId([34; 32]);
+            let club = post(
+                &store,
+                &peer,
+                &chat_note("wa|club", Some("g1"), "Book Club", vec![said("Ana", "Hi", T0)]),
+            );
+            assert!(store.append_chat_reply(&peer, &club, "Hello", T0 + 10).unwrap());
+            store.mark_chat_notification_removed(&peer, "wa|club").unwrap();
+            let idle = CHAT_KEPT_IDLE_SECS * 1000;
+            // The later of its last message and its retirement counts.
+            backdate(&store, &peer, &club, "retired_ms", idle + DAY_MS);
+            backdate(&store, &peer, &club, "updated_ms", idle - DAY_MS);
+            store.prune_chats().unwrap();
+            assert_eq!(listed(&store, &peer), [club.as_str()]);
+            backdate(&store, &peer, &club, "updated_ms", idle + DAY_MS);
+            backdate(&store, &peer, &club, "retired_ms", idle - DAY_MS);
+            store.prune_chats().unwrap();
+            assert_eq!(listed(&store, &peer), [club.as_str()]);
+            backdate(&store, &peer, &club, "retired_ms", idle + HOUR_MS);
+            store.prune_chats().unwrap();
+            assert!(store.chat_thread(&peer, &club).unwrap().is_none());
+            assert_eq!(store.chat_cache_counts().unwrap(), (0, 0));
+        }
+
+        #[test]
+        fn a_live_chat_never_ages_out() {
+            let store = Store::in_memory().unwrap();
+            let peer = DeviceId([35; 32]);
+            let club = post(
+                &store,
+                &peer,
+                &chat_note("wa|club", Some("g1"), "Book Club", vec![said("Ana", "Hi", T0)]),
+            );
+            let maya =
+                post(&store, &peer, &chat_note("wa|maya", None, "Maya", vec![said("Maya", "Lunch?", T0)]));
+            assert!(store.set_chat_kept(&peer, &maya, true).unwrap());
+            for tid in [&club, &maya] {
+                backdate(&store, &peer, tid, "updated_ms", 400 * DAY_MS);
+            }
+            store.prune_chats().unwrap();
+            // An upsert prunes too.
+            post(&store, &peer, &chat_note("wa|sam", None, "Sam", vec![said("Sam", "Hey", T0)]));
+            let now = listed(&store, &peer);
+            assert!(now.contains(&club) && now.contains(&maya), "{now:?}");
+        }
+
+        #[test]
+        fn unpinning_a_cleared_chat_lets_it_go() {
+            let store = Store::in_memory().unwrap();
+            let peer = DeviceId([36; 32]);
+            let club = post(
+                &store,
+                &peer,
+                &chat_note("wa|club", Some("g1"), "Book Club", vec![said("Ana", "Hi", T0)]),
+            );
+            assert!(store.set_chat_kept(&peer, &club, true).unwrap());
+            assert!(!store.set_chat_kept(&peer, &club, true).unwrap(), "already kept");
+            assert!(!store.set_chat_kept(&peer, "chat:com.whatsapp:t:nobody", true).unwrap());
+            store.mark_chat_notification_removed(&peer, "wa|club").unwrap();
+            assert_eq!(listed(&store, &peer), [club.as_str()], "pinned: stays listed");
+            backdate(&store, &peer, &club, "retired_ms", 2 * DAY_MS);
+            store.prune_chats().unwrap();
+            assert!(store.chat_thread(&peer, &club).unwrap().is_some());
+            assert!(store.set_chat_kept(&peer, &club, false).unwrap());
+            assert!(listed(&store, &peer).is_empty(), "unpinned: unlisted at once");
+            store.prune_chats().unwrap();
+            assert!(store.chat_thread(&peer, &club).unwrap().is_none(), "and gone at the next prune");
+        }
+
+        #[test]
+        fn removing_a_chat_returns_what_it_was_and_takes_its_messages() {
+            let store = Store::in_memory().unwrap();
+            let peer = DeviceId([37; 32]);
+            let club = post(
+                &store,
+                &peer,
+                &chat_note("wa|club", Some("g1"), "Book Club", vec![said("Ana", "Hi", T0)]),
+            );
+            let taken = store.take_chat_thread(&peer, &club).unwrap().expect("it was there");
+            assert!(taken.active);
+            assert_eq!(taken.notification_key, "wa|club");
+            assert_eq!(store.chat_cache_counts().unwrap(), (0, 0));
+            assert!(store.take_chat_thread(&peer, &club).unwrap().is_none());
+        }
+
+        #[test]
+        fn active_and_retired_ms_always_agree() {
+            let store = Store::in_memory().unwrap();
+            let peer = DeviceId([38; 32]);
+            let club_note = chat_note("wa|club", Some("g1"), "Book Club", vec![said("Ana", "Hi", T0)]);
+            let maya_note = chat_note("wa|maya", None, "Maya (2 messages)", vec![said("Maya", "Lunch?", T0)]);
+            type Step<'a> = Box<dyn Fn(&Store) + 'a>;
+            let steps: Vec<Step<'_>> = vec![
+                Box::new(|s| {
+                    post(s, &peer, &club_note);
+                }),
+                Box::new(|s| {
+                    s.upsert_chat_notification(&peer, &maya_note, None, true).unwrap();
+                }),
+                Box::new(|s| {
+                    s.append_chat_reply(&peer, "chat:com.whatsapp:t:maya", "Sure", T0 + 1).unwrap();
+                }),
+                Box::new(|s| {
+                    s.mark_chat_notification_removed(&peer, "wa|club").unwrap();
+                }),
+                Box::new(|s| {
+                    snapshot(s, &peer, &[&club_note], false);
+                }),
+                Box::new(|s| {
+                    snapshot(s, &peer, &[], true);
+                }),
+                Box::new(|s| {
+                    snapshot(s, &peer, &[], false);
+                }),
+                Box::new(|s| {
+                    s.set_chat_kept(&peer, "chat:com.whatsapp:i:g1", true).unwrap();
+                }),
+                Box::new(|s| {
+                    post(s, &peer, &maya_note);
+                }),
+                Box::new(|s| {
+                    s.mark_chat_thread_read(&peer, "chat:com.whatsapp:t:maya").unwrap();
+                }),
+                Box::new(|s| {
+                    s.prune_chats().unwrap();
+                }),
+                Box::new(|s| {
+                    s.set_chat_kept(&peer, "chat:com.whatsapp:i:g1", false).unwrap();
+                }),
+            ];
+            for step in steps {
+                step(&store);
+                assert_live_and_retired_agree(&store);
+            }
+        }
+    }
+
+    // ---- Schema v11: one row per conversation ----
+
+    mod v11 {
+        use super::chats::{T0, assert_live_and_retired_agree, chat_note, said};
+        use super::*;
+
+        type OldMessage<'a> = (Option<&'a str>, &'a str, i64);
+        type Message = (String, String, Option<String>, String, i64, bool);
+
+        /// A store as 0.1.18 left it (schema v10).
+        fn v10(conn: Connection) -> Connection {
+            conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+            for sql in &MIGRATIONS[..10] {
+                conn.execute_batch(sql).unwrap();
+            }
+            conn.pragma_update(None, "user_version", 10).unwrap();
+            conn
+        }
+
+        /// A v10 chat row, keyed as v10 keyed it, with its messages (no sender: sent from the phone's side).
+        fn old_chat(
+            c: &Connection,
+            peer: &str,
+            app: &str,
+            title: &str,
+            key: &str,
+            updated_ms: i64,
+            messages: &[OldMessage<'_>],
+        ) -> String {
+            let thread_id = format!("chat:{app}:{}", title.trim().to_lowercase());
+            c.execute(
+                "INSERT INTO chat_threads (peer, thread_id, app, app_name, notification_key, reply_action_id,
+                     title, is_group, snippet, last_sender, updated_ms, unread, active, avatar, app_icon)
+                 VALUES (?1, ?2, ?3, 'Chat', ?4, ?5, ?6, 1, ?7, NULL, ?8, 7, 1, NULL, NULL)",
+                params![
+                    peer,
+                    thread_id,
+                    app,
+                    key,
+                    format!("reply-{updated_ms}"),
+                    title,
+                    format!("snippet {updated_ms}"),
+                    updated_ms
+                ],
+            )
+            .unwrap();
+            for (sender, text, time) in messages {
+                c.execute(
+                    "INSERT INTO chat_messages (peer, thread_id, sender, text, time_ms, self_sent, avatar)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL)",
+                    params![peer, thread_id, sender, text, time, i64::from(sender.is_none())],
+                )
+                .unwrap();
+            }
+            thread_id
+        }
+
+        fn messages(c: &Connection) -> Vec<Message> {
+            let mut stmt = c
+                .prepare(
+                    "SELECT peer, thread_id, sender, text, time_ms, self_sent FROM chat_messages
+                     ORDER BY peer, thread_id, time_ms, text, IFNULL(sender, '')",
+                )
+                .unwrap();
+            stmt.query_map([], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get::<_, i64>(5)? != 0))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap()
+        }
+
+        fn dump(c: &Connection, table: &str) -> Vec<Vec<rusqlite::types::Value>> {
+            let mut stmt = c.prepare(&format!("SELECT * FROM {table} ORDER BY rowid")).unwrap();
+            let columns = stmt.column_count();
+            stmt.query_map([], |r| (0..columns).map(|i| r.get(i)).collect::<rusqlite::Result<Vec<_>>>())
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap()
+        }
+
+        fn version(store: &Store) -> i64 {
+            store.with(|c| c.pragma_query_value(None, "user_version", |r| r.get(0))).unwrap()
+        }
+
+        fn expect(peer: &str, thread_id: &str, list: &[OldMessage<'_>]) -> Vec<Message> {
+            list.iter()
+                .map(|(sender, text, time)| {
+                    (
+                        peer.to_owned(),
+                        thread_id.to_owned(),
+                        sender.map(String::from),
+                        (*text).to_owned(),
+                        *time,
+                        sender.is_none(),
+                    )
+                })
+                .collect()
+        }
+
+        #[test]
+        fn v11_merges_count_titled_rows_without_losing_a_message() {
+            let conn = v10(Connection::open_in_memory().unwrap());
+            let peer = DeviceId([41; 32]);
+            let p = peer.to_string();
+            let other = DeviceId([42; 32]).to_string();
+            let wa = "com.whatsapp";
+            let m1 = (Some("Ana"), "Bring snacks", T0);
+            let m2 = (Some("Ben"), "On it", T0 + 2_000);
+            let m2b = (Some("Ben"), "On it", T0 + 2_500);
+            let m3 = (Some("Ana"), "Thanks", T0 + 3_000);
+            let m4 = (Some("Cy"), "Late", T0 + 4_000);
+            let m5 = (Some("Ana"), "Starting", T0 + 5_000);
+            let bare = old_chat(&conn, &p, wa, "Book Club", "wa|club", T0 + 1_000, &[m1]);
+            old_chat(&conn, &p, wa, "Book Club (2 messages)", "wa|club", T0 + 2_000, &[m1, m2]);
+            let three =
+                old_chat(&conn, &p, wa, "Book Club (3 messages)", "wa|club", T0 + 3_000, &[m1, m2, m2b, m3]);
+            old_chat(&conn, &p, wa, "book club (4 messages)", "wa|club", T0 + 4_000, &[m2b, m3, m4]);
+            old_chat(&conn, &p, wa, "Book Club (5 messages)", "wa|club", T0 + 5_000, &[m1, m2, m3, m4, m5]);
+            conn.execute("UPDATE chat_threads SET avatar = x'03' WHERE thread_id = ?1", [&three]).unwrap();
+            conn.execute("UPDATE chat_threads SET app_icon = x'09' WHERE thread_id = ?1", [&bare]).unwrap();
+            let lunch = [(Some("Maya"), "Lunch?", T0), (Some("Maya"), "12:30", T0 + 1)];
+            old_chat(&conn, &p, wa, "Maya", "wa|maya", T0, &lunch);
+            let tea = (None, "I'll bring tea", T0 + 10);
+            old_chat(
+                &conn,
+                &p,
+                wa,
+                "Hiking (2 messages)",
+                "wa|hike",
+                T0 + 20,
+                &[(Some("Dee"), "Saturday?", T0), tea],
+            );
+            old_chat(&conn, &p, wa, "Hiking", "wa|hike", T0 + 10, &[tea]);
+            old_chat(&conn, &p, "org.telegram.messenger", "Book Club (2 messages)", "tg|club", T0, &[m1]);
+            old_chat(&conn, &other, wa, "Book Club (2 messages)", "wa|club", T0, &[m1]);
+            assert_eq!(messages(&conn).len(), 22);
+
+            let before = crate::now_unix_ms();
+            let store = Store::init(conn).unwrap();
+            assert_eq!(version(&store), 11);
+
+            let club = "chat:com.whatsapp:t:book club";
+            let mut expected = expect(&p, club, &[m1, m2, m2b, m3, m4, m5]);
+            expected.extend(expect(&p, "chat:com.whatsapp:t:hiking", &[(Some("Dee"), "Saturday?", T0), tea]));
+            expected.extend(expect(&p, "chat:com.whatsapp:t:maya", &lunch));
+            expected.extend(expect(&p, "chat:org.telegram.messenger:t:book club", &[m1]));
+            expected.extend(expect(&other, club, &[m1]));
+            expected.sort_by(|a, b| (&a.0, &a.1, a.4, &a.3, &a.2).cmp(&(&b.0, &b.1, b.4, &b.3, &b.2)));
+            assert_eq!(store.with(|c| Ok(messages(c))).unwrap(), expected, "every distinct message, once");
+
+            let rows: Vec<(String, String, String, bool)> = store
+                .with(|c| {
+                    let mut stmt = c.prepare(
+                        "SELECT peer, thread_id, title, kept FROM chat_threads ORDER BY peer, thread_id",
+                    )?;
+                    stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get::<_, i64>(3)? != 0)))?
+                        .collect()
+                })
+                .unwrap();
+            let mut want = vec![
+                (p.clone(), club.to_owned(), "Book Club".to_owned(), false),
+                (p.clone(), "chat:com.whatsapp:t:hiking".to_owned(), "Hiking".to_owned(), true),
+                (p.clone(), "chat:com.whatsapp:t:maya".to_owned(), "Maya".to_owned(), false),
+                (
+                    p.clone(),
+                    "chat:org.telegram.messenger:t:book club".to_owned(),
+                    "Book Club".to_owned(),
+                    false,
+                ),
+                (other.clone(), club.to_owned(), "Book Club".to_owned(), false),
+            ];
+            want.sort();
+            assert_eq!(
+                rows, want,
+                "one row per conversation; kept only with a message sent from the phone's side"
+            );
+
+            let merged = store.chat_thread(&peer, club).unwrap().unwrap();
+            assert_eq!(merged.snippet, format!("snippet {}", T0 + 5_000), "the newest row's header");
+            assert_eq!(merged.reply_action_id, Some(format!("reply-{}", T0 + 5_000)));
+            assert_eq!(merged.updated_ms, T0 + 5_000);
+            assert_eq!(merged.notification_key, "wa|club");
+            assert_eq!(merged.avatar, Some(vec![3]), "the newest avatar there is");
+            assert_eq!(merged.app_icon, Some(vec![9]));
+            for t in store
+                .with(|c| {
+                    let mut stmt = c.prepare(&format!("{SELECT_CHAT_THREADS} WHERE peer = ?1"))?;
+                    stmt.query_map([&p], |r| row_to_chat_thread(&peer, r))?
+                        .collect::<rusqlite::Result<Vec<_>>>()
+                })
+                .unwrap()
+            {
+                assert!(!t.active && t.unread == 0, "{t:?}");
+                assert!(t.retired_ms.is_some_and(|at| at >= before), "{t:?}");
+            }
+            assert_live_and_retired_agree(&store);
+            let listed: Vec<String> =
+                store.chat_threads(&peer).unwrap().into_iter().map(|t| t.thread_id).collect();
+            assert_eq!(listed, ["chat:com.whatsapp:t:hiking"], "only the kept chat until the first snapshot");
+
+            // The first notification with an ID takes the merged thread over.
+            let note = chat_note(
+                "wa|club",
+                Some("g1"),
+                "Book Club (6 messages)",
+                vec![said("Ana", "Starting", T0 + 5_000), said("Ben", "Here", T0 + 6_000)],
+            );
+            let items = [(&note, None)];
+            let changes = store.apply_chat_snapshot(&peer, &items, false).unwrap();
+            assert_eq!(changes.stored, ["chat:com.whatsapp:i:g1"]);
+            assert!(store.chat_thread(&peer, club).unwrap().is_none());
+            let live = store.chat_thread(&peer, "chat:com.whatsapp:i:g1").unwrap().unwrap();
+            assert!(live.active);
+            assert_eq!(live.unread, 1);
+            assert_eq!(store.chat_messages(&peer, "chat:com.whatsapp:i:g1", 200).unwrap().len(), 7);
+        }
+
+        #[test]
+        fn v11_leaves_every_other_table_byte_for_byte() {
+            let conn = v10(Connection::open_in_memory().unwrap());
+            let peer = DeviceId([43; 32]);
+            conn.execute(
+                "INSERT INTO peers (id, name, kind, os, os_ver, model, accent, paired_at, last_seen, last_addrs,
+                     caps, power, wake_info, screen, install_id, link_secret)
+                 VALUES (?1, 'Pixel', 'phone', 'android', '16', 'Pixel 9', 7, 1700000000, 1700000100,
+                     '192.168.1.10:42718', 'notify.mirror,notify.reply', 'assist', '', '', 'abc123', x'0102030405')",
+                [peer.as_bytes().as_slice()],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO peer_toggles (peer, toggle, enabled, changed_ms) VALUES (?1, 'notifications', 1, 1700000200000),
+                     (?1, 'bt_media', 0, NULL)",
+                [peer.as_bytes().as_slice()],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO timeline (kind, device_id, device_name, incoming, timestamp, title, detail, target,
+                     size_bytes, duration_secs, ref_id)
+                 VALUES ('file', ?1, 'Pixel', 1, 1700000300, 'photo.jpg', 'Saved', '/tmp/photo.jpg', 4096, 0, 'x-1')",
+                [peer.as_bytes().as_slice()],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO send_queue (id, seq, peer_id, kind, status, created_at, expires_at, title, detail,
+                     payload_json, payload_blob)
+                 VALUES ('q-1', 1, ?1, 'link', 'waiting', 1, 2, 'Link', 'example', 'sealed1:AAAA', x'00ff')",
+                [peer.to_string()],
+            )
+            .unwrap();
+            conn.execute("INSERT INTO meta (key, value) VALUES ('timeline_max_days', '45')", []).unwrap();
+            old_chat(
+                &conn,
+                &peer.to_string(),
+                "com.whatsapp",
+                "Book Club (2 messages)",
+                "wa|club",
+                T0,
+                &[(Some("Ana"), "Hi", T0)],
+            );
+            old_chat(
+                &conn,
+                &peer.to_string(),
+                "com.whatsapp",
+                "Book Club",
+                "wa|club",
+                T0 + 1,
+                &[(Some("Ana"), "Hi", T0)],
+            );
+
+            let tables = ["peers", "peer_toggles", "timeline", "send_queue", "meta"];
+            let before: Vec<_> = tables.iter().map(|t| dump(&conn, t)).collect();
+            assert!(before.iter().all(|rows| !rows.is_empty()), "every table has something to keep");
+            let store = Store::init(conn).unwrap();
+            let after: Vec<_> = store.with(|c| Ok(tables.iter().map(|t| dump(c, t)).collect())).unwrap();
+            for (table, (before, after)) in tables.iter().zip(before.iter().zip(&after)) {
+                assert_eq!(before, after, "{table}");
+            }
+            let columns: Vec<String> = store
+                .with(|c| {
+                    let mut stmt = c.prepare("SELECT name FROM pragma_table_info('chat_threads')")?;
+                    stmt.query_map([], |r| r.get(0))?.collect()
+                })
+                .unwrap();
+            assert!(
+                ["conv_id", "kept", "retired_ms"].iter().all(|c| columns.iter().any(|n| n == c)),
+                "{columns:?}"
+            );
+            assert_eq!(store.chat_cache_counts().unwrap(), (1, 1));
+        }
+
+        #[test]
+        fn v11_falls_back_to_retiring_unmerged_rows_when_the_check_fails() {
+            // Two conversations that would share a thread: nothing is merged.
+            let conn = v10(Connection::open_in_memory().unwrap());
+            let peer = DeviceId([44; 32]);
+            let p = peer.to_string();
+            let first = old_chat(&conn, &p, "a:t", "x", "k1", T0, &[(Some("Ana"), "Hi", T0)]);
+            let second = old_chat(
+                &conn,
+                &p,
+                "a",
+                "t:x (2 messages)",
+                "k2",
+                T0,
+                &[(Some("Ben"), "Yo", T0), (None, "Hey", T0)],
+            );
+            let messages_before = messages(&conn);
+            let store = Store::init(conn).unwrap();
+            assert_eq!(version(&store), 11, "it opens, at v11");
+            for tid in [&first, &second] {
+                let t = store.chat_thread(&peer, tid).unwrap().expect("left as it was");
+                assert!(!t.active && t.unread == 0 && t.retired_ms.is_some() && !t.kept, "{t:?}");
+            }
+            assert_eq!(store.with(|c| Ok(messages(c))).unwrap(), messages_before);
+            assert_live_and_retired_agree(&store);
+
+            // A merge that would lose a message (one already stored under the merged thread's
+            // name, with no thread of its own): undone after it ran.
+            let conn = v10(Connection::open_in_memory().unwrap());
+            let club = old_chat(
+                &conn,
+                &p,
+                "com.whatsapp",
+                "Book Club (2 messages)",
+                "wa|club",
+                T0,
+                &[(Some("Ana"), "Hi", T0), (None, "Hello", T0 + 1)],
+            );
+            conn.execute(
+                "INSERT INTO chat_messages (peer, thread_id, sender, text, time_ms, self_sent)
+                 VALUES (?1, 'chat:com.whatsapp:t:book club', 'Ana', 'Hi', ?2, 0)",
+                params![p, T0],
+            )
+            .unwrap();
+            let messages_before = messages(&conn);
+            let store = Store::init(conn).unwrap();
+            assert_eq!(version(&store), 11);
+            let t = store.chat_thread(&peer, &club).unwrap().expect("its old ID");
+            assert!(!t.active && t.unread == 0 && t.retired_ms.is_some(), "{t:?}");
+            assert!(!t.kept, "the merge's kept was undone with it");
+            assert_eq!(store.with(|c| Ok(messages(c))).unwrap(), messages_before, "no message lost or moved");
+            assert_eq!(store.chat_cache_counts().unwrap(), (1, 3));
+
+            // And the store goes on working.
+            let new = store
+                .upsert_chat_notification(
+                    &peer,
+                    &chat_note("wa|maya", None, "Maya", vec![said("Maya", "Hi", T0)]),
+                    None,
+                    false,
+                )
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                store.chat_threads(&peer).unwrap().into_iter().map(|t| t.thread_id).collect::<Vec<_>>(),
+                [new]
+            );
+        }
+
+        #[test]
+        fn v11_runs_once() {
+            let dir = tempfile::tempdir().unwrap();
+            let peer = DeviceId([45; 32]);
+            {
+                let conn = v10(Connection::open(dir.path().join(FILE_NAME)).unwrap());
+                let p = peer.to_string();
+                old_chat(
+                    &conn,
+                    &p,
+                    "com.whatsapp",
+                    "Book Club (2 messages)",
+                    "wa|club",
+                    T0,
+                    &[(Some("Ana"), "Hi", T0)],
+                );
+                old_chat(
+                    &conn,
+                    &p,
+                    "com.whatsapp",
+                    "Book Club (3 messages)",
+                    "wa|club",
+                    T0 + 1,
+                    &[(Some("Ana"), "Hi", T0), (None, "Hello", T0 + 1)],
+                );
+            }
+            let chats = |store: &Store| {
+                store
+                    .with(|c| {
+                        Ok((
+                            dump(c, "chat_threads"),
+                            dump(c, "chat_messages"),
+                            c.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))?,
+                        ))
+                    })
+                    .unwrap()
+            };
+            let first = chats(&Store::open(dir.path()).unwrap());
+            assert_eq!(first.2, 11);
+            assert_eq!((first.0.len(), first.1.len()), (1, 2));
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            let again = chats(&Store::open(dir.path()).unwrap());
+            assert_eq!(again, first, "opening a v11 store again changes nothing");
+        }
     }
 
     #[test]

@@ -295,3 +295,9 @@ drops a piece whose `seq` is not after the last it played (counting on
 modulo 2^16, less than 2^15 ahead), and uses `ts_ms` to keep its jitter
 buffer short.
 
+`ts_ms` is on a clock of its own. The picture Play on phone sends with the
+sound is stamped on the PC's monotonic clock in microseconds
+([mirror.md](mirror.md) §3), which the phone times with `mirror.clock`; nothing
+yet ties the two, so the sound plays as it comes. Putting the sound on the
+same clock, for the phone to hold it back to the picture's delay, is planned.
+

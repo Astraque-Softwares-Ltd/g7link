@@ -360,6 +360,7 @@ fn history_copy(n: &Notification) -> Notification {
         live: n.live.clone(),
         conversation: n.conversation.as_ref().map(|c| NotificationConversation {
             v: c.v,
+            id: c.id.clone(),
             title: c.title.clone(),
             group: c.group,
             avatar: None,
@@ -2276,6 +2277,9 @@ impl Node {
             tracing::warn!(error = %e, "can't seal the send queue");
         }
         let _ = store.reset_interrupted_sending();
+        if let Err(e) = store.prune_chats() {
+            tracing::warn!(error = %e, "can't prune the stored chats");
+        }
         let _ = store.expire_stale_queue_items(crate::now_unix_ms());
         let clipboard_history =
             crate::clipboard_history::ClipboardHistoryStore::open(&config.data_dir, protector.clone());
@@ -2580,6 +2584,12 @@ impl Node {
 
     pub fn device_id(&self) -> DeviceId {
         self.shared.id
+    }
+
+    /// The node's state, for the `impl Node` blocks of other modules
+    /// (`agent_history`).
+    pub(crate) fn shared(&self) -> &Arc<Shared> {
+        &self.shared
     }
 
     /// Subscribes to node events. Each subscriber gets its own stream.
@@ -4302,13 +4312,15 @@ impl Node {
 
     // ---- Unified Conversations (MessagingStyle notification threads) ----
 
-    /// Lists locally stored `MessagingStyle` chat threads for a paired phone,
-    /// newest first.
+    /// The chat threads the Messages list shows for a paired phone, newest
+    /// first: live ones (`active`: the notification is on the phone now) and
+    /// kept ones whose notification left.
     pub fn chat_threads(&self, peer: impl std::borrow::Borrow<DeviceId>) -> Vec<crate::ChatThreadRecord> {
         self.shared.store.chat_threads(peer.borrow()).unwrap_or_default()
     }
 
-    /// Looks up a single `MessagingStyle` chat thread by ID (`chat:<app>:<title>`).
+    /// Looks up a stored chat thread by ID (`chat:<app>:i:<conversation ID>`
+    /// or `chat:<app>:t:<title>`), listed or not.
     pub fn chat_thread(
         &self,
         peer: impl std::borrow::Borrow<DeviceId>,
@@ -4338,6 +4350,46 @@ impl Node {
         self.shared.store.delete_chat_thread(peer.borrow(), thread_id).unwrap_or(false)
     }
 
+    /// Pins a chat thread on this PC (`kept`), or unpins it. True when it
+    /// changed; then emits [`NodeEvent::SmsChanged`].
+    pub fn set_chat_kept(
+        &self,
+        peer: impl std::borrow::Borrow<DeviceId>,
+        thread_id: &str,
+        kept: bool,
+    ) -> bool {
+        let peer = *peer.borrow();
+        let changed = self.shared.store.set_chat_kept(&peer, thread_id, kept).unwrap_or(false);
+        if changed {
+            self.shared.emit(NodeEvent::SmsChanged { device: peer, thread: Some(thread_id.to_owned()) });
+        }
+        changed
+    }
+
+    /// "Remove conversation": deletes a chat thread and its messages here
+    /// (stored before anything is sent), then, when its notification is on
+    /// the phone, dismisses it there, so the chat doesn't come back with the
+    /// next snapshot. An error is the dismiss's; the thread stays deleted. A
+    /// thread that's already gone is `Ok`.
+    pub async fn remove_chat_thread(
+        &self,
+        peer: impl std::borrow::Borrow<DeviceId>,
+        thread_id: &str,
+    ) -> Result<()> {
+        let peer = *peer.borrow();
+        let id = thread_id.to_owned();
+        let removed = crate::session::store_blocking(&self.shared, move |shared| {
+            shared.store.take_chat_thread(&peer, &id)
+        })
+        .await?;
+        let Some(thread) = removed else { return Ok(()) };
+        self.shared.emit(NodeEvent::SmsChanged { device: peer, thread: Some(thread_id.to_owned()) });
+        if thread.active && !thread.notification_key.is_empty() {
+            self.dismiss_notification(peer, thread.notification_key).await?;
+        }
+        Ok(())
+    }
+
     /// Clears all locally stored `MessagingStyle` chat threads.
     pub fn clear_chat_threads(&self) -> usize {
         self.shared.store.clear_chat_threads().unwrap_or(0)
@@ -4360,7 +4412,7 @@ impl Node {
 
     /// Sends an inline reply to a `MessagingStyle` chat thread using its
     /// latest active notification key and reply action ID, and appends the
-    /// outgoing message to the local thread history.
+    /// outgoing message to the local thread history, which keeps the chat.
     pub async fn reply_chat_thread(
         &self,
         peer: impl std::borrow::Borrow<DeviceId>,

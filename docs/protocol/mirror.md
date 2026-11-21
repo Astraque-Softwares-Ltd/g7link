@@ -48,6 +48,8 @@ t = "mirror.keyframe"           b = { ? session: uint }
 t = "mirror.resize"             b = { session: uint, width: uint, height: uint }
 t = "mirror.notice"             b = { ? session: uint, code: text }
 t = "mirror.sound"              b = { on: bool }
+t = "mirror.clock"     id = n   b = {}                               // mirror lane
+t = "mirror.clock"     re = n   b = { now_us: uint }
 ```
 
 Each mirroring is a **session** the PC numbers: 0 (the default) is the
@@ -87,12 +89,24 @@ means 0.
 - `mirror.resize` (PC → phone): resize an app window's display (`session != 0`)
   to `width × height` pixels. Not answered; the phone sends a new `config`
   packet on the video stream once its encoder restarts at the new size.
-- `mirror.notice` (phone → PC): something the PC should tell its user about
-  that mirroring. `code` is `input_blocked` when the phone refuses the PC's
-  taps and keys (Xiaomi, Redmi and POCO phones do until **USB debugging
-  (Security settings)** is on), and `locked` when the phone is locked: it
-  drops the PC's taps and keys until it's unlocked, and says so once per
-  lock. Not answered; a PC ignores codes it doesn't know.
+- `mirror.notice` (either way): something the other side should tell its
+  user about that mirroring. From a phone, `code` is `input_blocked` when the
+  phone refuses the PC's taps and keys (Xiaomi, Redmi and POCO phones do
+  until **USB debugging (Security settings)** is on), and `locked` when the
+  phone is locked: it drops the PC's taps and keys until it's unlocked, and
+  says so once per lock. From a PC sharing its screen (`session` 0), `prompt`
+  when it asks someone at the PC to choose the screen to share (GNOME's
+  dialog; the picture comes once they do), and `no_window` when Play on
+  phone ends because the player's window is gone. Not answered; either side
+  ignores codes it doesn't know.
+- `mirror.clock` (phone → PC, while the PC's screen shows on the phone): the
+  PC answers at once with its monotonic clock (`CLOCK_MONOTONIC` on Linux),
+  in microseconds: the clock its video packets' `time` is on (§3). The
+  phone times the exchange on its own monotonic clock and keeps the answer
+  with the shortest round trip among the last eight: the PC's clock minus
+  its own is about `now_us` less the middle of the exchange, off by at most
+  half that round trip. It asks at once, every second for the first five,
+  then every five seconds. A phone answers `UNSUPPORTED`.
 
 ## 3. The video stream
 
@@ -109,9 +123,15 @@ Each packet is:
 ```
 u32 length (big-endian; counts everything after it)
 u8  kind      // 0 config, 1 frame, 2 keyframe
-u64 time      // capture time in microseconds, big-endian (only differences mean anything)
+u64 time      // capture time in microseconds, big-endian
     data
 ```
+
+A phone's `time` is its own; only differences mean anything. A PC sharing its
+screen stamps each picture with its monotonic clock (`CLOCK_MONOTONIC`, in
+microseconds) at the moment the picture reached the app, before it's
+converted or encoded, so that the phone, with `mirror.clock` (§2), can tell
+how long a picture took from the PC's screen to its own.
 
 - **config**: the stream's format, CBOR `{ codec: "h264" | "h265", width: uint,
   height: uint, ? session: uint, ? app_name: text }`. First, and again whenever
@@ -124,8 +144,18 @@ Packets are at most 8 MiB. Video is BT.709, limited range.
 
 The PC can also send its screen to the phone using the same packet format.
 It uses H.265 when the phone advertises `mirror.decode.hevc` and the PC's
-HEVC encoder starts successfully; otherwise it uses H.264. If the codec changes
-during a stream, the sender sends a new config packet.
+HEVC encoder starts successfully; otherwise it uses H.264 (High profile from
+a hardware encoder). If the codec changes during a stream, the sender sends
+a new config packet.
+
+A PC sends its screen at its own size, each side rounded up to even, with
+the codec's cropping for whatever its blocks add; only a screen whose longer
+side is over the phone's `max_size` (at most 2560) is scaled down. It encodes
+a picture when the screen changes, at most `fps` a second, and never the
+same picture twice, so a still screen sends nothing. Keyframes come at the
+start, when the phone asks (`mirror.keyframe`), and at least every 30 seconds;
+none periodically in between. A phone therefore has to notice a lost packet
+itself and ask for a keyframe.
 
 ## 4. Input
 
@@ -255,6 +285,15 @@ seconds of video on a slow link. So the phone also stops writing when it gets to
 on its way has arrived; that wait also measures what the link carries, which
 sets the encoder's bitrate. A frame with a keyframe queued behind it is
 skipped.
+
+A sender holds only when both are true: the oldest packet not yet reported is
+more than 250 ms later than a round trip, and more than a quarter of a second
+of the stream's bitrate (at least 32 KiB) is on its way. A late report of a
+quiet stream alone says the other side's radio dozed, not that the link is
+full. A PC sharing its screen makes no picture while it holds and sends the
+newest one the moment the hold ends; it lowers its bitrate only after two
+such measures in a row, each over at least 256 KiB, and never under 2 Mbit/s
+for a sharp picture.
 
 Sound works the same way without keyframes: a packet that doesn't fit is
 dropped on its own. The PC plays from a short buffer (about 40 ms),
