@@ -68,6 +68,8 @@ sealed interface AgentNotice {
         val sayWhy: Boolean = false,
         /** Every request and question waiting in the thread, by token, this one included ("1 of 3"). */
         val waiting: List<String> = emptyList(),
+        /** "Needs-you breaks through Do Not Disturb" is on: it posts on the channel that may (contract §V8.6). */
+        val through: Boolean = false,
     ) : AgentNotice
 
     /**
@@ -89,6 +91,8 @@ sealed interface AgentNotice {
         val text: String? = null,
         /** Every request and question waiting in the thread, by token, this one included. */
         val waiting: List<String> = emptyList(),
+        /** Posted on the channel that may break through Do Not Disturb (contract §V8.6). */
+        val through: Boolean = false,
     ) : AgentNotice
 
     /** A turn that ended done, failed or paused at a usage limit. */
@@ -103,6 +107,8 @@ sealed interface AgentNotice {
         val resetsMs: Long? = null,
         /** The folder's label: a plan names where it is ("Claude has a plan in g7linux"). */
         val folder: String? = null,
+        /** The PC is in Do Not Disturb: it's posted without a sound (contract §V8.6). */
+        val silent: Boolean = false,
     ) : AgentNotice
 
     data class Cancel(val pcId: String, val threadId: String) : AgentNotice
@@ -143,8 +149,16 @@ enum class FinishKind { DONE, FAILED, PAUSED, PLAN }
  * to send it. [option] is the index of a question's option ([Kind.OPTION]).
  */
 data class NoticeAction(val kind: Kind, val authenticationRequired: Boolean, val option: Int? = null) {
-    enum class Kind { DENY, DENY_WHY, ALLOW, REVIEW, STOP, REPLY, UNFOLLOW, OPTION, ANSWER }
+    enum class Kind { DENY, DENY_WHY, ALLOW, REVIEW, STOP, REPLY, UNFOLLOW, OPTION, ANSWER, STOP_SPEAKING }
 }
+
+/**
+ * Do Not Disturb as it bears on a PC's notices (contract §V8.6): the PC said
+ * it's in it (and that's still fresh), so a finished turn posts silently; and
+ * "Needs-you breaks through Do Not Disturb" is on, so requests and questions
+ * post on the channel that may.
+ */
+data class NoticeDnd(val pcDnd: Boolean = false, val through: Boolean = false)
 
 /**
  * The rules a Live Update keeps beyond what one event says (Android's Live
@@ -351,10 +365,17 @@ object AgentNotifications {
     private const val CHANNEL_WORKING = "agents_working"
     private const val CHANNEL_WAITING = "agents_waiting"
     private const val CHANNEL_DONE = "agents_done"
+
+    /** Requests and questions while "Needs-you breaks through Do Not Disturb" is on (contract §V8.6). */
+    const val CHANNEL_WAITING_THROUGH = "agents_waiting_through"
+    private const val CHANNEL_HANDOFF = "agents_handoff"
+    private const val CHANNEL_HANDOFF_OFFER = "agents_handoff_offer"
     private const val NOTIFICATION_ID = 0x4147_4E54 // "AGNT"
     private const val TAG_PREFIX = "agent:"
     private const val SESSION_TAG_PREFIX = "agent-session:"
     private const val LIMIT_TAG_PREFIX = "agent-limit:"
+    private const val HANDOFF_TAG_PREFIX = "agent-handoff:"
+    private const val OFFER_TAG_PREFIX = "agent-handoff-offer:"
 
     /** The reply typed under a finished thread's notification. */
     const val REPLY_KEY = "agent_reply"
@@ -396,6 +417,9 @@ object AgentNotifications {
     /** Notices kept back while their thread is on screen on the PC. */
     val held = HeldNotices()
 
+    /** Each thread's last finished-turn notification and its PC's name, so Stop speaking can come and go on it. */
+    private val lastFinished = ConcurrentHashMap<String, Pair<String, AgentNotice.Finished>>()
+
     fun tag(pcId: String, threadId: String): String = "$TAG_PREFIX$pcId:$threadId"
 
     fun sessionTag(pcId: String, sessionId: String): String = "$SESSION_TAG_PREFIX$pcId:$sessionId"
@@ -424,6 +448,64 @@ object AgentNotifications {
                 NotificationManager.IMPORTANCE_DEFAULT,
             ),
         )
+        manager.createNotificationChannel(
+            NotificationChannel(
+                CHANNEL_HANDOFF,
+                context.getString(R.string.channel_agents_handoff),
+                NotificationManager.IMPORTANCE_DEFAULT,
+            ).apply { lockscreenVisibility = Notification.VISIBILITY_PRIVATE },
+        )
+        manager.createNotificationChannel(
+            NotificationChannel(
+                CHANNEL_HANDOFF_OFFER,
+                context.getString(R.string.channel_agents_handoff_offer),
+                // Low: shown in the shade, no sound, no banner.
+                NotificationManager.IMPORTANCE_LOW,
+            ).apply {
+                lockscreenVisibility = Notification.VISIBILITY_PRIVATE
+                setShowBadge(false)
+            },
+        )
+    }
+
+    /**
+     * The channel for requests and questions that may break through Do Not
+     * Disturb, made when it's first needed (contract §V8.6). Android honours
+     * `setBypassDnd` only when made while the app has notification-policy
+     * access; whether it can is read back. Once made, only the user changes it.
+     */
+    fun throughChannel(context: Context): Boolean {
+        val manager = context.getSystemService(NotificationManager::class.java) ?: return false
+        if (manager.getNotificationChannel(CHANNEL_WAITING_THROUGH) == null) {
+            manager.createNotificationChannel(
+                NotificationChannel(
+                    CHANNEL_WAITING_THROUGH,
+                    context.getString(R.string.channel_agents_waiting_through),
+                    NotificationManager.IMPORTANCE_HIGH,
+                ).apply {
+                    lockscreenVisibility = Notification.VISIBILITY_PRIVATE
+                    setBypassDnd(true)
+                },
+            )
+        }
+        return manager.getNotificationChannel(CHANNEL_WAITING_THROUGH)?.canBypassDnd() == true
+    }
+
+    /** The channel a request or a question posts on. */
+    fun waitingChannel(through: Boolean): String = if (through) CHANNEL_WAITING_THROUGH else CHANNEL_WAITING
+
+    /**
+     * [notice] as Do Not Disturb shapes it (contract §V8.6): a request or a
+     * question on the channel that may break through when that's on, and a
+     * finished turn without a sound while the PC is in Do Not Disturb (it shows
+     * no banner there, so the phone still tells, quietly). Nothing else changes.
+     */
+    fun dnd(notice: AgentNotice, dnd: NoticeDnd): AgentNotice = when (notice) {
+        is AgentNotice.Waiting -> if (notice.through == dnd.through) notice else notice.copy(through = dnd.through)
+        is AgentNotice.Asking -> if (notice.through == dnd.through) notice else notice.copy(through = dnd.through)
+        is AgentNotice.Finished -> if (notice.silent == dnd.pcDnd) notice else notice.copy(silent = dnd.pcDnd)
+        is AgentNotice.Held -> AgentNotice.Held(dnd(notice.notice, dnd))
+        else -> notice
     }
 
     /**
@@ -690,13 +772,19 @@ object AgentNotifications {
     /** A session waiting in a terminal is answered there: nothing to press here. */
     fun sessionWaitingActions(): List<NoticeAction> = emptyList()
 
-    /** A finished turn can be replied to from the notification, unlocked; a paused one can't yet, a plan is opened in the app. */
-    fun finishedActions(kind: FinishKind, sdkInt: Int): List<NoticeAction> =
+    /**
+     * A finished turn can be replied to from the notification, unlocked; a
+     * paused one can't yet, a plan is opened in the app. While its result is
+     * being said aloud, Stop speaking comes first (contract §V8.2).
+     */
+    fun finishedActions(kind: FinishKind, sdkInt: Int, speaking: Boolean = false): List<NoticeAction> = listOfNotNull(
+        if (speaking) NoticeAction(NoticeAction.Kind.STOP_SPEAKING, authenticationRequired = false) else null,
         if (kind != FinishKind.PAUSED && kind != FinishKind.PLAN && sdkInt >= AUTH_SDK) {
-            listOf(NoticeAction(NoticeAction.Kind.REPLY, authenticationRequired = true))
+            NoticeAction(NoticeAction.Kind.REPLY, authenticationRequired = true)
         } else {
-            emptyList()
-        }
+            null
+        },
+    )
 
     /**
      * The lines a working thread's Live Update shows under its title: the
@@ -710,11 +798,13 @@ object AgentNotifications {
             if (notice.planStep != null && notice.planSize != null) stepOf(notice.planStep, notice.planSize) else null,
         )
 
-    /** Posts and cancels what [plan] or [threadNotice] decided. */
-    fun apply(context: Context, pcName: String, notices: List<AgentNotice>) {
-        for (notice in notices) {
-            // Anything newer for a thread replaces what was kept back for it.
+    /** Posts and cancels what [plan] or [threadNotice] decided, as Do Not Disturb shapes it ([dnd]). */
+    fun apply(context: Context, pcName: String, notices: List<AgentNotice>, dnd: NoticeDnd = NoticeDnd()) {
+        for (planned in notices) {
+            val notice = dnd(planned, dnd)
+            // Anything newer for a thread replaces what was kept back for it, and what it last said of an end.
             if (notice !is AgentNotice.Held) tagOf(notice)?.let(held::drop)
+            if (notice !is AgentNotice.Finished) tagOf(notice)?.let(lastFinished::remove)
             when (notice) {
                 is AgentNotice.Held -> hold(context, notice.notice)
                 is AgentNotice.Cancel -> cancel(context, notice.pcId, notice.threadId)
@@ -745,7 +835,8 @@ object AgentNotifications {
                     workingSince.remove(tag)
                     shownAsk.remove(tag)
                     memory.ended(tag)
-                    post(context, tag, finished(context, pcName, notice))
+                    lastFinished[tag] = pcName to notice
+                    post(context, tag, finished(context, pcName, notice, speaking = false, again = false))
                 }
                 is AgentNotice.SessionWorking -> live(context, pcName, sessionTag(notice.pcId, notice.sessionId), notice)
                 is AgentNotice.SessionWaiting -> {
@@ -857,6 +948,7 @@ object AgentNotifications {
         shownAsk.remove(tag)
         memory.ended(tag)
         held.drop(tag)
+        lastFinished.remove(tag)
         runCatching { NotificationManagerCompat.from(context).cancel(tag, NOTIFICATION_ID) }
     }
 
@@ -878,6 +970,7 @@ object AgentNotifications {
             gate.endedAll(prefix)
             memory.endedAll(prefix)
             held.dropAll(prefix)
+            lastFinished.keys.removeAll { it.startsWith(prefix) }
         }
         val manager = context.getSystemService(NotificationManager::class.java) ?: return
         runCatching {
@@ -1061,9 +1154,10 @@ object AgentNotifications {
 
     private fun waiting(context: Context, pcName: String, notice: AgentNotice.Waiting, quiet: Boolean, count: Pair<Int, Int>?): Notification {
         val ask = notice.ask
+        val channel = waitingChannel(notice.through)
         val open = openIntent(context, notice.pcId, notice.threadId)
         val publicTitle = context.getString(R.string.agents_notify_waiting_public, notice.agent, pcName)
-        val public = Notification.Builder(context, CHANNEL_WAITING)
+        val public = Notification.Builder(context, channel)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(publicTitle)
             .setContentIntent(open)
@@ -1077,7 +1171,7 @@ object AgentNotifications {
         val body = AgentsModel.askBody(ask) ?: ask.path
         val expanded = listOfNotNull(ask.title.ifBlank { null }, body?.take(MAX_BODY_CHARS)).joinToString("\n")
         val now = System.currentTimeMillis()
-        val builder = Notification.Builder(context, CHANNEL_WAITING)
+        val builder = Notification.Builder(context, channel)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(title)
             .setContentText(ask.title)
@@ -1104,9 +1198,10 @@ object AgentNotifications {
      * (contract §V3.2), else "Open to answer" and Review.
      */
     private fun asking(context: Context, pcName: String, notice: AgentNotice.Asking, quiet: Boolean, count: Pair<Int, Int>?): Notification {
+        val channel = waitingChannel(notice.through)
         val open = openIntent(context, notice.pcId, notice.threadId)
         val publicTitle = context.getString(R.string.agents_notify_waiting_public, notice.agent, pcName)
-        val public = Notification.Builder(context, CHANNEL_WAITING)
+        val public = Notification.Builder(context, channel)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(publicTitle)
             .setContentIntent(open)
@@ -1125,7 +1220,7 @@ object AgentNotifications {
             if (answers == null) context.getString(R.string.agents_notify_open_to_answer) else null,
         )
         val now = System.currentTimeMillis()
-        val builder = Notification.Builder(context, CHANNEL_WAITING)
+        val builder = Notification.Builder(context, channel)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(title)
             .setContentText(words ?: asks)
@@ -1173,7 +1268,7 @@ object AgentNotifications {
         return builder.build()
     }
 
-    private fun finished(context: Context, pcName: String, notice: AgentNotice.Finished): Notification {
+    private fun finished(context: Context, pcName: String, notice: AgentNotice.Finished, speaking: Boolean, again: Boolean): Notification {
         val title = when (notice.kind) {
             FinishKind.DONE -> context.getString(R.string.agents_notify_done_title, notice.agent)
             FinishKind.FAILED -> context.getString(R.string.agents_notify_failed_title, notice.agent)
@@ -1206,11 +1301,117 @@ object AgentNotifications {
             .setAutoCancel(true)
             .setShowWhen(true)
             .setWhen(System.currentTimeMillis())
+            .setOnlyAlertOnce(again)
             .setCategory(if (notice.kind == FinishKind.DONE || notice.kind == FinishKind.PLAN) Notification.CATEGORY_STATUS else Notification.CATEGORY_ERROR)
-        for (action in finishedActions(notice.kind, Build.VERSION.SDK_INT)) {
+        if (notice.silent) silence(builder, tag(notice.pcId, notice.threadId))
+        for (action in finishedActions(notice.kind, Build.VERSION.SDK_INT, speaking)) {
             builder.addAction(action(context, action, notice.pcId, notice.threadId, null))
         }
         return builder.build()
+    }
+
+    /**
+     * Posted without a sound or a vibration (the PC is in Do Not Disturb), as
+     * AndroidX's `setSilent` does it: in a group of its own whose summary alone
+     * may alert, which a lone notification never is.
+     */
+    private fun silence(builder: Notification.Builder, tag: String) {
+        builder.setGroup("silent:$tag").setGroupAlertBehavior(Notification.GROUP_ALERT_SUMMARY)
+    }
+
+    /**
+     * Stop speaking comes onto a finished thread's notification while its
+     * result is said aloud, and goes when it ends (contract §V8.2); quietly,
+     * and only while the notification is still there.
+     */
+    fun speaking(context: Context, pcId: String, threadId: String, on: Boolean) {
+        val tag = tag(pcId, threadId)
+        val (pcName, notice) = lastFinished[tag] ?: return
+        val manager = context.getSystemService(NotificationManager::class.java) ?: return
+        val showing = runCatching { manager.activeNotifications.any { it.id == NOTIFICATION_ID && it.tag == tag } }.getOrDefault(false)
+        if (!showing) {
+            lastFinished.remove(tag)
+            return
+        }
+        post(context, tag, finished(context, pcName, notice, speaking = on, again = true))
+    }
+
+    // ---- Handing a thread over (contract §V8.5) ----
+
+    private fun handoffTag(pcId: String, threadId: String, offer: Boolean): String =
+        "${if (offer) OFFER_TAG_PREFIX else HANDOFF_TAG_PREFIX}$pcId:$threadId"
+
+    /**
+     * "Continue on this phone": a thread handed over from the PC, or offered
+     * when it locked (on the quiet channel). Tapping it, or Open, opens the
+     * thread where the PC showed it with the draft from there; nothing else.
+     * It goes when it lapses (at most 10 minutes).
+     */
+    fun handoff(
+        context: Context,
+        pcName: String,
+        pcId: String,
+        threadId: String,
+        title: String?,
+        folder: String?,
+        seq: ULong?,
+        offer: Boolean,
+        lastsMs: Long,
+    ) {
+        if (lastsMs <= 0L) return
+        val tag = handoffTag(pcId, threadId, offer)
+        val channel = if (offer) CHANNEL_HANDOFF_OFFER else CHANNEL_HANDOFF
+        val heading = context.getString(R.string.agents_handoff_here)
+        val intent = Intent(context, MainActivity::class.java)
+            .setData(Uri.Builder().scheme("g7link-agent-handoff").authority(pcId).appendPath(threadId).appendPath(if (offer) "offer" else "sent").build())
+            .putExtra(MainActivity.EXTRA_OPEN_AGENT_PC, pcId)
+            .putExtra(MainActivity.EXTRA_OPEN_AGENT_THREAD, threadId)
+            .putExtra(MainActivity.EXTRA_AGENT_HANDOFF, true)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        if (seq != null && seq > 0uL) intent.putExtra(MainActivity.EXTRA_AGENT_HANDOFF_SEQ, seq.toLong())
+        val open = PendingIntent.getActivity(context, tag.hashCode(), intent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+        // On the lock screen: that a thread can continue here, never which.
+        val public = Notification.Builder(context, channel)
+            .setSmallIcon(R.drawable.ic_notification)
+            .setContentTitle(heading)
+            .setContentIntent(open)
+        val text = listOfNotNull(title?.trim()?.ifEmpty { null }, folder?.trim()?.ifEmpty { null }).joinToString(" · ")
+        val builder = Notification.Builder(context, channel)
+            .setSmallIcon(R.drawable.ic_notification)
+            .setContentTitle(heading)
+            .setSubText(pcName)
+            .setContentIntent(open)
+            .setVisibility(Notification.VISIBILITY_PRIVATE)
+            .setPublicVersion(public.build())
+            .setAutoCancel(true)
+            .setShowWhen(true)
+            .setWhen(System.currentTimeMillis())
+            .setTimeoutAfter(lastsMs)
+            .setCategory(Notification.CATEGORY_RECOMMENDATION)
+        if (text.isNotEmpty()) builder.setContentText(text)
+        val icon = Icon.createWithResource(context, R.drawable.ic_notification)
+        builder.addAction(Notification.Action.Builder(icon, context.getString(R.string.agents_link_open), open).build())
+        post(context, tag, builder.build())
+    }
+
+    /** The thread opened on this phone: whatever offered it here goes. */
+    fun cancelHandoff(context: Context, pcId: String, threadId: String) {
+        val manager = NotificationManagerCompat.from(context)
+        runCatching {
+            manager.cancel(handoffTag(pcId, threadId, offer = false), NOTIFICATION_ID)
+            manager.cancel(handoffTag(pcId, threadId, offer = true), NOTIFICATION_ID)
+        }
+    }
+
+    /** Someone is at [pcId] again: its walk-away offers go. [all] also takes the hand-offs (the PC was unpaired). */
+    fun cancelHandoffs(context: Context, pcId: String, all: Boolean = false) {
+        val prefixes = listOfNotNull("$OFFER_TAG_PREFIX$pcId:", if (all) "$HANDOFF_TAG_PREFIX$pcId:" else null)
+        val manager = context.getSystemService(NotificationManager::class.java) ?: return
+        runCatching {
+            manager.activeNotifications
+                .filter { shown -> shown.id == NOTIFICATION_ID && prefixes.any { shown.tag?.startsWith(it) == true } }
+                .forEach { manager.cancel(it.tag, NOTIFICATION_ID) }
+        }
     }
 
     @SuppressLint("NewApi")
@@ -1244,6 +1445,8 @@ object AgentNotifications {
                 broadcast(context, AgentActionReceiver.ACTION_OPTION, pcId, threadId, token, mutable = false, ask = answers?.askId, option = spec.option)
             NoticeAction.Kind.ANSWER -> context.getString(R.string.agents_notify_type) to
                 broadcast(context, AgentActionReceiver.ACTION_ANSWER, pcId, threadId, token, mutable = true, ask = answers?.askId)
+            NoticeAction.Kind.STOP_SPEAKING -> context.getString(R.string.agents_stop_speaking) to
+                broadcast(context, AgentActionReceiver.ACTION_STOP_SPEAKING, pcId, threadId, null, mutable = false)
         }
         val builder = Notification.Action.Builder(icon, label, intent)
         val input = when (spec.kind) {
@@ -1374,6 +1577,7 @@ object AgentNotifications {
             return
         }
         createChannels(context)
+        if (notification.channelId == CHANNEL_WAITING_THROUGH) throughChannel(context)
         runCatching { NotificationManagerCompat.from(context).notify(tag, NOTIFICATION_ID, notification) }
     }
 }

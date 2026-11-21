@@ -2179,4 +2179,45 @@
         <item quantity="one">Mais %1$d arquivo não aparece.</item>
         <item quantity="other">Mais %1$d arquivos não aparecem.</item>
     </plurals>
+    <!-- Phase 5 wave 2 (contract §V8): voice replies, read it to me, the Agents tile and widget, hand-off, Do Not Disturb. -->
+    <string name="agents_voice_hold">Segure para falar</string>
+    <string name="agents_voice_listening">Ouvindo…</string>
+    <string name="agents_voice_release">Solte para adicionar à sua mensagem</string>
+    <string name="agents_voice_slide_cancel">Deslize para fora para cancelar</string>
+    <string name="agents_voice_allow_mic">Permita o microfone para ditar uma resposta.</string>
+    <string name="agents_voice_needs_pack">A voz precisa do pacote de fala off-line deste celular.</string>
+    <string name="agents_voice_tap_to_talk">Toque para falar</string>
+    <string name="agents_voice_speech_settings">Configurações de fala</string>
+    <string name="agents_settings_voice">Voz</string>
+    <string name="agents_read_aloud">Ler os resultados em voz alta</string>
+    <string name="agents_read_aloud_note">Pelos fones de ouvido, quando uma conversa termina.</string>
+    <string name="agents_read_aloud_speaker">Também no alto-falante do celular</string>
+    <string name="agents_read_aloud_no_voice">Nenhuma voz off-line instalada.</string>
+    <string name="agents_speak_finished">%1$s concluiu: %2$s</string>
+    <string name="agents_speak_failed">%1$s falhou: %2$s</string>
+    <string name="agents_speak_plan">%1$s tem um plano em %2$s</string>
+    <string name="agents_stop_speaking">Parar de ler</string>
+    <string name="agents_tile_nothing">Nada em execução</string>
+    <string name="agents_tile_unreachable">Não foi possível conectar a %1$s</string>
+    <string name="agents_unreachable_widget">Não foi possível conectar a %1$s.</string>
+    <string name="agents_widget_empty">Nenhuma conversa em execução.</string>
+    <string name="agents_widget_header">Agentes · %1$s</string>
+    <string name="agents_widget_description">Suas conversas com agentes e o que precisa de você</string>
+    <string name="agents_handoff_continue_on">Continuar em %1$s</string>
+    <string name="agents_handoff_here">Continuar neste celular</string>
+    <string name="agents_handoff_opens_unlocked">Abre quando %1$s for desbloqueado.</string>
+    <string name="agents_handoff_draft_from">Rascunho de %1$s</string>
+    <string name="agents_handoff_offer_setting">Oferecer a conversa aqui quando eu sair de %1$s</string>
+    <string name="agents_break_dnd">“Precisa de você” passa pelo Não perturbe</string>
+    <string name="channel_agents_handoff">Transferência de agentes</string>
+    <string name="channel_agents_handoff_offer">Ofertas de transferência de agentes</string>
+    <string name="channel_agents_waiting_through">Agentes que precisam de você, mesmo no Não perturbe</string>
+    <plurals name="agents_tile_needs_you">
+        <item quantity="one">%1$d precisa de você</item>
+        <item quantity="other">%1$d precisam de você</item>
+    </plurals>
+    <plurals name="agents_tile_working">
+        <item quantity="one">%1$d trabalhando</item>
+        <item quantity="other">%1$d trabalhando</item>
+    </plurals>
 </resources>

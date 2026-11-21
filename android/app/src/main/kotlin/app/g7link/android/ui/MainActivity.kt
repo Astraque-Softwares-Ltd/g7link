@@ -370,6 +370,11 @@ class MainActivity : ComponentActivity() {
         requestedAgentPc = pc
         // A limit reset's Open: the thread with its reply box focused, nothing typed.
         if (thread != null && intent.getBooleanExtra(EXTRA_FOCUS_AGENT_REPLY, false)) AgentFocus.request(pc, thread)
+        // Handed over from the PC: the thread where the PC showed it, with the draft from there; nothing else.
+        if (thread != null && intent.getBooleanExtra(EXTRA_AGENT_HANDOFF, false)) {
+            val seq = intent.getLongExtra(EXTRA_AGENT_HANDOFF_SEQ, 0L).takeIf { it > 0L }?.toULong()
+            app.g7link.android.ui.agents.AgentHandoffs.request(pc, thread, seq)
+        }
     }
 
     companion object {
@@ -385,6 +390,10 @@ class MainActivity : ComponentActivity() {
 
         /** With [EXTRA_OPEN_AGENT_THREAD]: its reply box focused (a limit reset's Open). */
         const val EXTRA_FOCUS_AGENT_REPLY = "focus_agent_reply"
+
+        /** With [EXTRA_OPEN_AGENT_THREAD]: handed over from the PC ("Continue on this phone"), at [EXTRA_AGENT_HANDOFF_SEQ]. */
+        const val EXTRA_AGENT_HANDOFF = "agent_handoff"
+        const val EXTRA_AGENT_HANDOFF_SEQ = "agent_handoff_seq"
         private const val STATE_PENDING_PAIRING_LINK = "pending_pairing_link"
     }
 }

@@ -13,7 +13,9 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -46,6 +48,9 @@ import androidx.compose.ui.unit.dp
 import app.g7link.android.R
 import app.g7link.android.core.Core
 import app.g7link.android.notifications.AgentNoticeSettings
+import app.g7link.android.notifications.AgentNotifications
+import app.g7link.android.ui.agents.voice.AgentSpeaker
+import app.g7link.android.ui.agents.voice.AgentVoiceSettingsRows
 import app.g7link.android.ui.theme.G7Icons
 import app.g7link.android.ui.theme.G7PrimaryButton
 import app.g7link.android.ui.theme.G7RaisedButton
@@ -372,10 +377,11 @@ internal fun RewindSheetView(
 }
 
 /**
- * Agent settings on this phone (board 23, phase 5 board 02b): this PC's
- * notifications (quiet while you're at it, a limit's reset), then keep
- * threads here for reading while the PC is away, and clear what's kept (its
- * size).
+ * Agent settings on this phone (board 23, phase 5 boards 02b, 06a): this
+ * PC's notifications (quiet while you're at it, needs-you through Do Not
+ * Disturb, a limit's reset, the thread offered here when you leave it), its
+ * voice (results read aloud, tap to talk), then keep threads here for reading
+ * while the PC is away, and clear what's kept (its size).
  */
 @Composable
 internal fun AgentCacheSheet(core: Core, pcId: String, pcName: String, onDismiss: () -> Unit) {
@@ -390,58 +396,92 @@ internal fun AgentCacheSheet(core: Core, pcId: String, pcName: String, onDismiss
     val context = LocalContext.current
     var quiet by remember(pcId) { mutableStateOf(AgentNoticeSettings.quietAtPc(context, pcId)) }
     var limit by remember(pcId) { mutableStateOf(AgentNoticeSettings.limitAlarm(context, pcId)) }
+    var through by remember(pcId) { mutableStateOf(AgentNoticeSettings.breakDnd(context, pcId)) }
+    var offer by remember(pcId) { mutableStateOf(AgentNoticeSettings.handoffOffer(context, pcId)) }
     AgentSheet(onDismiss) {
-        SheetHead(stringResource(R.string.agents_phone_settings), pcName)
-        G7SectionLabel(stringResource(R.string.agents_settings_notifications))
-        SheetRow(
-            label = stringResource(R.string.agents_quiet_at_pc, pcName),
-            reason = stringResource(R.string.agents_quiet_at_pc_note, pcName),
-            onClick = {
-                quiet = !quiet
-                AgentNoticeSettings.setQuietAtPc(context, pcId, quiet)
-                core.agentNoticeSettingsChanged(pcId)
-            },
-            trailing = { G7Switch(checked = quiet, onCheckedChange = null) },
-        )
-        SheetRow(
-            label = stringResource(R.string.agents_limit_alarm_setting),
-            onClick = {
-                limit = !limit
-                AgentNoticeSettings.setLimitAlarm(context, pcId, limit)
-                core.agentNoticeSettingsChanged(pcId)
-            },
-            trailing = { G7Switch(checked = limit, onCheckedChange = null) },
-        )
-        G7SectionLabel(stringResource(R.string.agents_settings_saved))
-        val keep = keeps
-        SheetRow(
-            label = stringResource(R.string.agents_cache_keep),
-            enabled = keep != null && !busy,
-            onClick = {
-                val next = keep != true
-                busy = true
-                scope.launch {
-                    if (core.agentCacheKeep(next) is AgentCall.Ok) keeps = next
-                    bytes = (core.agentCacheBytes() as? AgentCall.Ok)?.value
-                    busy = false
-                }
-            },
-            trailing = { G7Switch(checked = keep == true, onCheckedChange = null, enabled = keep != null && !busy) },
-        )
-        val size = bytes?.let { android.text.format.Formatter.formatShortFileSize(context, it) }
-        SheetRow(
-            label = stringResource(R.string.agents_cache_clear, size.orEmpty()),
-            enabled = !busy && (bytes ?: 0L) > 0L,
-            onClick = {
-                busy = true
-                scope.launch {
-                    core.agentCacheClear()
-                    bytes = (core.agentCacheBytes() as? AgentCall.Ok)?.value
-                    busy = false
-                }
-            },
-        )
+        // Two sections and Voice: taller than some screens, so it scrolls.
+        Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState())) {
+            SheetHead(stringResource(R.string.agents_phone_settings), pcName)
+            G7SectionLabel(stringResource(R.string.agents_settings_notifications))
+            SheetRow(
+                label = stringResource(R.string.agents_quiet_at_pc, pcName),
+                reason = stringResource(R.string.agents_quiet_at_pc_note, pcName),
+                onClick = {
+                    quiet = !quiet
+                    AgentNoticeSettings.setQuietAtPc(context, pcId, quiet)
+                    core.agentNoticeSettingsChanged(pcId)
+                },
+                trailing = { G7Switch(checked = quiet, onCheckedChange = null) },
+            )
+            SheetRow(
+                label = stringResource(R.string.agents_break_dnd),
+                onClick = {
+                    through = !through
+                    AgentNoticeSettings.setBreakDnd(context, pcId, through)
+                    // Android lets the channel through only when it was made with Do Not Disturb access; else the user allows it there.
+                    if (through && !AgentNotifications.throughChannel(context)) openChannelSettings(context, AgentNotifications.CHANNEL_WAITING_THROUGH)
+                },
+                trailing = { G7Switch(checked = through, onCheckedChange = null) },
+            )
+            SheetRow(
+                label = stringResource(R.string.agents_limit_alarm_setting),
+                onClick = {
+                    limit = !limit
+                    AgentNoticeSettings.setLimitAlarm(context, pcId, limit)
+                    core.agentNoticeSettingsChanged(pcId)
+                },
+                trailing = { G7Switch(checked = limit, onCheckedChange = null) },
+            )
+            SheetRow(
+                label = stringResource(R.string.agents_handoff_offer_setting, pcName),
+                onClick = {
+                    offer = !offer
+                    AgentNoticeSettings.setHandoffOffer(context, pcId, offer)
+                    if (!offer) AgentNotifications.cancelHandoffs(context, pcId)
+                },
+                trailing = { G7Switch(checked = offer, onCheckedChange = null) },
+            )
+            AgentVoiceSettingsRows(pcId = pcId, onReadAloudOff = { AgentSpeaker.stop(context) })
+            G7SectionLabel(stringResource(R.string.agents_settings_saved))
+            val keep = keeps
+            SheetRow(
+                label = stringResource(R.string.agents_cache_keep),
+                enabled = keep != null && !busy,
+                onClick = {
+                    val next = keep != true
+                    busy = true
+                    scope.launch {
+                        if (core.agentCacheKeep(next) is AgentCall.Ok) keeps = next
+                        bytes = (core.agentCacheBytes() as? AgentCall.Ok)?.value
+                        busy = false
+                    }
+                },
+                trailing = { G7Switch(checked = keep == true, onCheckedChange = null, enabled = keep != null && !busy) },
+            )
+            val size = bytes?.let { android.text.format.Formatter.formatShortFileSize(context, it) }
+            SheetRow(
+                label = stringResource(R.string.agents_cache_clear, size.orEmpty()),
+                enabled = !busy && (bytes ?: 0L) > 0L,
+                onClick = {
+                    busy = true
+                    scope.launch {
+                        core.agentCacheClear()
+                        bytes = (core.agentCacheBytes() as? AgentCall.Ok)?.value
+                        busy = false
+                    }
+                },
+            )
+        }
     }
+}
+
+/** A notification channel's own settings, where the user lets it through Do Not Disturb. */
+private fun openChannelSettings(context: android.content.Context, channel: String) {
+    val intent = android.content.Intent(android.provider.Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS)
+        .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, context.packageName)
+        .putExtra(android.provider.Settings.EXTRA_CHANNEL_ID, channel)
+        .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+    runCatching { context.startActivity(intent) }
 }
 
 /** "<PC> isn't reachable. Saved 12 min ago." over a list or a thread from what this phone saved. */

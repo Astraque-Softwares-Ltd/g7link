@@ -2077,4 +2077,43 @@
     <plurals name="agents_git_more_files">
         <item quantity="other">Còn %1$d tệp không được liệt kê.</item>
     </plurals>
+    <!-- Phase 5 wave 2 (contract §V8): voice replies, read it to me, the Agents tile and widget, hand-off, Do Not Disturb. -->
+    <string name="agents_voice_hold">Giữ để nói</string>
+    <string name="agents_voice_listening">Đang nghe…</string>
+    <string name="agents_voice_release">Thả ra để thêm vào tin nhắn</string>
+    <string name="agents_voice_slide_cancel">Trượt ra để hủy</string>
+    <string name="agents_voice_allow_mic">Hãy cho phép micrô để nói câu trả lời.</string>
+    <string name="agents_voice_needs_pack">Giọng nói cần gói nhận dạng giọng nói ngoại tuyến của điện thoại này.</string>
+    <string name="agents_voice_tap_to_talk">Chạm để nói</string>
+    <string name="agents_voice_speech_settings">Cài đặt giọng nói</string>
+    <string name="agents_settings_voice">Giọng nói</string>
+    <string name="agents_read_aloud">Đọc to kết quả</string>
+    <string name="agents_read_aloud_note">Qua tai nghe, khi một luồng kết thúc.</string>
+    <string name="agents_read_aloud_speaker">Cả trên loa điện thoại</string>
+    <string name="agents_read_aloud_no_voice">Chưa cài giọng đọc ngoại tuyến nào.</string>
+    <string name="agents_speak_finished">%1$s đã xong: %2$s</string>
+    <string name="agents_speak_failed">%1$s thất bại: %2$s</string>
+    <string name="agents_speak_plan">%1$s có kế hoạch trong %2$s</string>
+    <string name="agents_stop_speaking">Dừng đọc</string>
+    <string name="agents_tile_nothing">Không có gì đang chạy</string>
+    <string name="agents_tile_unreachable">Không kết nối được với %1$s</string>
+    <string name="agents_unreachable_widget">Không kết nối được với %1$s.</string>
+    <string name="agents_widget_empty">Không có luồng nào đang chạy.</string>
+    <string name="agents_widget_header">Agent · %1$s</string>
+    <string name="agents_widget_description">Các luồng agent của bạn và những gì cần bạn</string>
+    <string name="agents_handoff_continue_on">Tiếp tục trên %1$s</string>
+    <string name="agents_handoff_here">Tiếp tục trên điện thoại này</string>
+    <string name="agents_handoff_opens_unlocked">Sẽ mở khi %1$s được mở khóa.</string>
+    <string name="agents_handoff_draft_from">Bản nháp từ %1$s</string>
+    <string name="agents_handoff_offer_setting">Đề xuất luồng ở đây khi tôi rời %1$s</string>
+    <string name="agents_break_dnd">Việc cần bạn vượt qua Không làm phiền</string>
+    <string name="channel_agents_handoff">Chuyển giao agent</string>
+    <string name="channel_agents_handoff_offer">Đề xuất chuyển giao agent</string>
+    <string name="channel_agents_waiting_through">Agent cần bạn, kể cả khi bật Không làm phiền</string>
+    <plurals name="agents_tile_needs_you">
+        <item quantity="other">%1$d cần bạn</item>
+    </plurals>
+    <plurals name="agents_tile_working">
+        <item quantity="other">%1$d đang làm</item>
+    </plurals>
 </resources>

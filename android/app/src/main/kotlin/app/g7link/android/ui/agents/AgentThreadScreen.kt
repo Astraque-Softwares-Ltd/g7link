@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyListScope
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -70,6 +71,11 @@ import app.g7link.android.R
 import app.g7link.android.core.Core
 import app.g7link.android.core.Device
 import app.g7link.android.notifications.AgentLimitAlarm
+import app.g7link.android.ui.agents.voice.AgentMicButton
+import app.g7link.android.ui.agents.voice.AgentVoice
+import app.g7link.android.ui.agents.voice.AgentVoiceStrip
+import app.g7link.android.ui.agents.voice.rememberAgentDictation
+import app.g7link.android.ui.agents.voice.rememberTapToTalk
 import app.g7link.android.ui.theme.G7IconButton
 import app.g7link.android.ui.theme.G7Icons
 import app.g7link.android.ui.theme.LocalAppFonts
@@ -265,6 +271,7 @@ fun AgentThreadScreen(
     var queueBusy by remember(threadId) { mutableStateOf(emptySet<String>()) }
     var implementing by remember(threadId) { mutableStateOf(false) }
     val focus = remember { FocusRequester() }
+    val composerSelection = remember(threadId) { TextSelection() }
     val imagesAllowed = AgentSettings.takesImages(abilities, settingsNow)
     val newestPlan = remember(open?.items) { AgentsModel.newestProposedPlan(open?.items.orEmpty()) }
     val limit = AgentUsage.pinned(abilities.limits)
@@ -307,8 +314,16 @@ fun AgentThreadScreen(
     var drafts by remember(threadId) { mutableStateOf(DraftState()) }
     var composerFocused by remember(threadId) { mutableStateOf(false) }
     // A search hit opened the thread at a message: scrolled to, and lit for a moment.
-    val jumpTo = remember(device.id, threadId) { AgentJump.take(device.id, threadId) }
-    var lit by remember(threadId) { mutableStateOf(jumpTo) }
+    val searchHit = remember(device.id, threadId) { AgentJump.take(device.id, threadId) }
+    // Handed over from the PC (contract §V8.5): opened where the PC showed it, with the draft from there.
+    val handedOver = remember(device.id, threadId) { AgentHandoffs.take(device.id, threadId) }
+    val jumpTo = searchHit ?: handedOver?.seq
+    var lit by remember(threadId) { mutableStateOf(searchHit) }
+    // What the PC's draft put in the box: "Draft from <PC>" over it while it's still that.
+    var handoffDraft by remember(threadId) { mutableStateOf<String?>(null) }
+    // "Continue on <PC>" while the PC is locked: it opens there once it's unlocked.
+    var handoffLocked by remember(threadId) { mutableStateOf(false) }
+    var handingOver by remember(threadId) { mutableStateOf(false) }
     val heldHere = remember(agents.held, threadId) { AgentOutbox.of(agents.held, threadId) }
     val readonly = thread?.readonly != null
     val drafting = agents.catalog?.canControl == true
@@ -675,6 +690,35 @@ fun AgentThreadScreen(
     }
     // ---- The draft on the PC (phase 2 §Q6.1): read on open, written after a pause, never while a question waits ----
     val draftKey = AgentDrafts.key(threadId)
+    // ---- "Continue on <PC>" (contract §V8.5): the draft goes first, then the PC opens the thread where this screen is ----
+    val listState = rememberLazyListState()
+    val handOver: () -> Unit = handOver@{
+        if (handingOver || offline) return@handOver
+        handingOver = true
+        val seq = firstSeqShown(listState, rows, earlier = open?.let { it.moreBefore && it.items.isNotEmpty() } == true)
+        scope.launch {
+            if (drafting && AgentDrafts.mayWrite(drafts, questionWaiting)) {
+                val text = draft.take(AgentDrafts.MAX_BYTES)
+                val saved = core.agentDraftSet(device.id, draftKey, text, AgentImages.readyIds(images), drafts.rev)
+                if (saved is AgentCall.Ok) drafts = AgentDrafts.saved(drafts, saved.value, text)
+            }
+            when (val result = core.agentHandoffTo(device.id, threadId, seq)) {
+                is AgentCall.Ok -> handoffLocked = result.value == AgentHandoffs.Sent.LOCKED
+                is AgentCall.Failed -> core.say(failedSay(result.failure))
+            }
+            handingOver = false
+        }
+    }
+    // The PC opens it at its unlock (or the hand-off lapses): the line goes then.
+    LaunchedEffect(handoffLocked, presence) {
+        if (!handoffLocked) return@LaunchedEffect
+        if (presence != null && presence.fresh(System.currentTimeMillis()) && !presence.locked) {
+            handoffLocked = false
+            return@LaunchedEffect
+        }
+        delay(AgentHandoffs.LIFE_MS)
+        handoffLocked = false
+    }
     LaunchedEffect(device.id, threadId, device.online, drafting) {
         if (!device.online || !drafting) return@LaunchedEffect
         val read = core.agentDraftGet(device.id, draftKey) as? AgentCall.Ok ?: return@LaunchedEffect
@@ -682,6 +726,7 @@ fun AgentThreadScreen(
         drafts = step.state
         step.text?.let { draft = it }
         step.images?.let { ids -> images = ids.map { PendingImage.Ready(it, it) } }
+        if (handedOver != null) handoffDraft = step.text
     }
     LaunchedEffect(draft, drafts.dirty, questionWaiting, device.online) {
         if (!device.online || !drafting || !AgentDrafts.mayWrite(drafts, questionWaiting)) return@LaunchedEffect
@@ -850,7 +895,6 @@ fun AgentThreadScreen(
         )
     }
 
-    val listState = rememberLazyListState()
     val drawer = rememberAgentsDrawer()
     // A full-screen view closes with Back, and an edit request's when the request is no longer shown.
     BackHandler(enabled = full != null) { full = null }
@@ -983,6 +1027,8 @@ fun AgentThreadScreen(
                 onShare = share,
                 onDetails = { details = true },
                 drawer = drawer,
+                continueOn = if (!offline && load == ThreadLoad.READY) device.name else null,
+                onContinue = handOver,
             )
             if (AgentGit.stripShown(strip) && strip != null && !readonly) {
                 GitStripLine(strip = strip, asOfMs = if (offline) gitSavedMs else null, now = now, onOpen = { gitSheet = true })
@@ -1141,6 +1187,8 @@ fun AgentThreadScreen(
                                     step.images?.let { ids -> images = ids.map { PendingImage.Ready(it, it) } }
                                 }
                             }
+                            if (handoffLocked) ComposerNote(stringResource(R.string.agents_handoff_opens_unlocked, device.name), icon = G7Icons.lock)
+                            if (AgentHandoffs.draftLine(handedOver != null, handoffDraft, draft)) DraftFromLine(device.name)
                             if (editingMessage && thread?.undo != null) EditingStrip(busy = undoing, onCancel = undo)
                             // Brought in and not yet sent to from G7: sending continues a copy (contract §U0.3).
                             if (thread?.found == true && open.turns.all { it.why == AgentCheckpointWhy.BEFORE }) {
@@ -1150,10 +1198,28 @@ fun AgentThreadScreen(
                             // Quote chips live in the draft's text, in front of the words (§SC9.1); a question's answer has none.
                             val (quotes, words) = remember(draft) { AgentQuotes.split(draft) }
                             val answering = question != null && answers != null
+                            // The mic adds what was said to the box (or the question's own answer), selected, never sent (§V8.1).
+                            val boxText = if (question != null && answers != null) QuestionDock.otherText(question, answers) else words
+                            val dictation = rememberAgentDictation { heard ->
+                                val limit = if (answering) QuestionDock.MAX_OTHER_BYTES else AgentsModel.MAX_PROMPT_CHARS
+                                AgentVoice.appended(boxText, heard, limit)?.let { added ->
+                                    if (answering) typed(added.text) else typed(AgentQuotes.typed(draft, added.text))
+                                    composerSelection.select(added.start, added.end)
+                                }
+                            }
+                            val canSpeak = dictation.available && composer.enabled && (!answering || questionField == QuestionField.OTHER)
+                            if (canSpeak) AgentVoiceStrip(dictation)
+                            val tapToTalk = rememberTapToTalk()
                             AgentComposer(
                                 view = composer,
-                                hint = composerHint(composer.hint, agentName, pausedUntil, device.name),
-                                text = if (question != null && answers != null) QuestionDock.otherText(question, answers) else words,
+                                hint = if (dictation.holding) {
+                                    stringResource(R.string.agents_voice_release)
+                                } else {
+                                    composerHint(composer.hint, agentName, pausedUntil, device.name)
+                                },
+                                voice = if (canSpeak) ({ AgentMicButton(dictation, tap = tapToTalk, enabled = !sending) }) else null,
+                                selection = composerSelection,
+                                text = boxText,
                                 onText = { value -> if (answering) typed(value) else typed(AgentQuotes.typed(draft, value)) },
                                 quotes = if (answering) emptyList() else quotes,
                                 onRemoveQuote = { index ->
@@ -1327,6 +1393,35 @@ fun AgentThreadScreen(
 }
 
 /**
+ * The first message on screen, for "Continue on <PC>" (contract §V8.5): the
+ * PC opens the thread there. [earlier]: the "Earlier" row is the list's first.
+ */
+private fun firstSeqShown(listState: LazyListState, rows: List<AgentRow>, earlier: Boolean): ULong? {
+    val units = AgentPlanCards.units(rows)
+    val at = listState.firstVisibleItemIndex - if (earlier) 1 else 0
+    val unit = units.getOrNull(at.coerceAtLeast(0)) ?: return null
+    val seq = when (unit) {
+        is RowUnit.One -> unit.row.seq
+        is RowUnit.Plan -> unit.head.seq
+    }
+    return seq.takeIf { it > 0uL }
+}
+
+/** "Draft from Kilele" over the reply box (board 08b): the words came with the thread from the PC. */
+@Composable
+private fun DraftFromLine(pcName: String) {
+    val scheme = MaterialTheme.colorScheme
+    Row(
+        modifier = Modifier.fillMaxWidth().heightIn(min = 28.dp).padding(start = 8.dp, bottom = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Icon(G7Icons.monitor, contentDescription = null, tint = scheme.onSurfaceVariant, modifier = Modifier.size(15.dp))
+        Text(stringResource(R.string.agents_handoff_draft_from, pcName), style = MaterialTheme.typography.bodySmall, color = scheme.onSurfaceVariant)
+    }
+}
+
+/**
  * The header: Back, the title (one line), its state in words with the
  * agent and folder under it, the drawer of threads, and More (Share). Stop is
  * in the reply box.
@@ -1342,6 +1437,9 @@ private fun ThreadHeader(
     onShare: () -> Unit,
     onDetails: () -> Unit,
     drawer: AgentsDrawerControl,
+    /** "Continue on <PC>" (contract §V8.5): the PC's name, or null while it can't be offered. */
+    continueOn: String? = null,
+    onContinue: () -> Unit = {},
 ) {
     val scheme = MaterialTheme.colorScheme
     var menu by remember { mutableStateOf(false) }
@@ -1370,6 +1468,16 @@ private fun ThreadHeader(
                     enabled = thread != null,
                 )
                 DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                    if (continueOn != null) {
+                        DropdownMenuItem(
+                            text = { Text(stringResource(R.string.agents_handoff_continue_on, continueOn)) },
+                            leadingIcon = { Icon(G7Icons.monitor, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                            onClick = {
+                                menu = false
+                                onContinue()
+                            },
+                        )
+                    }
                     DropdownMenuItem(
                         text = { Text(stringResource(R.string.agents_details)) },
                         onClick = {

@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<!-- A right chevron (Lucide "chevron-right", ISC) for the Agents widget's header. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="16dp"
+    android:height="16dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:pathData="M9,18l6,-6 -6,-6"
+        android:strokeWidth="1.8"
+        android:strokeColor="#FFA1A1A8"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+</vector>

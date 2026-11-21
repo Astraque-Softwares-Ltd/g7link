@@ -112,9 +112,10 @@
         android:name="android.permission.MANAGE_EXTERNAL_STORAGE"
         tools:ignore="ScopedStorage" />
 
-    <!-- Names and icons of the apps whose notifications are mirrored, and the
-         phone's speech recognizer for voice typing: Android hides other apps
-         unless they're declared here. -->
+    <!-- Names and icons of the apps whose notifications are mirrored, the
+         phone's speech recognizer for voice typing and agent replies, and its
+         text-to-speech engine for agent results read aloud: Android hides
+         other apps unless they're declared here. -->
     <queries>
         <intent>
             <action android:name="android.intent.action.MAIN" />
@@ -125,6 +126,9 @@
         </intent>
         <intent>
             <action android:name="android.speech.action.RECOGNIZE_SPEECH" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.TTS_SERVICE" />
         </intent>
     </queries>
 
@@ -298,6 +302,19 @@
             android:exported="true"
             android:icon="@drawable/ic_clipboard"
             android:label="@string/clip_tile_label"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
+
+        <!-- The Agents tile: counts only, on any screen; a tap opens the thread that
+             waits longest (unlocking first), never answers anything. -->
+        <service
+            android:name=".agents.AgentsTileService"
+            android:exported="true"
+            android:icon="@drawable/ic_notification"
+            android:label="@string/agents_title"
             android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
             <intent-filter>
                 <action android:name="android.service.quicksettings.action.QS_TILE" />
@@ -484,5 +501,19 @@
         <receiver
             android:name=".widget.PcWidgetProvider$ActionReceiver"
             android:exported="false" />
+
+        <!-- Home-screen widget (home screen only): agent threads, their state, agent
+             and folder; no request's text, no Allow or Deny. -->
+        <receiver
+            android:name=".widget.AgentsWidgetProvider"
+            android:exported="true"
+            android:label="@string/agents_title">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/agents_widget_info" />
+        </receiver>
     </application>
 </manifest>

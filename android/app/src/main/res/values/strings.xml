@@ -2191,4 +2191,45 @@
         <item quantity="one">%1$d more file isn\'t listed.</item>
         <item quantity="other">%1$d more files aren\'t listed.</item>
     </plurals>
+    <!-- Phase 5 wave 2 (contract §V8): voice replies, read it to me, the Agents tile and widget, hand-off, Do Not Disturb. -->
+    <string name="agents_voice_hold">Hold to speak</string>
+    <string name="agents_voice_listening">Listening…</string>
+    <string name="agents_voice_release">Release to add it to your message</string>
+    <string name="agents_voice_slide_cancel">Slide away to cancel</string>
+    <string name="agents_voice_allow_mic">Allow the microphone to speak a reply.</string>
+    <string name="agents_voice_needs_pack">Voice needs this phone\'s offline speech pack.</string>
+    <string name="agents_voice_tap_to_talk">Tap to talk</string>
+    <string name="agents_voice_speech_settings">Speech settings</string>
+    <string name="agents_settings_voice">Voice</string>
+    <string name="agents_read_aloud">Read results aloud</string>
+    <string name="agents_read_aloud_note">Through headphones, when a thread ends.</string>
+    <string name="agents_read_aloud_speaker">Also on the phone\'s speaker</string>
+    <string name="agents_read_aloud_no_voice">No offline voice is installed.</string>
+    <string name="agents_speak_finished">%1$s finished: %2$s</string>
+    <string name="agents_speak_failed">%1$s failed: %2$s</string>
+    <string name="agents_speak_plan">%1$s has a plan in %2$s</string>
+    <string name="agents_stop_speaking">Stop speaking</string>
+    <string name="agents_tile_nothing">Nothing running</string>
+    <string name="agents_tile_unreachable">%1$s isn\'t reachable</string>
+    <string name="agents_unreachable_widget">%1$s isn\'t reachable.</string>
+    <string name="agents_widget_empty">No threads are running.</string>
+    <string name="agents_widget_header">Agents · %1$s</string>
+    <string name="agents_widget_description">Your agent threads and what needs you</string>
+    <string name="agents_handoff_continue_on">Continue on %1$s</string>
+    <string name="agents_handoff_here">Continue on this phone</string>
+    <string name="agents_handoff_opens_unlocked">Opens when %1$s is unlocked.</string>
+    <string name="agents_handoff_draft_from">Draft from %1$s</string>
+    <string name="agents_handoff_offer_setting">Offer the thread here when I leave %1$s</string>
+    <string name="agents_break_dnd">Needs-you breaks through Do Not Disturb</string>
+    <string name="channel_agents_handoff">Agent hand-off</string>
+    <string name="channel_agents_handoff_offer">Agent hand-off offers</string>
+    <string name="channel_agents_waiting_through">Agents that need you, through Do Not Disturb</string>
+    <plurals name="agents_tile_needs_you">
+        <item quantity="one">%1$d needs you</item>
+        <item quantity="other">%1$d need you</item>
+    </plurals>
+    <plurals name="agents_tile_working">
+        <item quantity="one">%1$d working</item>
+        <item quantity="other">%1$d working</item>
+    </plurals>
 </resources>

@@ -2179,4 +2179,45 @@
         <item quantity="one">%1$d dosya daha listelenmiyor.</item>
         <item quantity="other">%1$d dosya daha listelenmiyor.</item>
     </plurals>
+    <!-- Phase 5 wave 2 (contract §V8): voice replies, read it to me, the Agents tile and widget, hand-off, Do Not Disturb. -->
+    <string name="agents_voice_hold">Konuşmak için basılı tutun</string>
+    <string name="agents_voice_listening">Dinleniyor…</string>
+    <string name="agents_voice_release">Mesajınıza eklemek için bırakın</string>
+    <string name="agents_voice_slide_cancel">İptal etmek için kaydırın</string>
+    <string name="agents_voice_allow_mic">Yanıtı sesle söylemek için mikrofona izin verin.</string>
+    <string name="agents_voice_needs_pack">Ses için bu telefonun çevrimdışı konuşma paketi gerekir.</string>
+    <string name="agents_voice_tap_to_talk">Konuşmak için dokunun</string>
+    <string name="agents_voice_speech_settings">Konuşma ayarları</string>
+    <string name="agents_settings_voice">Ses</string>
+    <string name="agents_read_aloud">Sonuçları sesli oku</string>
+    <string name="agents_read_aloud_note">Bir konuşma bittiğinde, kulaklıktan.</string>
+    <string name="agents_read_aloud_speaker">Telefonun hoparlöründen de</string>
+    <string name="agents_read_aloud_no_voice">Çevrimdışı ses yüklü değil.</string>
+    <string name="agents_speak_finished">%1$s bitirdi: %2$s</string>
+    <string name="agents_speak_failed">%1$s başarısız oldu: %2$s</string>
+    <string name="agents_speak_plan">%1$s, %2$s içinde bir plan hazırladı</string>
+    <string name="agents_stop_speaking">Okumayı durdur</string>
+    <string name="agents_tile_nothing">Çalışan bir şey yok</string>
+    <string name="agents_tile_unreachable">%1$s cihazına ulaşılamıyor</string>
+    <string name="agents_unreachable_widget">%1$s cihazına ulaşılamıyor.</string>
+    <string name="agents_widget_empty">Çalışan konuşma yok.</string>
+    <string name="agents_widget_header">Ajanlar · %1$s</string>
+    <string name="agents_widget_description">Ajan konuşmalarınız ve sizi bekleyenler</string>
+    <string name="agents_handoff_continue_on">%1$s üzerinde devam et</string>
+    <string name="agents_handoff_here">Bu telefonda devam et</string>
+    <string name="agents_handoff_opens_unlocked">%1$s kilidi açıldığında açılır.</string>
+    <string name="agents_handoff_draft_from">%1$s cihazından taslak</string>
+    <string name="agents_handoff_offer_setting">%1$s başından kalktığımda konuşmayı burada öner</string>
+    <string name="agents_break_dnd">Sizi bekleyenler Rahatsız Etmeyin modunu aşsın</string>
+    <string name="channel_agents_handoff">Ajan aktarımı</string>
+    <string name="channel_agents_handoff_offer">Ajan aktarımı önerileri</string>
+    <string name="channel_agents_waiting_through">Sizi bekleyen ajanlar, Rahatsız Etmeyin açıkken de</string>
+    <plurals name="agents_tile_needs_you">
+        <item quantity="one">%1$d sizi bekliyor</item>
+        <item quantity="other">%1$d sizi bekliyor</item>
+    </plurals>
+    <plurals name="agents_tile_working">
+        <item quantity="one">%1$d çalışıyor</item>
+        <item quantity="other">%1$d çalışıyor</item>
+    </plurals>
 </resources>

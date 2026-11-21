@@ -421,6 +421,7 @@ object AgentsModel {
         is Event.AgentImport -> event.id
         is Event.AgentOutbox -> event.id
         is Event.AgentPresence -> event.id
+        is Event.AgentHandoff -> event.id
         is Event.AgentGit -> event.id
         is Event.AgentGitJob -> event.id
         else -> null

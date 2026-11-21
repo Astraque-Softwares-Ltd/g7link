@@ -8,13 +8,15 @@ import android.content.Context
 import android.content.Intent
 import app.g7link.android.G7LinkApplication
 import app.g7link.android.ui.agents.AgentsModel
+import app.g7link.android.ui.agents.voice.AgentSpeaker
 
 /**
  * Allow, Deny, Say why, Stop and Reply on an agent thread's notification, a
- * question's options and Type, Stop following on a followed session's, and a
- * Live Update swiped away ([AgentNotifications]). Not exported: only this
- * app's own notifications reach it. Everything but Deny and Stop is refused
- * while the phone is locked, even where Android already asked to unlock first.
+ * question's options and Type, Stop speaking while its result is read aloud,
+ * Stop following on a followed session's, and a Live Update swiped away
+ * ([AgentNotifications]). Not exported: only this app's own notifications
+ * reach it. Everything but Deny, Stop and Stop speaking is refused while the
+ * phone is locked, even where Android already asked to unlock first.
  * A tap on Allow, an option or Type within 1.5 s of the notification changing
  * to that request is ignored (contract §V3.1): it may have been meant for the
  * one before.
@@ -76,6 +78,8 @@ class AgentActionReceiver : BroadcastReceiver() {
                 core.agentQuestionFromNotification(pcId, threadId, token, ask, option = null, typed = text)
             }
             ACTION_STOP -> core.agentStopFromNotification(pcId, threadId)
+            // Only ever stops the phone's own voice.
+            ACTION_STOP_SPEAKING -> AgentSpeaker.stop(context)
             ACTION_REPLY -> {
                 if (locked(context)) return
                 val text = typed(intent, AgentNotifications.REPLY_KEY)
@@ -95,6 +99,7 @@ class AgentActionReceiver : BroadcastReceiver() {
         ACTION_ANSWER -> NoticeAction.Kind.ANSWER
         ACTION_STOP -> NoticeAction.Kind.STOP
         ACTION_REPLY -> NoticeAction.Kind.REPLY
+        ACTION_STOP_SPEAKING -> NoticeAction.Kind.STOP_SPEAKING
         else -> null
     }
 
@@ -111,6 +116,7 @@ class AgentActionReceiver : BroadcastReceiver() {
         const val ACTION_ANSWER = "app.g7link.android.agents.ANSWER"
         const val ACTION_STOP = "app.g7link.android.agents.STOP"
         const val ACTION_REPLY = "app.g7link.android.agents.REPLY"
+        const val ACTION_STOP_SPEAKING = "app.g7link.android.agents.STOP_SPEAKING"
         const val ACTION_UNFOLLOW = "app.g7link.android.agents.UNFOLLOW"
         const val ACTION_DISMISSED = "app.g7link.android.agents.DISMISSED"
         const val EXTRA_PC = "agent_pc"

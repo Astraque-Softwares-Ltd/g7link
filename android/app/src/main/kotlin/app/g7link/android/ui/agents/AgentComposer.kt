@@ -105,9 +105,10 @@ internal fun composerHint(hint: ComposerHint, agentName: String, pausedUntil: Lo
 /**
  * The reply box (contract §Q6.1, the phone board 7A, 7D): the images going with
  * the message, the text, and a row with Add image, the model and effort, Plan
- * when it's on, Stop whenever a turn runs or waits, and the button: send, deny
- * with the words, or while it works steer (long-press: "Queue it instead") or
- * queue. Under it the folder, and what the message will do.
+ * when it's on, Stop whenever a turn runs or waits, the mic when the phone can
+ * hear a reply on the device (phase 5 §V8.1, its one slot: [voice]), and the
+ * button: send, deny with the words, or while it works steer (long-press:
+ * "Queue it instead") or queue. Under it the folder, and what the message will do.
  */
 @Composable
 internal fun AgentComposer(
@@ -141,6 +142,10 @@ internal fun AgentComposer(
     /** Lines of a diff quoted into the message (§SC9.1 "Comment on a line"). */
     quotes: List<Quote> = emptyList(),
     onRemoveQuote: (Int) -> Unit = {},
+    /** The mic, left of the button (contract §V8.1); absent where speech can't stay on the phone. */
+    voice: (@Composable () -> Unit)? = null,
+    /** Words the mic just added, to select in the box. */
+    selection: TextSelection? = null,
 ) {
     val scheme = MaterialTheme.colorScheme
     val shape = if (joined) RoundedCornerShape(bottomStart = 12.dp, bottomEnd = 12.dp) else RoundedCornerShape(12.dp)
@@ -173,6 +178,7 @@ internal fun AgentComposer(
                 background = Color.Transparent,
                 onFocus = onFocus,
                 modifier = Modifier.focusRequester(focus),
+                selection = selection,
             )
             Row(
                 modifier = Modifier.fillMaxWidth().padding(start = 4.dp),
@@ -193,6 +199,7 @@ internal fun AgentComposer(
                 if (view.showStop) {
                     ComposerPill(G7Icons.stop, stringResource(R.string.agents_stop), accent = false, enabled = !stopping, onClick = onStop)
                 }
+                if (voice != null && view.enabled) voice()
                 if (sending) {
                     Box(Modifier.size(44.dp), contentAlignment = Alignment.Center) {
                         CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)

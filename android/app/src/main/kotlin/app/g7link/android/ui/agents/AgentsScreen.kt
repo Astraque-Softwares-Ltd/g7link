@@ -34,6 +34,8 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
@@ -57,7 +59,9 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -66,6 +70,11 @@ import app.g7link.android.R
 import app.g7link.android.core.Core
 import app.g7link.android.core.Device
 import app.g7link.android.ui.Preferences
+import app.g7link.android.ui.agents.voice.AgentMicButton
+import app.g7link.android.ui.agents.voice.AgentVoice
+import app.g7link.android.ui.agents.voice.AgentVoiceStrip
+import app.g7link.android.ui.agents.voice.rememberAgentDictation
+import app.g7link.android.ui.agents.voice.rememberTapToTalk
 import app.g7link.android.ui.theme.G7Header
 import app.g7link.android.ui.theme.G7IconButton
 import app.g7link.android.ui.theme.G7Icons
@@ -825,14 +834,29 @@ internal fun NewThreadSheet(
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            // The mic adds what was said to the task, selected; Start is still the user's (contract §V8.1).
+            val promptSelection = remember { TextSelection() }
+            val dictation = rememberAgentDictation { heard ->
+                AgentVoice.appended(prompt, heard, AgentsModel.MAX_PROMPT_CHARS)?.let { added ->
+                    prompt = added.text
+                    promptSelection.select(added.start, added.end)
+                }
+            }
+            AgentVoiceStrip(dictation)
             AgentTextField(
                 value = prompt,
                 onValueChange = { prompt = it },
-                hint = stringResource(R.string.agents_prompt_hint),
+                hint = if (dictation.holding) stringResource(R.string.agents_voice_release) else stringResource(R.string.agents_prompt_hint),
                 minLines = 3,
                 maxLines = 8,
                 background = MaterialTheme.colorScheme.surfaceContainer,
+                selection = promptSelection,
             )
+            if (dictation.available) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                    AgentMicButton(dictation, tap = rememberTapToTalk(), enabled = !busy)
+                }
+            }
             if (tooLong) {
                 Text(stringResource(R.string.agents_too_long), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
             }
@@ -1016,7 +1040,30 @@ internal fun statusDetail(status: ThreadStatus): String? {
     }
 }
 
-/** The text box for a task or a reply; [onFocus] hears it gain and lose focus (the typing guard). */
+/**
+ * Words to select in a text field once they're in it (the mic's words, phase 5
+ * §V8.1). A field given one keeps its own selection, so it can be moved.
+ */
+@Stable
+class TextSelection {
+    internal var range by mutableStateOf<TextRange?>(null)
+        private set
+
+    /** Selects [start] until [end] of the field's text once it holds them. */
+    fun select(start: Int, end: Int) {
+        range = TextRange(start, end)
+    }
+
+    internal fun done() {
+        range = null
+    }
+}
+
+/**
+ * The text box for a task or a reply; [onFocus] hears it gain and lose focus
+ * (the typing guard). With [selection], words can be selected in it from
+ * outside (the mic's).
+ */
 @Composable
 internal fun AgentTextField(
     value: String,
@@ -1028,6 +1075,7 @@ internal fun AgentTextField(
     maxLines: Int = 6,
     background: Color = MaterialTheme.colorScheme.surfaceContainer,
     onFocus: ((Boolean) -> Unit)? = null,
+    selection: TextSelection? = null,
 ) {
     val scheme = MaterialTheme.colorScheme
     Box(
@@ -1040,19 +1088,51 @@ internal fun AgentTextField(
         if (value.isEmpty()) {
             Text(hint, style = MaterialTheme.typography.bodyLarge, color = scheme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis)
         }
-        BasicTextField(
-            value = value,
-            onValueChange = onValueChange,
-            enabled = enabled,
-            textStyle = MaterialTheme.typography.bodyLarge.copy(color = scheme.onSurface),
-            cursorBrush = SolidColor(scheme.primary),
-            minLines = minLines,
-            maxLines = maxLines,
-            modifier = Modifier
-                .fillMaxWidth()
-                .then(if (onFocus != null) Modifier.onFocusChanged { state -> onFocus(state.isFocused) } else Modifier)
-                .semantics { contentDescription = hint },
-        )
+        val fieldModifier = Modifier
+            .fillMaxWidth()
+            .then(if (onFocus != null) Modifier.onFocusChanged { state -> onFocus(state.isFocused) } else Modifier)
+            .semantics { contentDescription = hint }
+        if (selection == null) {
+            BasicTextField(
+                value = value,
+                onValueChange = onValueChange,
+                enabled = enabled,
+                textStyle = MaterialTheme.typography.bodyLarge.copy(color = scheme.onSurface),
+                cursorBrush = SolidColor(scheme.primary),
+                minLines = minLines,
+                maxLines = maxLines,
+                modifier = fieldModifier,
+            )
+        } else {
+            // As the String field keeps its own selection (Compose's BasicTextField), plus one asked for from outside.
+            var field by remember { mutableStateOf(TextFieldValue(value)) }
+            val shown = field.copy(text = value)
+            SideEffect {
+                if (shown.selection != field.selection || shown.composition != field.composition) field = shown
+            }
+            var lastText by remember(value) { mutableStateOf(value) }
+            val asked = selection.range
+            LaunchedEffect(asked) {
+                val range = asked ?: return@LaunchedEffect
+                field = TextFieldValue(value, range)
+                selection.done()
+            }
+            BasicTextField(
+                value = shown,
+                onValueChange = { next ->
+                    field = next
+                    val changed = lastText != next.text
+                    lastText = next.text
+                    if (changed) onValueChange(next.text)
+                },
+                enabled = enabled,
+                textStyle = MaterialTheme.typography.bodyLarge.copy(color = scheme.onSurface),
+                cursorBrush = SolidColor(scheme.primary),
+                minLines = minLines,
+                maxLines = maxLines,
+                modifier = fieldModifier,
+            )
+        }
     }
 }
 

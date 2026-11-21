@@ -2083,4 +2083,47 @@
         <item quantity="many">%1$d archivos más no aparecen.</item>
         <item quantity="other">%1$d archivos más no aparecen.</item>
     </plurals>
+    <!-- Phase 5 wave 2 (contract §V8): voice replies, read it to me, the Agents tile and widget, hand-off, Do Not Disturb. -->
+    <string name="agents_voice_hold">Mantén pulsado para hablar</string>
+    <string name="agents_voice_listening">Escuchando…</string>
+    <string name="agents_voice_release">Suelta para añadirlo a tu mensaje</string>
+    <string name="agents_voice_slide_cancel">Desliza fuera para cancelar</string>
+    <string name="agents_voice_allow_mic">Permite el micrófono para dictar una respuesta.</string>
+    <string name="agents_voice_needs_pack">La voz necesita el paquete de voz sin conexión de este teléfono.</string>
+    <string name="agents_voice_tap_to_talk">Toca para hablar</string>
+    <string name="agents_voice_speech_settings">Ajustes de voz</string>
+    <string name="agents_settings_voice">Voz</string>
+    <string name="agents_read_aloud">Leer los resultados en voz alta</string>
+    <string name="agents_read_aloud_note">Por los auriculares, cuando termina un hilo.</string>
+    <string name="agents_read_aloud_speaker">También por el altavoz del teléfono</string>
+    <string name="agents_read_aloud_no_voice">No hay ninguna voz sin conexión instalada.</string>
+    <string name="agents_speak_finished">%1$s terminó: %2$s</string>
+    <string name="agents_speak_failed">%1$s falló: %2$s</string>
+    <string name="agents_speak_plan">%1$s tiene un plan en %2$s</string>
+    <string name="agents_stop_speaking">Dejar de leer</string>
+    <string name="agents_tile_nothing">Nada en marcha</string>
+    <string name="agents_tile_unreachable">No se puede conectar con %1$s</string>
+    <string name="agents_unreachable_widget">No se puede conectar con %1$s.</string>
+    <string name="agents_widget_empty">No hay hilos en marcha.</string>
+    <string name="agents_widget_header">Agentes · %1$s</string>
+    <string name="agents_widget_description">Tus hilos de agentes y lo que te necesita</string>
+    <string name="agents_handoff_continue_on">Continuar en %1$s</string>
+    <string name="agents_handoff_here">Continuar en este teléfono</string>
+    <string name="agents_handoff_opens_unlocked">Se abrirá cuando %1$s esté desbloqueado.</string>
+    <string name="agents_handoff_draft_from">Borrador de %1$s</string>
+    <string name="agents_handoff_offer_setting">Ofrecer el hilo aquí cuando deje %1$s</string>
+    <string name="agents_break_dnd">«Te necesita» ignora No molestar</string>
+    <string name="channel_agents_handoff">Traspaso de agentes</string>
+    <string name="channel_agents_handoff_offer">Ofertas de traspaso de agentes</string>
+    <string name="channel_agents_waiting_through">Agentes que te necesitan, aunque esté activado No molestar</string>
+    <plurals name="agents_tile_needs_you">
+        <item quantity="one">%1$d te necesita</item>
+        <item quantity="many">%1$d te necesitan</item>
+        <item quantity="other">%1$d te necesitan</item>
+    </plurals>
+    <plurals name="agents_tile_working">
+        <item quantity="one">%1$d trabajando</item>
+        <item quantity="many">%1$d trabajando</item>
+        <item quantity="other">%1$d trabajando</item>
+    </plurals>
 </resources>
