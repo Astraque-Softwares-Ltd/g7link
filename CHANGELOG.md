@@ -4,7 +4,7 @@ All notable changes to G7 Link. Versions follow
 [semantic versioning](https://semver.org); before 1.0, a minor version may
 change things that need a step from you, and its notes say so.
 
-## 0.1.21 (unreleased)
+## 0.1.21 (2026-11-21)
 
 Reply from the phone to a Claude or Codex session running in a terminal on
 the PC: G7 pastes your reply into that window and sends it, after checking
