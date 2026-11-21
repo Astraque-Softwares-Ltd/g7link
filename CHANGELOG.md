@@ -4,6 +4,47 @@ All notable changes to G7 Link. Versions follow
 [semantic versioning](https://semver.org); before 1.0, a minor version may
 change things that need a step from you, and its notes say so.
 
+## 0.1.24 (2026-11-21)
+
+Reach your PC away from home over Tailscale, and know before you leave
+whether you will.
+
+**Update both together.** The PC now tells the phone its Tailscale
+address, and moves to UDP port 7718 on its first start after the update.
+
+### Added
+
+- **A PC's address.** Settings › PCs › your PC › Address on the phone:
+  type the PC's Tailscale name (`laptop`, or `laptop.tail1234.ts.net` if
+  the short name isn't found) or its 100.x address. The phone reaches the
+  PC there away from home, across restarts. At home it's still found by
+  itself.
+- **The PC tells the phone how to reach it.** While they're connected, the
+  PC sends its Tailscale address and the phone keeps it, so connecting
+  once at home with Tailscale on is enough.
+- **Will it reach from away?** Under Address, one line: "Away from home:
+  through Tailscale", "over mobile data", "turn on Tailscale on this
+  phone", or "Only on your home network". It's what the phone knows, not
+  a live test.
+- **Tailscale in the PC's doctor.** A line says whether your phone reaches
+  this PC through Tailscale. With ufw, Allow adds the firewall rule for
+  G7 Link's port on Tailscale's interface (it asks for your password). The
+  installer adds that rule too when Tailscale is installed.
+
+### Changed
+
+- **The PC listens on UDP 7718**, the port the installer opens, instead of
+  a port it picked on its first start. If 7718 is busy it uses the last
+  one. At home the phone finds the new port by itself.
+- Leaving Wi-Fi with Tailscale on reconnects at once instead of after up to
+  two minutes.
+
+### Fixed
+
+- The doctor said the firewall let your phone in when the rule was for a
+  different port.
+- The doctor no longer calls Tailscale "a VPN" or warns about it.
+
 ## 0.1.23 (2026-11-21)
 
 Use the phone as a second screen for the thread open on the PC, and open
