@@ -373,7 +373,7 @@
 <string name="remote_connection_title">Kết nối tới %1$s</string>
 <string name="remote_route_auto">Tự động</string>
 <string name="remote_route_using">Đang dùng %1$s · %2$d ms</string>
-<string name="remote_route_picks_faster">Chọn đường nhanh hơn trong hai</string>
+<string name="remote_route_picks_faster">Dùng kết nối nhanh nhất</string>
 <string name="remote_route_needs_set_up">Cần thiết lập Bluetooth</string>
 <string name="remote_route_set_up">Thiết lập</string>
 <string name="remote_route_rtt">%1$d ms</string>

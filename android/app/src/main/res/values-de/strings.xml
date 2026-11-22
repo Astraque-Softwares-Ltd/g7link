@@ -376,7 +376,7 @@
     <string name="remote_connection_title">Verbindung zu %1$s</string>
     <string name="remote_route_auto">Auto</string>
     <string name="remote_route_using">Nutzt %1$s · %2$d ms</string>
-    <string name="remote_route_picks_faster">Nimmt die schnellere der beiden</string>
+    <string name="remote_route_picks_faster">Nimmt die schnellste Verbindung</string>
     <string name="remote_route_needs_set_up">Bluetooth muss eingerichtet werden</string>
     <string name="remote_route_set_up">Einrichten</string>
     <string name="remote_route_rtt">%1$d ms</string>

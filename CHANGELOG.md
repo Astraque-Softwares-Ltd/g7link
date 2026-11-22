@@ -4,6 +4,13 @@ All notable changes to G7 Link. Versions follow
 [semantic versioning](https://semver.org); before 1.0, a minor version may
 change things that need a step from you, and its notes say so.
 
+## 0.1.27 (unreleased)
+
+### Fixed
+
+- The touchpad's connection sheet says Auto "uses the fastest connection"
+  instead of "the faster of the two", now that it lists more than two.
+
 ## 0.1.26 (2026-11-22)
 
 ### Fixed

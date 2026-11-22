@@ -363,7 +363,7 @@
     <string name="remote_connection_title">与 %1$s 的连接</string>
     <string name="remote_route_auto">自动</string>
     <string name="remote_route_using">正在使用%1$s · %2$d 毫秒</string>
-    <string name="remote_route_picks_faster">选两者中较快的</string>
+    <string name="remote_route_picks_faster">使用最快的连接</string>
     <string name="remote_route_needs_set_up">需要设置蓝牙</string>
     <string name="remote_route_set_up">设置</string>
     <string name="remote_route_rtt">%1$d 毫秒</string>

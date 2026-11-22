@@ -376,7 +376,7 @@
     <string name="remote_connection_title">%1$s bağlantısı</string>
     <string name="remote_route_auto">Otomatik</string>
     <string name="remote_route_using">%1$s kullanılıyor · %2$d ms</string>
-    <string name="remote_route_picks_faster">İkisinden hızlı olanı seçer</string>
+    <string name="remote_route_picks_faster">En hızlı bağlantıyı kullanır</string>
     <string name="remote_route_needs_set_up">Bluetooth\'un kurulması gerekiyor</string>
     <string name="remote_route_set_up">Kur</string>
     <string name="remote_route_rtt">%1$d ms</string>
