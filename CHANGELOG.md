@@ -4,6 +4,58 @@ All notable changes to G7 Link. Versions follow
 [semantic versioning](https://semver.org); before 1.0, a minor version may
 change things that need a step from you, and its notes say so.
 
+## 0.1.25 (unreleased)
+
+Run your own commands from a thread, read a pull request with its
+changes and comments, and see when the phone reaches the PC over
+Tailscale.
+
+**Update both together.** The phone and the PC exchange new messages for
+scripts and pull requests; a side that lags only lacks the new parts. The
+launcher needs no update.
+
+### Added
+
+- **Project scripts.** In G7 Link › Agents › Setup, each folder's card has
+  Scripts: give a command a name (`dev` / `npm run dev`). A thread's
+  header then has a Run button, and the output streams in a side panel
+  (Ctrl+Shift+R); Stop ends it. A script runs as you would run it in a
+  terminal: your shell, in the folder (or the thread's worktree), as you.
+  G7 never reads a command from the folder itself, and nothing starts or
+  restarts a run by itself.
+- **Scripts on the phone.** A thread's menu has Scripts once its folder
+  has any, with every run and its last lines. Starting or stopping one
+  from the phone needs "Phones can run these" turned on for that folder on
+  the PC (off by default); the phone asks each time, showing the command,
+  and the PC tells you which phone ran what.
+- **Dev servers join up.** A server a script starts gets the usual "A
+  server is listening on port …" line, with Open in browser and Open on
+  the phone.
+- **Pull requests, in full.** The PR card and each row of the Pull
+  Requests list open a page with the description, changed files and their
+  diff, checks and comments, on the PC and on the phone. G7 posts nothing
+  to GitHub. Comments made on lines of code aren't listed; the page links
+  to GitHub for those.
+- **Ask Claude to review it.** From a pull request's page, one button sends
+  a fixed message in the thread asking the agent to review it. It names
+  the pull request by number and link only, and uses a little of your
+  plan. The thread's mode still applies.
+- **More keys on the Agents page.** Ctrl+. stops, Ctrl+Shift+X denies,
+  Alt+Up / Alt+Down move between threads, Ctrl+M and Ctrl+Shift+M open
+  model and mode, Ctrl+Shift+D shows the changes. All of them are listed
+  in the new guide page, Agents.
+
+### Changed
+
+- **Tailscale, named.** Over Tailscale, the touchpad's connection note,
+  the PC's status bar and the home-screen widget say "Tailscale" instead
+  of "Wi-Fi", and they switch as soon as the connection moves. The
+  touchpad's connection sheet has a Tailscale row saying whether the PC
+  is reachable from away, which opens its Address. Which connection is
+  used doesn't change.
+- "Sync on Wi-Fi only" also holds back syncing over Tailscale, and screen
+  sharing over Tailscale starts at the quality used away from home.
+
 ## 0.1.24 (2026-11-21)
 
 Reach your PC away from home over Tailscale, and know before you leave
