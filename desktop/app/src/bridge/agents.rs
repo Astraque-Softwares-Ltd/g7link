@@ -13,7 +13,7 @@ use cxx_qt_lib::{QByteArray, QHash, QHashPair_i32_QByteArray, QList, QModelIndex
 use serde_json::json;
 
 use crate::{
-    agents::{self, ModelRow, Role, RoleValue, RowOp, UiUpdate, source},
+    agents::{self, ModelRow, Role, RoleValue, RowOp, UiUpdate, review, scripts, source},
     state::Changes,
 };
 
@@ -101,6 +101,10 @@ pub mod qobject {
         #[qproperty(QString, prs)]
         /// Setup's Source control and the new thread's worktree (JSON).
         #[qproperty(QString, git_setup)]
+        /// The open thread's Run menu and run panel (JSON, `{}` for none).
+        #[qproperty(QString, runs)]
+        /// The pull request view (JSON, `{}` while it's closed).
+        #[qproperty(QString, pr_detail)]
         type Agents = super::AgentsRust;
 
         /// The page is on screen (or left).
@@ -510,6 +514,54 @@ pub mod qobject {
         /// Opens what isn't committed in the open thread's folder, at `path`.
         #[qinvokable]
         fn diff_uncommitted(self: &Agents, path: &QString);
+        /// The run panel opens (it reads the thread's runs) or closes.
+        #[qinvokable]
+        fn run_panel(self: &Agents, open: bool);
+        /// Runs one of the open thread's folder's scripts (a person's press).
+        #[qinvokable]
+        fn script_run(self: &Agents, script_id: &QString);
+        #[qinvokable]
+        fn script_stop(self: &Agents, run: &QString);
+        /// Shows a run's output.
+        #[qinvokable]
+        fn run_select(self: &Agents, run: &QString);
+        /// "Copy output": the run's kept lines.
+        #[qinvokable]
+        fn run_copy(self: &Agents, run: &QString);
+        /// "Add to message": the run's newest lines into the composer; nothing is sent.
+        #[qinvokable]
+        fn run_quote(self: &Agents, run: &QString);
+        /// Saves a folder's whole script list: `[{ id?, name, command }]`.
+        #[qinvokable]
+        fn scripts_save(self: &Agents, folder_id: &QString, json: &QString);
+        /// A folder's "Phones can run these".
+        #[qinvokable]
+        fn set_phone_scripts(self: &Agents, folder_id: &QString, on: bool);
+        /// The pull request view: `repo` and `number` from a list row, or ""
+        /// and 0 for the open thread's own.
+        #[qinvokable]
+        fn pr_detail_open(self: &Agents, repo: &QString, number: i32);
+        #[qinvokable]
+        fn pr_detail_close(self: &Agents);
+        #[qinvokable]
+        fn pr_detail_refresh(self: &Agents);
+        /// Opens a changed file of the pull request in the diff view.
+        #[qinvokable]
+        fn pr_detail_file(self: &Agents, path: &QString);
+        /// "Ask <agent> to review it": one message in the view's thread.
+        #[qinvokable]
+        fn pr_ask_review(self: &Agents);
+        /// "Ask in a new thread…": a new thread in `folder_id` with `agent`, in
+        /// `mode`, that reviews pull request `number` of `repo` (the host checks both).
+        #[qinvokable]
+        fn pr_review_new_thread(
+            self: &Agents,
+            agent: &QString,
+            folder_id: &QString,
+            mode: &QString,
+            repo: &QString,
+            number: i32,
+        );
     }
 
     impl cxx_qt::Threading for Agents {}
@@ -650,6 +702,8 @@ pub struct AgentsRust {
     git: QString,
     prs: QString,
     git_setup: QString,
+    runs: QString,
+    pr_detail: QString,
     /// What was last shown, to set only what changed.
     last: Option<agents::View>,
 }
@@ -740,6 +794,12 @@ impl qobject::Agents {
         }
         if differs(|v| &v.git_setup) {
             self.as_mut().set_git_setup(QString::from(&view.git_setup));
+        }
+        if differs(|v| &v.runs) {
+            self.as_mut().set_runs(QString::from(&view.runs));
+        }
+        if differs(|v| &v.pr_detail) {
+            self.as_mut().set_pr_detail(QString::from(&view.pr_detail));
         }
         if differs(|v| &v.export_path) {
             let url = if view.export_path.is_empty() {
@@ -1403,6 +1463,76 @@ impl qobject::Agents {
 
     pub fn diff_uncommitted(&self, path: &QString) {
         agents::diff_uncommitted(String::from(path));
+    }
+
+    pub fn run_panel(&self, open: bool) {
+        scripts::panel(open);
+    }
+
+    pub fn script_run(&self, script_id: &QString) {
+        scripts::run(String::from(script_id));
+    }
+
+    pub fn script_stop(&self, run: &QString) {
+        scripts::stop(String::from(run));
+    }
+
+    pub fn run_select(&self, run: &QString) {
+        scripts::select(String::from(run));
+    }
+
+    pub fn run_copy(&self, run: &QString) {
+        scripts::copy(String::from(run));
+    }
+
+    pub fn run_quote(&self, run: &QString) {
+        scripts::quote(String::from(run));
+    }
+
+    pub fn scripts_save(&self, folder_id: &QString, json: &QString) {
+        scripts::save(String::from(folder_id), String::from(json));
+    }
+
+    pub fn set_phone_scripts(&self, folder_id: &QString, on: bool) {
+        scripts::set_phones(String::from(folder_id), on);
+    }
+
+    pub fn pr_detail_open(&self, repo: &QString, number: i32) {
+        review::open(String::from(repo), u32::try_from(number).unwrap_or(0));
+    }
+
+    pub fn pr_detail_close(&self) {
+        review::close();
+    }
+
+    pub fn pr_detail_refresh(&self) {
+        review::refresh();
+    }
+
+    pub fn pr_detail_file(&self, path: &QString) {
+        review::file(String::from(path));
+    }
+
+    pub fn pr_ask_review(&self) {
+        review::ask();
+    }
+
+    pub fn pr_review_new_thread(
+        &self,
+        agent: &QString,
+        folder_id: &QString,
+        mode: &QString,
+        repo: &QString,
+        number: i32,
+    ) {
+        let Ok(number) = u32::try_from(number) else { return };
+        review::new_thread(
+            String::from(agent),
+            String::from(folder_id),
+            String::from(mode),
+            String::from(repo),
+            number,
+        );
     }
 }
 

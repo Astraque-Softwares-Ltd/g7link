@@ -506,7 +506,9 @@ NativeWindow {
         const d = window.currentRow
         if (!d)
             return ""
-        const name = d.path === "usb" ? "USB" : (d.path === "lan" ? qsTr("Wi-Fi") : (d.path === "relay" ? qsTr("Internet") : ""))
+        // "Tailscale" is a name: never translated.
+        const name = d.path === "usb" ? "USB" : d.path === "tailscale" ? "Tailscale"
+            : (d.path === "lan" ? qsTr("Wi-Fi") : (d.path === "relay" ? qsTr("Internet") : ""))
         if (!d.online)
             return d.path === "connecting" ? qsTr("Connecting") : qsTr("Offline")
         return d.rttMs >= 0 ? qsTr("%1 · %2 ms").arg(name).arg(d.rttMs) : name

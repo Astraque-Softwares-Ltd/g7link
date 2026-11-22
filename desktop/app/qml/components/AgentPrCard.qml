@@ -17,10 +17,15 @@ Rectangle {
     property bool stale: false
     property bool refreshing: false
     property bool busy: false
+    // "Changes and comments" opens the pull request's view (phase 6).
+    property bool canDetail: false
+    // In that view: nothing that writes to GitHub (no Merge, no Mark ready).
+    property bool readOnly: false
     signal refresh
     signal openUrl(string url)
     signal merge
     signal ready
+    signal details
 
     property bool expanded: false
     readonly property bool open: pr.state === "open"
@@ -233,6 +238,15 @@ Rectangle {
             width: parent.width
             spacing: 6
             Button {
+                visible: card.canDetail
+                size: "sm"
+                variant: "tonal"
+                iconPath: AgentGitGlyphs.pullRequest
+                text: qsTr("Changes and comments")
+                onClicked: card.details()
+            }
+            Button {
+                visible: !card.readOnly || card.pr.canOpen !== false
                 size: "sm"
                 variant: "text"
                 iconPath: Icons.openExternal
@@ -240,7 +254,7 @@ Rectangle {
                 onClicked: card.openUrl(card.pr.url || "")
             }
             Button {
-                visible: card.open && card.pr.draft === true
+                visible: !card.readOnly && card.open && card.pr.draft === true
                 size: "sm"
                 variant: "tonal"
                 text: qsTr("Mark ready")
@@ -248,7 +262,7 @@ Rectangle {
                 onClicked: card.ready()
             }
             Button {
-                visible: card.open && card.pr.draft !== true && !card.stale
+                visible: !card.readOnly && card.open && card.pr.draft !== true && !card.stale
                 size: "sm"
                 variant: "tonal"
                 iconPath: AgentGitGlyphs.merged

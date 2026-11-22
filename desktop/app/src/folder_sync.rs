@@ -655,10 +655,12 @@ fn keep_phone_date(file: &std::fs::File, modified_ms: i64) {
     }
 }
 
-/// Whether a sync may use this connection. Only the relay is held back: a USB
-/// cable and the local network cost no data.
+/// Whether a sync may use this connection. The relay and Tailscale are held
+/// back (over Tailscale the phone is away from this network, likely on
+/// mobile data); a USB cable and the local network cost no data.
 fn link_allows_sync(link: &LinkState, wifi_only: bool) -> bool {
-    !(wifi_only && matches!(link, LinkState::Online { path: ConnectionPath::Relay, .. }))
+    !(wifi_only
+        && matches!(link, LinkState::Online { path: ConnectionPath::Relay | ConnectionPath::Tailscale, .. }))
 }
 
 /// Whether "Sync on Wi-Fi only" lets `device` sync right now. An offline phone
@@ -1006,9 +1008,11 @@ mod tests {
     }
 
     #[test]
-    fn wifi_only_holds_back_the_relay_and_nothing_else() {
+    fn wifi_only_holds_back_the_relay_and_tailscale_and_nothing_else() {
         let on = |path| LinkState::Online { path, rtt_ms: 5 };
         assert!(!link_allows_sync(&on(ConnectionPath::Relay), true));
+        assert!(!link_allows_sync(&on(ConnectionPath::Tailscale), true), "Tailscale counts as away");
+        assert!(link_allows_sync(&on(ConnectionPath::Tailscale), false));
         assert!(link_allows_sync(&on(ConnectionPath::Lan), true));
         assert!(link_allows_sync(&on(ConnectionPath::Usb), true));
         assert!(link_allows_sync(&LinkState::Connecting, true));

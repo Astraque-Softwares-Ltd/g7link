@@ -628,6 +628,8 @@ Item {
                     onOpenUrl: (url) => Agents.openPrUrl(url)
                     onMerge: Agents.prMergeOpen()
                     onReady: Agents.prReady()
+                    canDetail: panel.git.prDetail === true
+                    onDetails: Agents.prDetailOpen("", 0)
                 }
                 Rectangle {
                     visible: panel.prWhy.length > 0

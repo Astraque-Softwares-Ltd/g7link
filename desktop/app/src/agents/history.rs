@@ -141,6 +141,11 @@ pub(crate) fn recording_due(turns: &[TurnInfo], now_ms: u64) -> Option<u64> {
 
 /// The newest turns that are recorded one after another up to the newest
 /// recorded one: what "Whole thread" covers (`None` when nothing is).
+/// The newest turn that changed a file, for Ctrl+Shift+D.
+pub(crate) fn last_changed_turn(turns: &[TurnInfo]) -> Option<u32> {
+    turns.iter().filter(|t| t.files > 0).map(|t| t.turn).max()
+}
+
 pub(crate) fn whole_span(turns: &[TurnInfo]) -> Option<(u32, u32)> {
     let mut ready = turns.iter().rev().skip_while(|t| t.checkpoint != Checkpoint::Ready);
     let last = ready.next()?.turn;
@@ -588,10 +593,20 @@ pub(crate) struct Patch {
     pub rows: Vec<QuoteRow>,
 }
 
+/// A pull request's diff (phase 6, §X6.6): its files come from the
+/// detail, each file's patch from `pr.diff`.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(crate) struct PrScope {
+    pub repo: String,
+    pub number: u32,
+}
+
 /// The diff of a turn, or of the whole thread.
 #[derive(Debug, Default)]
 pub(crate) struct Diff {
     pub thread_id: String,
+    /// The diff's "Pull request" scope: no turn, no other scope.
+    pub pr: Option<PrScope>,
     /// The turn the Changes row belongs to (0: none, for a diff of
     /// what isn't committed in a thread without turns).
     pub turn: u32,
@@ -695,11 +710,21 @@ impl Diff {
             })
             .collect();
         let selected = self.files.get(self.selected);
+        let scope = if self.pr.is_some() {
+            "pr"
+        } else if self.uncommitted {
+            "uncommitted"
+        } else if self.scope_whole {
+            "thread"
+        } else {
+            "turn"
+        };
         json!({
             "turn": self.turn,
-            "scope": if self.uncommitted { "uncommitted" } else if self.scope_whole { "thread" } else { "turn" },
-            "canWhole": self.whole.is_some(),
-            "canTurn": self.turn > 0,
+            "scope": scope,
+            "canWhole": self.whole.is_some() && self.pr.is_none(),
+            "canTurn": self.turn > 0 && self.pr.is_none(),
+            "pr": self.pr.as_ref().map_or(0, |p| p.number),
             "loading": self.loading,
             "unavailable": self.unavailable,
             "files": files,
@@ -1175,6 +1200,14 @@ mod tests {
         turns[1].checkpoint = Checkpoint::Ready;
         assert_eq!(whole_span(&turns), Some((1, 3)));
         assert_eq!(whole_span(&[turn(1, Checkpoint::NotGit)]), None);
+    }
+
+    #[test]
+    fn ctrl_d_opens_the_newest_turn_that_changed_a_file() {
+        let changed = |n, files| TurnInfo { files, ..turn(n, Checkpoint::Ready) };
+        assert_eq!(last_changed_turn(&[]), None);
+        assert_eq!(last_changed_turn(&[changed(1, 0), changed(2, 0)]), None, "nothing changed");
+        assert_eq!(last_changed_turn(&[changed(1, 2), changed(2, 3), changed(3, 0)]), Some(2));
     }
 
     #[test]

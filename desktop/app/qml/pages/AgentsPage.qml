@@ -48,6 +48,11 @@ Item {
         if (canAllow)
             Agents.answer(ask.token, "allow")
     }
+    // Ctrl+Shift+X, far from Allow so a slip never lands on it.
+    function denyShown() {
+        if (canAllow)
+            Agents.answer(ask.token, "deny")
+    }
     readonly property var steps: parse(Agents.steps, [])
     readonly property var changes: parse(Agents.changes, [])
     // The question the dock shows rather than a request ({} for none).
@@ -75,11 +80,44 @@ Item {
     // The panel sits beside the transcript in a window of 1,000 px or more;
     // otherwise it lies over the thread.
     readonly property bool gitInline: Window.width >= 1000
-    readonly property bool gitShown: gitOn && gitState.shown === true && !diffShown
-    readonly property real gitWidth: gitShown && gitInline ? 360 : 0
+    readonly property bool gitShown: gitOn && gitState.shown === true && !diffShown && !prDetailShown
+    // Source control's slot beside the transcript: its panel, or the run panel.
+    readonly property real gitWidth: (gitShown || runsShown) && gitInline ? 360 : 0
     function toggleGit() {
         if (page.gitOn)
             Agents.gitPanel(page.gitState.shown !== true)
+    }
+    // Project scripts (§X5.1): the Run menu in the header, the run panel in the same slot.
+    readonly property var runsState: parse(Agents.runs, ({}))
+    readonly property bool runsOn: isThread && runsState.available === true
+    readonly property bool runsShown: runsOn && runsState.shown === true && !diffShown && !prDetailShown
+    function toggleRuns() {
+        if (page.runsOn)
+            Agents.runPanel(page.runsState.shown !== true)
+    }
+    // "Edit scripts…": Setup, scrolled to the folder's card.
+    function editScripts(folderId) {
+        page.openSetup()
+        Qt.callLater(() => {
+            const y = setupArea.folderY(folderId)
+            if (y >= 0)
+                setupView.contentY = Math.max(0, Math.min(setupArea.y + y - 8, setupView.contentHeight - setupView.height))
+        })
+    }
+    // A pull request, read-only (§X6.6): over the thread it was opened from,
+    // or over the Pull Requests list.
+    readonly property var prDetailState: parse(Agents.prDetail, ({}))
+    readonly property bool prDetailShown: prDetailState.open === true && !diffShown
+    // "Ask in a new thread…": the new-thread form carries this instead of a prompt.
+    property var reviewChip: ({})
+    readonly property bool reviewing: (reviewChip.number || 0) > 0
+    function askInNewThread(repo, number, folderId) {
+        Agents.prDetailClose()
+        Agents.prsClose()
+        page.reviewChip = { repo: repo, number: number, folderId: folderId }
+        page.openNew()
+        if (folderId.length > 0 && page.usableFolders.some((f) => f.id === folderId))
+            newView.folder = folderId
     }
     function openPrs() {
         Agents.close()
@@ -100,7 +138,7 @@ Item {
     // The message a search hit opened, lit up for a moment.
     property string highlightItem: ""
     readonly property bool isPreview: openKind === "preview"
-    readonly property bool diffShown: isThread && diffState.turn !== undefined
+    readonly property bool diffShown: diffState.turn !== undefined && (isThread || diffState.scope === "pr")
     readonly property bool readOnly: isThread && (info.readonly || "").length > 0
     // Searching messages: the host's search replaces the sections.
     readonly property string searchText: search.text
@@ -175,7 +213,7 @@ Item {
     // They sit beside it when they fit, unless the user hid them (Ctrl+]);
     // otherwise they fold into Details, over the transcript.
     readonly property bool inspectorInline: inspectorFits && !Agents.inspectorHidden
-    property real inspectorWidth: (isThread || isSession) && inspectorInline && !gitShown ? 250 : 0
+    property real inspectorWidth: (isThread || isSession) && inspectorInline && !gitShown && !runsShown ? 250 : 0
     Behavior on inspectorWidth {
         enabled: !Theme.reduceMotion
         NumberAnimation {
@@ -239,6 +277,26 @@ Item {
                                                      && t.pinned !== true && matches(t))
     readonly property var sessionRows: sessions.filter((s) => matches(s))
     readonly property var shelfShown: (shelfRows || []).filter((t) => matches(t))
+    // The list's rows in the order it shows them, for Alt+Up and Alt+Down.
+    readonly property var shownRows: {
+        const thread = (t) => ({ kind: "thread", id: t.id })
+        if (searching)
+            return (searchState.groups || []).map((g) => ({ kind: "thread", id: g.thread }))
+        if (shelf !== "all")
+            return shelfShown.map(thread)
+        return needsRows.concat(workingRows, pinnedRows, recentRows).map(thread)
+            .concat(sessionRows.map((s) => ({ kind: "session", id: s.id })))
+    }
+    // Opens the row `by` away from the open one, stopping at the ends.
+    function stepRow(by) {
+        const rows = page.shownRows
+        if (rows.length === 0)
+            return
+        const at = rows.findIndex((r) => r.kind === page.openKind && r.id === Agents.openId)
+        const next = at < 0 ? (by > 0 ? 0 : rows.length - 1) : at + by
+        if (next >= 0 && next < rows.length && next !== at)
+            page.openRow(rows[next].kind, rows[next].id)
+    }
     readonly property string setupSummary: {
         const folders = (setup.folders || []).length
         let phones = 0
@@ -402,9 +460,13 @@ Item {
 
     // ---- What the page does ----
     function startNew() {
+        page.reviewChip = ({})
+        openNew()
+    }
+    function openNew() {
         Agents.close()
         page.pane = "new"
-        Qt.callLater(() => taskInput.forceActiveFocus())
+        Qt.callLater(() => page.reviewing ? newView.forceActiveFocus() : taskInput.forceActiveFocus())
     }
     function openSetup() {
         Agents.close()
@@ -475,6 +537,14 @@ Item {
         interval: 1200
         onTriggered: page.highlightItem = ""
     }
+    // Ctrl+Shift+D (Ctrl+D deletes a character in text fields on Linux): the last turn's changes, or back from the diff.
+    readonly property int lastChangedTurn: isThread ? (composerState.lastChanged || 0) : 0
+    function toggleDiff() {
+        if (page.diffShown)
+            page.back()
+        else if (page.lastChangedTurn > 0)
+            Agents.diffOpen(page.lastChangedTurn, "")
+    }
     function openRow(kind, id) {
         page.pane = ""
         page.detailsOpen = false
@@ -486,6 +556,10 @@ Item {
     function back() {
         if (page.diffShown) {
             Agents.diffClose()
+            return
+        }
+        if (page.prDetailShown) {
+            Agents.prDetailClose()
             return
         }
         if (page.isPreview) {
@@ -520,6 +594,9 @@ Item {
             Agents.storeInfo()
             Agents.gitSetupRead(false)
         }
+        // The review chip belongs to the form it was put in.
+        if (shown !== "new")
+            reviewChip = ({})
     }
     onWindowActiveChanged: Agents.windowActive(windowActive)
     // Code, tool targets, outputs and diff words, coloured by the agent
@@ -534,7 +611,7 @@ Item {
     Component.onDestruction: Agents.pageVisible(false)
 
     Timer {
-        interval: page.anyRunning || page.running ? 1000 : 30000
+        interval: page.anyRunning || page.running || (page.runsState.running || 0) > 0 ? 1000 : 30000
         repeat: true
         running: page.active
         onTriggered: page.now = Date.now()
@@ -573,8 +650,22 @@ Item {
     readonly property var screenActions: [
         { label: qsTr("New thread"), icon: Icons.plus, tint: Theme.accent, keys: "Ctrl N", run: () => page.startNew() },
         { label: qsTr("Search threads"), icon: Icons.search, keys: "Ctrl F", run: () => search.input.forceActiveFocus() },
-        { label: qsTr("Stop"), icon: Icons.stopSquare, tint: Theme.tintRed, enabled: page.running,
+        { label: qsTr("Stop"), icon: Icons.stopSquare, tint: Theme.tintRed, keys: "Ctrl .", enabled: page.running,
           run: () => Agents.stop() },
+        { label: qsTr("Deny"), icon: Icons.close, keys: "Ctrl Shift X", enabled: page.canAllow && !composer.hasText,
+          run: () => page.denyShown() },
+        { label: qsTr("Next thread"), icon: Icons.chevronDown, keys: "Alt ↓", enabled: page.shownRows.length > 0,
+          run: () => page.stepRow(1) },
+        { label: qsTr("Previous thread"), icon: Icons.chevronUp, keys: "Alt ↑", enabled: page.shownRows.length > 0,
+          run: () => page.stepRow(-1) },
+        { label: qsTr("Model and effort"), icon: Icons.settings, keys: "Ctrl M", enabled: page.isThread && composer.settingsOpen,
+          run: () => composer.openPicker() },
+        { label: qsTr("Mode"), icon: Icons.shield, keys: "Ctrl Shift M", enabled: page.isThread && composer.settingsOpen,
+          run: () => composer.openModeMenu() },
+        { label: qsTr("Show changes"), icon: Icons.edit, keys: "Ctrl D", checked: page.diffShown,
+          enabled: page.diffShown || page.lastChangedTurn > 0, run: () => page.toggleDiff() },
+        { label: qsTr("Run panel"), icon: Icons.play, keys: "Ctrl Shift R", checked: page.runsShown,
+          enabled: page.runsOn, run: () => page.toggleRuns() },
         { label: qsTr("Continue here"), icon: Icons.send, tint: Theme.accent, keys: "Ctrl Enter",
           enabled: page.isSession && page.info.can_continue === true, run: () => continueSheet.open() },
         { label: qsTr("Open in a terminal"), icon: Icons.terminal, enabled: page.isThread && !page.running,
@@ -667,6 +758,57 @@ Item {
                  && !rewindDialog.opened && !rowMenu.opened && !snoozeMenu.opened && !bulkMenu.opened
                  && !attachMenu.opened && !headMenu.opened && page.renamingId.length === 0
         onActivated: page.back()
+    }
+    // Phase 6's keys (§X8), each only while no menu, sheet or palette is open.
+    readonly property bool keysFree: !AppController.commandPaletteOpen && !composer.popupOpen
+        && !continueSheet.opened && !folderSheet.opened && !deleteSheet.opened && !restartSheet.opened
+        && !linkSheet.opened && !dockMenu.opened && !attachMenu.opened && !headMenu.opened && !besideMenu.opened
+        && !rowMenu.opened && !snoozeMenu.opened && !bulkMenu.opened && !diffMenu.opened && !planMenu.opened
+        && !gitMenu.opened && !modeMenu.opened && !runMenu.opened && !rewindDialog.opened && !branchMenu.opened
+        && !switchDialog.opened && !worktreeDialog.opened && !mergeDialog.opened && !prDialog.opened
+        && !threadPicker.opened && !newFormPicker.opened && page.renamingId.length === 0
+    // Deny the shown request: only while the composer is empty (with words
+    // in it, Enter denies and says why).
+    Shortcut {
+        sequence: "Ctrl+Shift+X"
+        enabled: page.active && page.canAllow && !composer.hasText && page.keysFree
+        onActivated: page.denyShown()
+    }
+    Shortcut {
+        sequence: "Ctrl+."
+        enabled: page.active && page.running && page.keysFree
+        onActivated: Agents.stop()
+    }
+    Shortcut {
+        sequence: "Alt+Down"
+        enabled: page.active && page.keysFree
+        onActivated: page.stepRow(1)
+    }
+    Shortcut {
+        sequence: "Alt+Up"
+        enabled: page.active && page.keysFree
+        onActivated: page.stepRow(-1)
+    }
+    Shortcut {
+        sequence: "Ctrl+M"
+        enabled: page.active && page.isThread && composer.settingsOpen && page.keysFree
+        onActivated: composer.openPicker()
+    }
+    Shortcut {
+        sequence: "Ctrl+Shift+M"
+        enabled: page.active && page.isThread && composer.settingsOpen && page.keysFree
+        onActivated: composer.openModeMenu()
+    }
+    Shortcut {
+        sequence: "Ctrl+Shift+D"
+        enabled: page.active && page.keysFree && (page.diffShown || page.lastChangedTurn > 0)
+        onActivated: page.toggleDiff()
+    }
+    // The run panel (§X5.1).
+    Shortcut {
+        sequence: "Ctrl+Shift+R"
+        enabled: page.active && page.runsOn && page.keysFree
+        onActivated: page.toggleRuns()
     }
     // The diff's files, one after another.
     Shortcut {
@@ -1246,11 +1388,14 @@ Item {
             height: 56
             IconButton {
                 id: backButton
-                visible: page.narrow || page.diffShown || page.isPreview || page.shown === "import" || page.shown === "prs"
+                visible: page.narrow || page.diffShown || page.prDetailShown || page.isPreview || page.shown === "import"
+                         || page.shown === "prs"
                 x: 8
                 anchors.verticalCenter: parent.verticalCenter
                 iconPath: Icons.back
-                label: page.diffShown ? qsTr("Back to the thread") : qsTr("Back to the list")
+                label: page.diffShown && page.diffState.scope === "pr" ? qsTr("Back to the pull request")
+                    : (page.diffShown || page.prDetailShown) && page.isThread ? qsTr("Back to the thread")
+                    : qsTr("Back to the list")
                 onClicked: page.back()
             }
             // Hides or shows the thread list (Ctrl+[).
@@ -1274,6 +1419,7 @@ Item {
                 Txt {
                     width: parent.width
                     text: page.diffShown ? qsTr("Changes")
+                        : page.prDetailShown ? qsTr("Pull request #%1").arg(page.prDetailState.number || 0)
                         : page.shown === "setup" ? qsTr("Setup")
                         : page.shown === "import" ? qsTr("Bring in earlier sessions")
                         : page.shown === "prs" ? qsTr("Pull requests")
@@ -1282,9 +1428,12 @@ Item {
                     maximumLineCount: 1
                 }
                 Txt {
-                    visible: page.diffShown || page.isPreview || page.shown === "import"
+                    visible: page.diffShown || page.prDetailShown || page.isPreview || page.shown === "import"
                     width: parent.width
-                    text: page.diffShown ? (page.info.title || "")
+                    text: page.diffShown && page.diffState.scope === "pr" ? ((page.prDetailState.pr || {}).title || "")
+                        : page.prDetailShown ? [page.prDetailState.repo || "", (page.prDetailState.pr || {}).title || ""]
+                                               .filter((x) => x.length > 0).join(" · ")
+                        : page.diffShown ? (page.info.title || "")
                         : page.isPreview ? [page.info.agent_name, page.info.shown_cwd,
                                             new Date(page.info.updated_ms || 0).toLocaleDateString(Qt.locale(), Locale.ShortFormat)]
                                            .filter((x) => (x || "").length > 0).join(" · ")
@@ -1297,7 +1446,7 @@ Item {
                 Row {
                     width: parent.width
                     spacing: 6
-                    visible: (page.isThread || page.isSession) && !page.diffShown
+                    visible: (page.isThread || page.isSession) && !page.diffShown && !page.prDetailShown
                     AgentStateMark {
                         anchors.verticalCenter: parent.verticalCenter
                         phase: page.phase
@@ -1356,8 +1505,10 @@ Item {
                 spacing: 8
                 // The diff's scope: this turn, or the whole thread.
                 Segmented {
-                    visible: page.diffShown && (page.diffState.canWhole === true || page.diffState.scope === "uncommitted")
-                    options: (page.gitOn ? [{ value: "uncommitted", label: qsTr("Uncommitted") }] : [])
+                    visible: page.diffShown && (page.diffState.canWhole === true || page.diffState.scope === "uncommitted"
+                                                || page.diffState.scope === "pr")
+                    options: page.diffState.scope === "pr" ? [{ value: "pr", label: qsTr("Pull request") }]
+                        : (page.gitOn ? [{ value: "uncommitted", label: qsTr("Uncommitted") }] : [])
                         .concat(page.diffState.canTurn === true ? [{ value: "turn", label: qsTr("This turn") }] : [])
                         .concat(page.diffState.canWhole === true ? [{ value: "thread", label: qsTr("Whole thread") }] : [])
                     value: page.diffState.scope || "turn"
@@ -1365,11 +1516,35 @@ Item {
                 }
                 AgentGitStrip {
                     id: headStrip
-                    visible: page.gitOn && !page.diffShown && headStrip.repo
+                    visible: page.gitOn && !page.diffShown && !page.prDetailShown && headStrip.repo
                     anchors.verticalCenter: parent.verticalCenter
                     info: page.gitState.strip || ({})
                     open: page.gitShown
                     onClicked: page.toggleGit()
+                }
+                // The Run menu: the folder's scripts (§X5.1); a ring while one runs.
+                Item {
+                    visible: page.runsOn && !page.diffShown && !page.prDetailShown
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: runButton.width
+                    height: runButton.height
+                    IconButton {
+                        id: runButton
+                        iconPath: Icons.play
+                        checked: runMenu.opened || page.runsShown
+                        label: qsTr("Run")
+                        onClicked: {
+                            const p = page.mapFromItem(runButton, runButton.width, runButton.height)
+                            runMenu.openAt(p.x, p.y)
+                        }
+                    }
+                    Spinner {
+                        visible: (page.runsState.running || 0) > 0
+                        anchors.right: parent.right
+                        anchors.bottom: parent.bottom
+                        width: 10
+                        height: 10
+                    }
                 }
                 // The phone beside this PC and the pane it shows: the menu switches it (§V9.1).
                 Rectangle {
@@ -1378,7 +1553,7 @@ Item {
                         const p = page.mapFromItem(besidePill, besidePill.width, besidePill.height)
                         besideMenu.openAt(p.x, p.y, false, true)
                     }
-                    visible: page.besideShown && !page.diffShown
+                    visible: page.besideShown && !page.diffShown && !page.prDetailShown
                     anchors.verticalCenter: parent.verticalCenter
                     width: besideRow.implicitWidth + 20
                     height: 28
@@ -1436,7 +1611,7 @@ Item {
                 // The thread's menu: continue it on a phone, and its marks.
                 IconButton {
                     id: headMore
-                    visible: page.isThread && !page.diffShown && headMenu.actions.length > 0
+                    visible: page.isThread && !page.diffShown && !page.prDetailShown && headMenu.actions.length > 0
                     anchors.verticalCenter: parent.verticalCenter
                     iconPath: Icons.more
                     label: qsTr("More")
@@ -1447,7 +1622,7 @@ Item {
                 }
                 // Hides or shows the details beside the thread (Ctrl+]), mirroring the list's toggle.
                 IconButton {
-                    visible: (page.isThread || page.isSession) && !page.diffShown
+                    visible: (page.isThread || page.isSession) && !page.diffShown && !page.prDetailShown
                     anchors.verticalCenter: parent.verticalCenter
                     iconPath: page.detailsIcon
                     checked: page.detailsShown
@@ -1467,7 +1642,7 @@ Item {
         // ---- A thread or a session ----
         Item {
             id: openView
-            visible: (page.isThread || page.isSession || page.isPreview) && !page.diffShown
+            visible: (page.isThread || page.isSession || page.isPreview) && !page.diffShown && !page.prDetailShown
             anchors.top: headLine.bottom
             anchors.bottom: parent.bottom
             anchors.left: parent.left
@@ -2035,6 +2210,10 @@ Item {
                         const p = page.mapFromItem(null, x, y)
                         threadPicker.openAt(p.x, p.y)
                     }
+                    onModeMenuRequested: (x, y) => {
+                        const p = page.mapFromItem(null, x, y)
+                        modeMenu.openAt(p.x, p.y, true, false)
+                    }
                 }
                 Column {
                     id: sessionBar
@@ -2165,7 +2344,8 @@ Item {
         Rectangle {
             id: inspector
             readonly property bool overlay: page.detailsOpen && !page.inspectorFits
-            visible: (page.isThread || page.isSession) && !page.diffShown && !page.gitShown
+            visible: (page.isThread || page.isSession) && !page.diffShown && !page.gitShown && !page.runsShown
+                     && !page.prDetailShown
                      && (page.inspectorWidth > 0 || overlay)
             anchors.top: headLine.bottom
             anchors.bottom: parent.bottom
@@ -2482,9 +2662,36 @@ Item {
             }
         }
 
+        // ---- The run panel, in the same slot (§X5.1) ----
+        Rectangle {
+            id: runPane
+            readonly property bool overlay: !page.gitInline
+            visible: page.runsShown
+            anchors.top: headLine.bottom
+            anchors.bottom: parent.bottom
+            anchors.right: parent.right
+            width: overlay ? Math.min(360, mainPane.width - 40) : page.gitWidth
+            color: Theme.surface
+            clip: true
+            z: 3
+            Rectangle {
+                width: 1
+                height: parent.height
+                color: Theme.line
+            }
+            AgentRunPanel {
+                x: 1
+                width: parent.width - 1
+                height: parent.height
+                runs: page.runsState
+                now: page.now
+                onClosed: Agents.runPanel(false)
+            }
+        }
+
         // ---- Pull requests ----
         AgentPrList {
-            visible: page.shown === "prs"
+            visible: page.shown === "prs" && !page.prDetailShown && !page.diffShown
             anchors.top: headLine.bottom
             anchors.bottom: parent.bottom
             width: parent.width
@@ -2492,6 +2699,20 @@ Item {
             folders: page.setup.folders || []
             now: page.now
             onOpenThread: (id) => page.openRow("thread", id)
+            onOpenDetail: (repo, number) => Agents.prDetailOpen(repo, number)
+        }
+
+        // ---- A pull request, read-only (§X6.6) ----
+        AgentPrDetail {
+            visible: page.prDetailShown
+            anchors.top: headLine.bottom
+            anchors.bottom: parent.bottom
+            width: parent.width
+            z: 4
+            detail: page.prDetailState
+            now: page.now
+            onLinkActivated: (key, index) => linkSheet.ask(key, index)
+            onAskInNewThread: (repo, number, folderId) => page.askInNewThread(repo, number, folderId)
         }
 
         // ---- A new thread ----
@@ -2515,6 +2736,14 @@ Item {
             Component.onCompleted: Agents.newForm(newView.agent, newView.folder)
             onPlanAvailableChanged: if (!planAvailable && mode === "plan") mode = "supervised"
             function start() {
+                // "Ask in a new thread…": the host writes the review message itself.
+                if (page.reviewing) {
+                    if (newView.agent.length === 0 || newView.folder.length === 0)
+                        return
+                    Agents.prReviewNewThread(newView.agent, newView.folder, newView.mode,
+                                             page.reviewChip.repo || "", page.reviewChip.number || 0)
+                    return
+                }
                 const task = taskInput.text.trim()
                 if (task.length === 0 || newView.agent.length === 0 || newView.folder.length === 0)
                     return
@@ -2536,7 +2765,26 @@ Item {
                 width: Math.min(720, newView.width - 32)
                 spacing: 16
 
+                // In place of the prompt: the pull request this thread reviews.
+                Row {
+                    visible: page.reviewing
+                    spacing: 6
+                    Chip {
+                        anchors.verticalCenter: parent.verticalCenter
+                        iconPath: AgentGitGlyphs.pullRequest
+                        text: qsTr("Review pull request #%1").arg(page.reviewChip.number || 0)
+                        selected: true
+                    }
+                    IconButton {
+                        anchors.verticalCenter: parent.verticalCenter
+                        iconPath: Icons.close
+                        iconSize: 14
+                        label: qsTr("Remove")
+                        onClicked: page.reviewChip = ({})
+                    }
+                }
                 Rectangle {
+                    visible: !page.reviewing
                     width: parent.width
                     height: Math.min(Math.max(taskInput.contentHeight + 24, 110), 260)
                     radius: Theme.rowRadius
@@ -2629,6 +2877,7 @@ Item {
                 // Work in this folder, or in a new worktree on its own branch.
                 AgentWorktreeFields {
                     id: worktreeFields
+                    visible: !page.reviewing
                     width: parent.width
                     folderId: newView.folder
                     gitSetup: page.gitSetup
@@ -2716,8 +2965,8 @@ Item {
                         anchors.right: parent.right
                         text: qsTr("Start")
                         busy: Agents.busy || (page.gitSetup.creating || {}).running === true
-                        enabled: page.ready && taskInput.text.trim().length > 0
-                                 && (!worktreeFields.worktree || worktreeFields.branchOk)
+                        enabled: page.ready && (page.reviewing || (taskInput.text.trim().length > 0
+                                 && (!worktreeFields.worktree || worktreeFields.branchOk)))
                         onClicked: newView.start()
                     }
                 }
@@ -3298,6 +3547,14 @@ Item {
         z: 20
     }
 
+    // The open thread's Run menu (§X5.1).
+    AgentRunMenu {
+        id: runMenu
+        scripts: page.runsState.scripts || []
+        z: 20
+        onEditRequested: page.editScripts(page.runsState.folder || "")
+    }
+
     // A thread's menu: its marks, rename and delete.
     PopupMenu {
         id: rowMenu
@@ -3381,10 +3638,12 @@ Item {
         id: worktreeDialog
     }
     AgentMergeDialog {
+        id: mergeDialog
         merge: page.gitState.merge || ({})
         pr: (page.gitState.pr || {}).pr || ({})
     }
     AgentPrDialog {
+        id: prDialog
         form: page.gitState.form || ({})
         agentName: page.agentName
         defaultBranch: (page.gitState.status || {}).defaultBranch || ""
@@ -3417,6 +3676,27 @@ Item {
         panelWidth: 360
         wrapLabels: true
         z: 20
+    }
+
+    // The open thread's mode (Ctrl+Shift+M), the same three as the model control's.
+    PopupMenu {
+        id: modeMenu
+        readonly property var picker: page.composerState.picker || ({})
+        readonly property string mode: picker.mode || "supervised"
+        actions: [
+            { label: qsTr("Asks before edits and commands"), checked: mode === "supervised",
+              run: () => Agents.pick(false, "mode", "supervised") },
+            { label: qsTr("Asks before commands"), checked: mode === "auto_edit",
+              run: () => Agents.pick(false, "mode", "auto_edit") },
+            { label: qsTr("Plan: it changes nothing until you say so"), checked: mode === "plan",
+              enabled: picker.plan === true, hidden: picker.plan !== true && picker.agent !== "codex",
+              detail: picker.plan === true ? "" : qsTr("Plan isn't available with this version of Codex."),
+              run: () => Agents.pick(false, "mode", "plan") }
+        ].filter((a) => a.hidden !== true)
+        panelWidth: 340
+        wrapLabels: true
+        z: 20
+        onOpenedChanged: if (!opened) composer.focusInput()
     }
 
     // The model control's panels: the open thread's, and the new-thread form's.

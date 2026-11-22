@@ -5,18 +5,19 @@
 //! cut to what a phone may get (no folder on this PC, a worktree by its
 //! label and branch, at most 500 files, a job's newest 40 lines). A switch
 //! never takes changes along; merge, Mark ready, worktrees and "keep in
-//! step" have no request at all.
+//! step" have no request at all. A pull request's detail and diff (§13) are
+//! read-only; "Ask <agent> to review it" sends the host's own message.
 
 use g7_agents::api::{
     GitBranchesParams, GitChangedEvent, GitCommitParams, GitFetchParams, GitJobParams, GitPatchParams,
-    GitPushParams, GitReviewParams, GitStatus, GitSwitchParams, Job, PrCreateParams, PrInfo, PrListParams,
-    PrShow, PrViewParams, PrViewResult, Purpose,
+    GitPushParams, GitReviewParams, GitStatus, GitSwitchParams, Job, PrCreateParams, PrDetailParams,
+    PrDetailResult, PrDiffParams, PrInfo, PrListParams, PrShow, PrViewParams, PrViewResult, Purpose,
 };
 use g7link_core::{
     AgentBranch, AgentBranches, AgentCheck, AgentCheckCounts, AgentGhState, AgentGit, AgentGitChanged,
     AgentGitFile, AgentGitHub, AgentGitLast, AgentGitPatchPage, AgentGitRemote, AgentGitReviewed,
     AgentGitReviewedFile, AgentGitWorktree, AgentJob, AgentJobError, AgentJobResult, AgentPrBrief,
-    AgentPrInfo, AgentPrRow, AgentPrRows, AgentPrView,
+    AgentPrComment, AgentPrDetail, AgentPrFile, AgentPrInfo, AgentPrRow, AgentPrRows, AgentPrView,
 };
 
 use super::*;
@@ -165,6 +166,69 @@ pub(super) fn wire_changed(e: &GitChangedEvent) -> AgentGitChanged {
             fail: p.fail,
             pending: p.pending,
         }),
+    }
+}
+
+/// A pull request's detail as a phone gets it: no folder of this PC; the
+/// core cuts the comments to the phone's bounds.
+pub(super) fn wire_detail(result: &PrDetailResult) -> AgentPrDetail {
+    let d = result.detail.as_ref();
+    AgentPrDetail {
+        pr: d.map(|d| wire_pr(&d.pr)),
+        gh: wire_gh(&result.gh),
+        why: result.why.as_ref().map(word),
+        repo: d.map(|d| d.repo.clone()).unwrap_or_default(),
+        author: d.map(|d| d.author.clone()).unwrap_or_default(),
+        body: d.map(|d| d.body.clone()).unwrap_or_default(),
+        body_cut: d.is_some_and(|d| d.body_cut),
+        adds: d.map_or(0, |d| d.adds),
+        dels: d.map_or(0, |d| d.dels),
+        changed: d.map_or(0, |d| d.changed),
+        files: d.map_or_else(Vec::new, |d| {
+            d.files
+                .iter()
+                .map(|f| AgentPrFile {
+                    path: f.path.clone(),
+                    change: f.change.clone(),
+                    adds: f.adds,
+                    dels: f.dels,
+                })
+                .collect()
+        }),
+        files_more: d.is_some_and(|d| d.files_more),
+        comments: d.map_or_else(Vec::new, |d| {
+            d.comments
+                .iter()
+                .map(|c| AgentPrComment {
+                    author: c.author.clone(),
+                    at_ms: c.at_ms,
+                    body: c.body.clone(),
+                    cut: c.cut,
+                    review: c.review.clone(),
+                    url: c.url.clone(),
+                })
+                .collect()
+        }),
+        comments_older: d.map_or(0, |d| d.comments_older),
+        thread: d.and_then(|d| d.thread_id.clone()),
+        read_ms: d.map_or(0, |d| d.read_ms),
+    }
+}
+
+/// The host's refusal with a reason word (`data.reason`) as the core words
+/// it; any other error as a failure.
+pub(super) fn refused(e: ClientError) -> Result<AgentReply, AgentFailure> {
+    match e {
+        ClientError::Remote(rpc) if rpc.data.as_ref().and_then(|d| d.get("reason")).is_some() => {
+            let data = rpc.data.unwrap_or_default();
+            let reason = data.get("reason").and_then(Value::as_str).unwrap_or_default();
+            Ok(AgentReply::Refused(AgentJobError {
+                reason: reason.chars().take(24).collect(),
+                message: api::cut(&rpc.message, 200).to_owned(),
+                names: Vec::new(),
+            }))
+        }
+        e => Err(failure(&e)),
     }
 }
 
@@ -343,6 +407,40 @@ pub(super) async fn phone(
             let origin = Origin::phone(from.to_string(), device_name(&from));
             client
                 .thread_send_with(ThreadSendParams::ask(thread.clone(), purpose, origin))
+                .await
+                .map_err(fail)?;
+            let params = ThreadReadParams { thread_id: thread, limit: Some(1), ..Default::default() };
+            let read = client.thread_read(params).await.map_err(fail)?;
+            AgentReply::Thread(super::thread(&read.thread, Some(&from)))
+        }
+        // §13: read-only; the host checks the pull request is the thread's,
+        // or one it listed.
+        AgentRequest::PrDetail { thread, repo, number, refresh } => {
+            let params = PrDetailParams { thread_id: thread, repo, number, refresh };
+            match client.pr_detail(params).await {
+                Ok(result) => AgentReply::PrDetail(wire_detail(&result)),
+                Err(e) => return refused(e),
+            }
+        }
+        AgentRequest::PrDiff { repo, number, path, offset } => {
+            let params = PrDiffParams { repo, number, path, offset, thread_id: None };
+            match client.pr_diff(params).await {
+                Ok(page) => AgentReply::GitPatch(AgentGitPatchPage {
+                    patch: page.patch,
+                    next: page.next,
+                    truncated: page.truncated,
+                    binary: page.binary,
+                    names: Vec::new(),
+                    more_names: 0,
+                }),
+                Err(e) => return refused(e),
+            }
+        }
+        // The host writes the message from the number and a link it builds.
+        AgentRequest::AskReview { thread, pr } => {
+            let origin = Origin::phone(from.to_string(), device_name(&from));
+            client
+                .thread_send_with(ThreadSendParams::ask_review(thread.clone(), pr, origin))
                 .await
                 .map_err(fail)?;
             let params = ThreadReadParams { thread_id: thread, limit: Some(1), ..Default::default() };

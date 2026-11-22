@@ -430,7 +430,7 @@ fn mark_word(kind: MarkKind) -> &'static str {
     }
 }
 
-fn block_word(kind: BlockKind) -> (&'static str, u8) {
+pub(crate) fn block_word(kind: BlockKind) -> (&'static str, u8) {
     match kind {
         BlockKind::Paragraph => ("paragraph", 0),
         BlockKind::Heading(level) => ("heading", level),
@@ -451,7 +451,7 @@ fn block_word(kind: BlockKind) -> (&'static str, u8) {
     }
 }
 
-fn marker_word(marker: Marker) -> (&'static str, u32) {
+pub(crate) fn marker_word(marker: Marker) -> (&'static str, u32) {
     match marker {
         Marker::None => ("", 0),
         Marker::Bullet => ("bullet", 0),

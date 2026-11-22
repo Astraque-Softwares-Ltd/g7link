@@ -1060,6 +1060,7 @@ mod tests {
             changed: None,
             wrote: None,
             ports: Vec::new(),
+            runs: Vec::new(),
         }
     }
 

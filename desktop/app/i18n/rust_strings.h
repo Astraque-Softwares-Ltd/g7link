@@ -24,6 +24,7 @@ static const char *const g7link_rust_strings[] = {
     QT_TRANSLATE_NOOP("Agents", "It was already sent."), // desktop/app/src/agents.rs
     QT_TRANSLATE_NOOP("Agents", "It's no longer there."), // desktop/app/src/agents.rs
     QT_TRANSLATE_NOOP("Agents", "Opened from %1"), // desktop/app/src/agents/handoff.rs
+    QT_TRANSLATE_NOOP("Agents", "Output of %1:"), // desktop/app/src/agents/scripts.rs
     QT_TRANSLATE_NOOP("Agents", "Saved %1"), // desktop/app/src/agents.rs
     QT_TRANSLATE_NOOP("Agents", "Something went wrong. Try again."), // desktop/app/src/agents/source.rs
     QT_TRANSLATE_NOOP("Agents", "Still open in a terminal. Close it there to continue here."), // desktop/app/src/agents.rs
@@ -34,6 +35,7 @@ static const char *const g7link_rust_strings[] = {
     QT_TRANSLATE_NOOP("Agents", "That agent isn't ready. Check it in Setup."), // desktop/app/src/agents.rs
     QT_TRANSLATE_NOOP("Agents", "That folder can't be used. Pick a folder you can read, other than the whole disk."), // desktop/app/src/agents.rs
     QT_TRANSLATE_NOOP("Agents", "That folder is no longer in the list."), // desktop/app/src/agents.rs
+    QT_TRANSLATE_NOOP("Agents", "That folder isn't a checkout of %1."), // desktop/app/src/agents/review.rs
     QT_TRANSLATE_NOOP("Agents", "That folder isn't one of your agent folders."), // desktop/app/src/agents.rs
     QT_TRANSLATE_NOOP("Agents", "That is done from G7 Link on this PC."), // desktop/app/src/agents/source.rs
     QT_TRANSLATE_NOOP("Agents", "That isn't available with this agent."), // desktop/app/src/agents.rs
@@ -298,6 +300,7 @@ static const char *const g7link_rust_strings[] = {
     QT_TRANSLATE_NOOP("Doctor", "On Xiaomi / HyperOS / MIUI: open Settings → Apps → Manage apps → G7 Link, turn on Autostart, and set Battery saver to No restrictions."), // desktop/app/src/doctor.rs
     QT_TRANSLATE_NOOP("Doctor", "On public networks the firewall keeps other devices from finding this PC. If it's your home or work network, open network settings and set its firewall zone to Home or Trusted."), // desktop/app/src/doctor.rs
     QT_TRANSLATE_NOOP("Doctor", "On this network"), // desktop/app/src/doctor.rs
+    QT_TRANSLATE_NOOP("Doctor", "Over Tailscale"), // desktop/app/src/doctor.rs
     QT_TRANSLATE_NOOP("Doctor", "Phone as webcam is ready"), // desktop/app/src/linux/doctor.rs
     QT_TRANSLATE_NOOP("Doctor", "Phone as webcam needs one more step"), // desktop/app/src/linux/doctor.rs
     QT_TRANSLATE_NOOP("Doctor", "Phone storage can open in your file manager"), // desktop/app/src/linux/doctor.rs

@@ -13,6 +13,7 @@ Item {
     property var folders: []
     property real now: Date.now()
     signal openThread(string id)
+    signal openDetail(string repo, int number)
 
     readonly property string show: prs.show || "mine"
     readonly property var rows: prs.rows || []
@@ -123,7 +124,9 @@ Item {
             width: view.width
             pr: modelData
             now: list.now
+            canDetail: list.prs.detail === true
             onOpenThread: (id) => list.openThread(id)
+            onOpened: (repo, number) => list.openDetail(repo, number)
         }
         footer: Txt {
             visible: list.prs.more === true

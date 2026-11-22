@@ -7,11 +7,11 @@
 //! The host lists the ports its thread's processes listen on (`ports` on
 //! the thread). A port bound to this PC's loopback only answers here: the
 //! line says so and offers no phone. A phone is offered only on a direct
-//! network link (not the relay, not USB), with links to the phone on.
+//! network or tailnet link (not the relay, not USB), with links to the phone on.
 //! Nothing is probed, tunnelled or forwarded.
 
 use g7_agents::api::{MIN_PORT, Reach, ThreadInfo};
-use g7link_core::{ConnectionPath, DeviceId, FeatureState, LinkState, Node};
+use g7link_core::{DeviceId, FeatureState, LinkState, Node};
 use serde_json::{Value, json};
 
 use super::{OpenKind, lock};
@@ -46,10 +46,11 @@ pub(crate) fn newest(servers: &[Server]) -> Option<Server> {
     servers.iter().copied().max_by(|a, b| a.since_ms.cmp(&b.since_ms).then(b.port.cmp(&a.port)))
 }
 
-/// A phone can open it: connected directly on the network, with links to
-/// the phone on.
+/// A phone can open it: connected directly on the network or its tailnet,
+/// with links to the phone on. (The core then says whether this PC has an
+/// address on that path the phone can open.)
 pub(crate) fn reaches(link: &LinkState, links_to_phone: bool) -> bool {
-    links_to_phone && matches!(link, LinkState::Online { path: ConnectionPath::Lan, .. })
+    links_to_phone && matches!(link, LinkState::Online { path, .. } if path.is_direct_ip())
 }
 
 /// The line over the composer: `{ port, lan, phones: [{ id, name }] }`, or
@@ -153,6 +154,8 @@ fn phone_url(node: &Node, device: DeviceId, port: u16) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use g7link_core::ConnectionPath;
+
     use super::*;
 
     fn server(port: u16, lan: bool, since_ms: u64) -> Server {
@@ -196,6 +199,7 @@ mod tests {
         let online = |path| LinkState::Online { path, rtt_ms: 4 };
         assert!(reaches(&online(ConnectionPath::Lan), true));
         assert!(!reaches(&online(ConnectionPath::Lan), false), "links to the phone are off");
+        assert!(reaches(&online(ConnectionPath::Tailscale), true), "a direct path over the tailnet");
         assert!(!reaches(&online(ConnectionPath::Relay), true), "never through the relay");
         assert!(!reaches(&online(ConnectionPath::Usb), true), "never over USB");
         assert!(!reaches(&LinkState::Connecting, true));

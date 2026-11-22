@@ -694,6 +694,8 @@ impl AppState {
             | NodeEvent::AgentHandoff { .. }
             // Phones only: a PC switches what they show beside it.
             | NodeEvent::AgentBeside { .. }
+            // Phones only: a PC's script runs, as its phones see them.
+            | NodeEvent::AgentScriptRun { .. }
             // Copied and toasted (notifications).
             | NodeEvent::OneTimeCode { .. } => Changes::NONE,
             NodeEvent::CameraCaptureReceived { .. } => Changes::TIMELINE,

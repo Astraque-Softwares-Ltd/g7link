@@ -42,8 +42,8 @@ use g7link_core::{
     QueueAction, agent,
 };
 use g7link_core::{
-    AgentCut, AgentImportJob, AgentImportProgress, AgentPatchPage, AgentPort, AgentPresence,
-    history as wire_history,
+    AgentCut, AgentImportJob, AgentImportProgress, AgentPatchPage, AgentPort, AgentPresence, AgentRunBrief,
+    AgentScript, history as wire_history,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -62,7 +62,9 @@ mod photo;
 mod ports;
 mod presence;
 pub(crate) mod reply;
+pub(crate) mod review;
 mod rows;
+pub(crate) mod scripts;
 pub(crate) mod source;
 mod source_relay;
 #[cfg(test)]
@@ -1265,6 +1267,10 @@ struct BridgeState {
     source: source::Source,
     /// Photos from a phone's camera on their way (§V8.4).
     photo: photo::Photos,
+    /// Project scripts: the open thread's runs, the run panel, Setup's lists (`cap::SCRIPTS`).
+    scripts: scripts::Scripts,
+    /// A pull request read in detail, while its view is open (`cap::PR_DETAIL`).
+    review: review::Review,
 }
 
 /// What the new-thread form is set to.
@@ -1608,6 +1614,22 @@ pub(crate) fn catalog(agents: &[AgentInfo], folders: &[Folder]) -> AgentCatalog 
                 label: f.label.clone(),
                 checkpoints: f.checkpoints,
                 follow_remote: f.follow_remote,
+                phone_scripts: f.phone_scripts,
+                script_count: u8::try_from(f.scripts.len().min(api::MAX_SCRIPTS)).unwrap_or(u8::MAX),
+                // A command reaches a phone only from a folder whose phones may run it.
+                scripts: if f.phone_scripts {
+                    f.scripts
+                        .iter()
+                        .take(api::MAX_SCRIPTS)
+                        .map(|x| AgentScript {
+                            id: x.id.clone(),
+                            name: x.name.clone(),
+                            command: x.command.clone(),
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                },
             })
             .collect(),
         modes: vec![agent::mode::SUPERVISED.to_owned()],
@@ -1738,6 +1760,18 @@ pub(crate) fn thread(info: &ThreadInfo, phone: Option<&DeviceId>) -> AgentThread
         asking: info.asking,
         // Dev servers: a phone opens one that answers on the network.
         ports: info.ports.iter().map(|p| AgentPort::new(p.port, p.reach == api::Reach::Lan)).collect(),
+        // Project scripts' runs (§12): names and states, never a command.
+        runs: info
+            .runs
+            .iter()
+            .take(g7link_core::scripts::MAX_THREAD_RUNS)
+            .map(|r| AgentRunBrief {
+                id: r.id.clone(),
+                name: r.name.clone(),
+                phase: word(&r.phase),
+                exit: r.exit,
+            })
+            .collect(),
         ..Default::default()
     };
     history::wire_thread_extras(info, &mut wire);
@@ -2106,6 +2140,8 @@ trait Relay {
     async fn git_changed(&self, change: g7link_core::AgentGitChanged);
     /// A source-control job's new lines (`git.progress`); `by`: the device that asked.
     async fn git_progress(&self, job: g7link_core::AgentJob, by: Option<DeviceId>);
+    /// A run's new lines (`script.progress`), to phones as `agent.script`.
+    async fn script_progress(&self, run: g7link_core::AgentScriptRun, by: Option<DeviceId>);
 }
 
 /// The node: phones get the host's news through the core.
@@ -2200,6 +2236,11 @@ impl Relay for NodeRelay {
             tracing::debug!(error = %e, "a job's lines weren't relayed");
         }
     }
+    async fn script_progress(&self, run: g7link_core::AgentScriptRun, by: Option<DeviceId>) {
+        if let Err(e) = self.0.agent_script_progress(run, by).await {
+            tracing::debug!(error = %e, "a run's lines weren't relayed");
+        }
+    }
 }
 
 /// What G7 Link says to the host: it understands reasoning items, plans and
@@ -2210,7 +2251,7 @@ impl Relay for NodeRelay {
 fn hello() -> HelloParams {
     HelloParams::new(
         ClientKind::Link,
-        &[cap::ITEMS2, cap::ITEMS3, cap::PRESENCE, cap::HANDOFF, cap::PHOTO, cap::BESIDE],
+        &[cap::ITEMS2, cap::ITEMS3, cap::PRESENCE, cap::HANDOFF, cap::PHOTO, cap::BESIDE, cap::SCRIPTS],
     )
 }
 
@@ -2339,6 +2380,8 @@ async fn serve<R: Relay>(
     let undo = client.host().has(cap::UNDO);
     let presence = client.host().has(cap::PRESENCE);
     let git = client.host().has(cap::GIT);
+    let has_scripts = client.host().has(cap::SCRIPTS);
+    let pr_detail = client.host().has(cap::PR_DETAIL);
     if outdated {
         tracing::info!(
             host = %client.host().host_version,
@@ -2370,6 +2413,8 @@ async fn serve<R: Relay>(
     presence::connected(conn, presence);
     bridge.connected.send_replace(true);
     source::connected(git);
+    scripts::connected(has_scripts);
+    review::connected(pr_detail);
     changed();
     core_host::refresh_capabilities();
     relay.catalog(Some(bridge.catalog())).await;
@@ -2429,6 +2474,9 @@ async fn serve<R: Relay>(
         s.diff = None;
         s.rewind = None;
         s.store = None;
+        s.scripts.cap = false;
+        s.scripts.panel = scripts::Panel::default();
+        s.review.cap = false;
         if let Some(import) = s.import.as_mut() {
             *import = history::Import::default();
         }
@@ -2493,6 +2541,7 @@ async fn relay_event<R: Relay>(bridge: &Bridge, relay: &R, client: &Client, even
             bridge.remember(&e.thread);
             history_page::shelf_update(bridge, &e.thread);
             source::thread_state(&e.thread);
+            scripts::thread_state(&e.thread);
             relay.event(AgentEvent::state(thread(&e.thread, None)), started_by(&e.thread)).await;
             if bridge.lock().open_is(OpenKind::Thread, &e.thread.id) {
                 changed();
@@ -2712,6 +2761,10 @@ async fn relay_event<R: Relay>(bridge: &Bridge, relay: &R, client: &Client, even
         Event::GitProgress(e) => {
             relay.git_progress(source_relay::wire_job(&e.job), source_relay::job_by(&e.job)).await;
             source::git_progress(e.job);
+        }
+        Event::ScriptProgress(e) => {
+            relay.script_progress(scripts::wire_run(&e.run), scripts::run_by(&e.run)).await;
+            scripts::progress(e.run);
         }
         // The launcher's "Continue on": it saved its draft first.
         Event::UiHandoff(e) => {
@@ -3154,7 +3207,15 @@ async fn run_request(from: DeviceId, request: AgentRequest) -> Result<AgentReply
         | AgentRequest::PrView { .. }
         | AgentRequest::PrCreate { .. }
         | AgentRequest::PrList { .. }
-        | AgentRequest::Ask { .. }) => return source_relay::phone(from, &client, request).await,
+        | AgentRequest::Ask { .. }
+        | AgentRequest::PrDetail { .. }
+        | AgentRequest::PrDiff { .. }
+        | AgentRequest::AskReview { .. }) => return source_relay::phone(from, &client, request).await,
+        // Project scripts (§12): as the phone; the host checks the folder's switch.
+        request @ (AgentRequest::ScriptRun { .. }
+        | AgentRequest::ScriptStop { .. }
+        | AgentRequest::ScriptRuns { .. }
+        | AgentRequest::ScriptOutput { .. }) => return scripts::phone(from, &client, request).await,
         // Hand-off (§V8.5): the page opens the thread, now or when the PC is
         // unlocked; nothing is typed, sent or unlocked.
         AgentRequest::Handoff { thread: thread_id, seq } => {
@@ -3343,6 +3404,10 @@ pub(crate) struct View {
     pub prs: String,
     /// Setup's Source control and the new thread's worktree fields (JSON).
     pub git_setup: String,
+    /// The open thread's Run menu and run panel (JSON, `{}` for none).
+    pub runs: String,
+    /// The pull request view (JSON, `{}` while it's closed).
+    pub pr_detail: String,
 }
 
 pub(crate) fn view() -> View {
@@ -3469,6 +3534,8 @@ pub(crate) fn view() -> View {
         git: source::git_json(&s).to_string(),
         prs: source::prs_json(&s).to_string(),
         git_setup: source::setup_json(&s).to_string(),
+        runs: scripts::runs_json(&s).to_string(),
+        pr_detail: review::json(&s).to_string(),
     }
 }
 
@@ -3566,6 +3633,8 @@ fn composer_json(s: &BridgeState, open: &OpenView, cameras: &[(usize, DeviceId, 
         // Edit from here: the message is back in the composer until it's sent
         // or the rewind is undone ("Editing your message · Cancel").
         "editing": editing(open, info),
+        // Ctrl+Shift+D opens this turn's changes (0: no turn changed a file).
+        "lastChanged": history::last_changed_turn(&open.turns).unwrap_or(0),
     })
 }
 
@@ -3663,6 +3732,7 @@ fn setup_json(s: &BridgeState, home: Option<&std::path::Path>) -> String {
                 "mcpSeen": f.mcp_seen.iter().map(|m| json!({ "agent": m.agent.as_str(), "names": m.names })).collect::<Vec<_>>(),
                 "checkpoints": f.checkpoints,
                 "followRemote": f.follow_remote,
+                "scripts": scripts::folder_json(s, f),
             })
         })
         .collect();
@@ -3677,6 +3747,8 @@ fn setup_json(s: &BridgeState, home: Option<&std::path::Path>) -> String {
         "followUp": word(&s.prefs.follow_up),
         "history": s.history,
         "undo": s.undo,
+        // The host keeps project scripts (Setup's Scripts on each folder).
+        "scripts": s.scripts.cap,
         // Replies from phones into sessions here: "ready", "extension" (the
         // companion is missing or older than 1.5), "keyboard", or "" (not asked).
         "reply": reply::setup(),
@@ -3978,9 +4050,14 @@ fn open_at(kind: OpenKind, id: String, focus: Option<u64>) {
             view.focus = Some(seq);
             view.focus_n = 1;
         }
-        // The diff and the rewind dialog belong to the thread that was open.
+        // The diff, the rewind dialog and a pull request's view belong to
+        // what was open.
         s.diff = None;
         s.rewind = None;
+        if s.review.open {
+            let (cap, seq) = (s.review.cap, s.review.seq);
+            s.review = review::Review { cap, seq, ..Default::default() };
+        }
         let was = s.open.replace(view);
         // A phone's photo that came for it while it was closed.
         photo::unpark(&mut s, generation);
@@ -3992,6 +4069,7 @@ fn open_at(kind: OpenKind, id: String, focus: Option<u64>) {
     if kind == OpenKind::Thread {
         let shown = lock().source.shown;
         source::read_status(shown);
+        scripts::thread_opened();
     }
     // Without a host it's read once one is reached.
     if let Some(client) = client {
@@ -4093,12 +4171,20 @@ async fn load(client: Client, generation: u64, kind: OpenKind, id: String, unwat
 
 /// Closes what the page shows: the host stops counting it as on screen.
 pub fn close() {
-    let (was, client) = {
+    let (was, client, had_review) = {
         let mut s = lock();
         s.diff = None;
         s.rewind = None;
-        (s.open.take(), s.client.clone())
+        let had_review = s.review.open;
+        if had_review {
+            let (cap, seq) = (s.review.cap, s.review.seq);
+            s.review = review::Review { cap, seq, ..Default::default() };
+        }
+        (s.open.take(), s.client.clone(), had_review)
     };
+    if had_review {
+        changed();
+    }
     let Some(was) = was else { return };
     reset_rows(bridge(), 0);
     changed();
@@ -4304,25 +4390,7 @@ pub fn start_thread(
     worktree: Option<(String, String)>,
 ) {
     let Some(agent) = AgentId::parse(&agent) else { return };
-    let params = {
-        let s = lock();
-        let info = s.agents.iter().find(|a| a.id == agent);
-        let plan = s.control && info.is_some_and(|a| a.can(Can::Plan));
-        let mode = match mode.as_str() {
-            "auto_edit" => Mode::AutoEdit,
-            "plan" if plan => Mode::Plan,
-            _ => Mode::Supervised,
-        };
-        let mut params = ThreadStartParams::new(agent, folder_id, prompt, mode, Origin::launcher());
-        if s.control {
-            let setting = new_form_setting(&s, agent, &params.folder_id);
-            params.custom_model =
-                setting.model.as_deref().is_some_and(|m| info.is_none_or(|a| a.model(m).is_none()));
-            params.model = setting.model;
-            params.effort = setting.effort;
-        }
-        params
-    };
+    let params = new_thread_params(agent, folder_id, prompt, &mode);
     if let Some((branch, base)) = worktree {
         source::start_in_worktree(params, branch, base);
         return;
@@ -4336,6 +4404,33 @@ pub fn start_thread(
             open_thread(info.id);
         },
     );
+}
+
+/// `thread.start` as the new-thread form sets it: its mode, and its model
+/// and effort for this agent and folder.
+pub(crate) fn new_thread_params(
+    agent: AgentId,
+    folder_id: String,
+    prompt: String,
+    mode: &str,
+) -> ThreadStartParams {
+    let s = lock();
+    let info = s.agents.iter().find(|a| a.id == agent);
+    let plan = s.control && info.is_some_and(|a| a.can(Can::Plan));
+    let mode = match mode {
+        "auto_edit" => Mode::AutoEdit,
+        "plan" if plan => Mode::Plan,
+        _ => Mode::Supervised,
+    };
+    let mut params = ThreadStartParams::new(agent, folder_id, prompt, mode, Origin::launcher());
+    if s.control {
+        let setting = new_form_setting(&s, agent, &params.folder_id);
+        params.custom_model =
+            setting.model.as_deref().is_some_and(|m| info.is_none_or(|a| a.model(m).is_none()));
+        params.model = setting.model;
+        params.effort = setting.effort;
+    }
+    params
 }
 
 fn open_id(kind: OpenKind) -> Option<String> {
@@ -5639,6 +5734,10 @@ pub fn copy_text(key: &str) -> Option<String> {
 
 /// The link numbered `index` in a row's markup.
 pub fn link(key: &str, index: usize) -> Option<LinkRef> {
+    // A pull request's description and comments keep their own.
+    if key.starts_with("pr:") {
+        return review::link(key, index);
+    }
     bridge().render().row(key)?.link(index).cloned()
 }
 
@@ -5906,6 +6005,8 @@ mod tests {
             mcp_seen: vec![api::FolderMcp { agent: AgentId::Claude, names: vec!["github".into()] }],
             checkpoints: true,
             follow_remote: false,
+            scripts: Vec::new(),
+            phone_scripts: false,
         }
     }
 
@@ -5956,6 +6057,7 @@ mod tests {
             changed: None,
             wrote: None,
             ports: Vec::new(),
+            runs: Vec::new(),
         }
     }
 
@@ -6032,6 +6134,30 @@ mod tests {
         assert_eq!(wire.agents[1].auth, None);
         let shown = serde_json::to_string(&wire).unwrap();
         assert!(!shown.contains("/home") && !shown.contains("max") && !shown.contains("2.1.310"), "{shown}");
+    }
+
+    #[test]
+    fn a_folders_commands_reach_phones_only_when_its_phones_may_run_them() {
+        let script = |id: &str, name: &str, command: &str| api::Script {
+            id: id.into(),
+            name: name.into(),
+            command: command.into(),
+        };
+        let mut off = folder("f1", true);
+        off.scripts =
+            vec![script("s0000000a", "dev", "npm run dev"), script("s0000000b", "test", "cargo test")];
+        let mut on = folder("f2", true);
+        on.scripts = vec![script("s0000000c", "serve", "python3 -m http.server")];
+        on.phone_scripts = true;
+        let wire = catalog(&[], &[off, on]);
+        assert!(!wire.folders[0].phone_scripts);
+        assert_eq!(wire.folders[0].script_count, 2, "the phone knows there are scripts");
+        assert!(wire.folders[0].scripts.is_empty(), "but not what they run");
+        let shown = serde_json::to_string(&wire.folders[0]).unwrap();
+        assert!(!shown.contains("npm run dev") && !shown.contains("cargo test"), "{shown}");
+        assert!(wire.folders[1].phone_scripts);
+        assert_eq!(wire.folders[1].scripts.len(), 1);
+        assert_eq!(wire.folders[1].scripts[0].command, "python3 -m http.server", "the confirmation shows it");
     }
 
     #[test]
@@ -7052,6 +7178,9 @@ mod tests {
         }
         async fn git_progress(&self, job: g7link_core::AgentJob, _by: Option<DeviceId>) {
             self.log.lock().unwrap().push(format!("job {}", job.phase));
+        }
+        async fn script_progress(&self, run: g7link_core::AgentScriptRun, _by: Option<DeviceId>) {
+            self.log.lock().unwrap().push(format!("run {}", run.phase));
         }
     }
 

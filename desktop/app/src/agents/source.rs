@@ -762,6 +762,8 @@ pub(super) fn git_json(s: &BridgeState) -> Value {
         },
         "form": { "open": p.form.open, "title": p.form.title.json(), "body": p.form.body.json() },
         "merge": merge,
+        // "Changes and comments" on the card (phase 6).
+        "prDetail": s.review.cap,
         "quotes": src.quotes.get(&info.id).map_or_else(Vec::new, |q| q.iter().map(|q| json!({
             "path": q.path, "first": q.first, "last": q.last,
         })).collect::<Vec<_>>()),
@@ -784,6 +786,8 @@ pub(super) fn prs_json(s: &BridgeState) -> Value {
         "refreshing": list.loading,
         "failed": list.failed && rows.is_none(),
         "readMs": list.read_ms,
+        // A row opens the pull request's view (phase 6).
+        "detail": s.review.cap,
         "gh": gh.map_or_else(|| json!({}), gh_json),
         "more": rows.is_some_and(|r| r.more),
         "rows": rows.map_or_else(Vec::new, |r| r.prs.iter().map(|p| {
@@ -833,7 +837,7 @@ pub(super) fn setup_json(s: &BridgeState) -> Value {
 // ---- Talking to the host ----
 
 /// A refusal's reason word (`data.reason`), else one from its code.
-fn reason_of(e: &ClientError) -> String {
+pub(super) fn reason_of(e: &ClientError) -> String {
     match e {
         ClientError::Remote(rpc) => {
             let by_code = match rpc.code {
@@ -868,7 +872,7 @@ fn by() -> Option<Origin> {
 }
 
 /// Runs `work` with the connected host.
-fn with_client<F, Fut>(work: F)
+pub(super) fn with_client<F, Fut>(work: F)
 where
     F: FnOnce(Client) -> Fut + Send + 'static,
     Fut: Future<Output = ()> + Send,
@@ -884,7 +888,7 @@ where
 }
 
 /// A refusal that has no place in the panel, as a message.
-fn tell(reason: &str) {
+pub(super) fn tell(reason: &str) {
     let text = match reason {
         "unreachable" => tr!("Agents", "Couldn't reach the agent host"),
         "denied" => tr!("Agents", "That is done from G7 Link on this PC."),
@@ -1048,6 +1052,8 @@ pub(crate) fn take_wrote(p: &mut Panel, thread_id: &str, wrote: &Wrote) -> bool 
             }
             took
         }
+        // A review is an ordinary message: nothing fills a field.
+        Purpose::Review => false,
     }
 }
 
@@ -1081,6 +1087,10 @@ pub(crate) fn connected(cap: bool) {
 pub fn panel(open: bool) {
     if std::mem::replace(&mut lock().source.shown, open) == open {
         return;
+    }
+    if open {
+        // One panel at a time beside the transcript.
+        super::scripts::give_way();
     }
     changed();
     if open {
@@ -1210,12 +1220,11 @@ pub fn ask(purpose: &str) {
     {
         let mut s = lock();
         let p = &mut s.source.panel;
-        match purpose {
-            Purpose::Commit => p.message.ask(now_ms()),
-            Purpose::Pr => {
-                p.form.title.ask(now_ms());
-                p.form.body.ask(now_ms());
-            }
+        if purpose == Purpose::Commit {
+            p.message.ask(now_ms());
+        } else {
+            p.form.title.ask(now_ms());
+            p.form.body.ask(now_ms());
         }
     }
     changed();

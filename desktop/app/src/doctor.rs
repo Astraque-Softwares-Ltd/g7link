@@ -364,8 +364,13 @@ pub fn diagnose(facts: &Facts, now_secs: i64) -> Vec<Check> {
     // Each phone.
     for (i, d) in facts.devices.iter().enumerate() {
         let name = &d.name;
+        // Reached only through the relay or Tailscale while it announces
+        // itself here: the direct path on this network was refused.
         let ap_isolated = (!matches!(d.link, LinkState::Online { .. })
-            || matches!(d.link, LinkState::Online { path: ConnectionPath::Relay, .. }))
+            || matches!(
+                d.link,
+                LinkState::Online { path: ConnectionPath::Relay | ConnectionPath::Tailscale, .. }
+            ))
             && d.mdns_seen_ago_secs.is_some_and(|s| s <= 120)
             && d.dial_failures >= 1;
         // A network numbered outside the private ranges (#131): G7 Link
@@ -426,6 +431,7 @@ pub fn diagnose(facts: &Facts, now_secs: i64) -> Vec<Check> {
                     ConnectionPath::Lan => tr!("Doctor", "On this network"),
                     ConnectionPath::Usb => tr!("Doctor", "On USB"),
                     ConnectionPath::Relay => tr!("Doctor", "While away"),
+                    ConnectionPath::Tailscale => tr!("Doctor", "Over Tailscale"),
                 };
                 check(
                     &id,

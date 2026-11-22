@@ -50,6 +50,8 @@ Item {
     signal attachRequested(real x, real y)
     // The model control was clicked: open the picker over (x, y), in the window.
     signal pickerRequested(real x, real y)
+    // Ctrl+Shift+M: open the mode menu over (x, y), in the window.
+    signal modeMenuRequested(real x, real y)
 
     readonly property bool asking: (ask.token || "").length > 0
     readonly property bool questionShown: (question.token || "").length > 0
@@ -136,6 +138,12 @@ Item {
             return
         const p = modelControl.mapToItem(null, 0, 0)
         composer.pickerRequested(p.x, p.y)
+    }
+    function openModeMenu() {
+        if (!settingsOpen)
+            return
+        const p = modelControl.mapToItem(null, 0, 0)
+        composer.modeMenuRequested(p.x, p.y)
     }
 
     // The composer's text and cursor reach the bridge once a frame, after

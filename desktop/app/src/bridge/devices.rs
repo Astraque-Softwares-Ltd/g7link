@@ -182,6 +182,7 @@ fn role_value(device: &Row, role: &str) -> QVariant {
             LinkState::Online { path: ConnectionPath::Lan, .. } => "lan",
             LinkState::Online { path: ConnectionPath::Usb, .. } => "usb",
             LinkState::Online { path: ConnectionPath::Relay, .. } => "relay",
+            LinkState::Online { path: ConnectionPath::Tailscale, .. } => "tailscale",
             LinkState::Connecting => "connecting",
             LinkState::Offline { .. } => "offline",
         }),

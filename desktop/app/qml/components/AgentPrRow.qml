@@ -5,13 +5,16 @@ import app.g7link
 
 // A row of the Pull Requests list (§SC4.4): the title, its repository,
 // number and draft, its checks, how long ago it moved; "Open thread" when a
-// thread here works on its branch, "Open on GitHub", and "Copy link".
+// thread here works on its branch, "Open on GitHub", and "Copy link". A
+// click or Enter opens the pull request's view (phase 6), when the host reads one.
 Item {
     id: row
     // { number, title, repo, state, draft, updatedMs, url, canOpen, thread, checks: { pass, fail, pending } }
     property var pr: ({})
     property real now: Date.now()
+    property bool canDetail: false
     signal openThread(string id)
+    signal opened(string repo, int number)
 
     readonly property var checks: pr.checks || ({})
     readonly property int total: (checks.pass || 0) + (checks.fail || 0) + (checks.pending || 0)
@@ -27,11 +30,26 @@ Item {
     }
 
     height: 58
+    activeFocusOnTab: canDetail
+    Accessible.role: Accessible.Button
+    Accessible.name: pr.title || ""
+    Accessible.onPressAction: if (row.canDetail) row.opened(row.pr.repo || "", row.pr.number || 0)
+    Keys.onReturnPressed: if (row.canDetail) row.opened(row.pr.repo || "", row.pr.number || 0)
+    Keys.onEnterPressed: if (row.canDetail) row.opened(row.pr.repo || "", row.pr.number || 0)
 
     Rectangle {
         anchors.fill: parent
         radius: Theme.rowRadius
         color: rowHover.hovered ? Theme.selection : "transparent"
+        border.width: row.activeFocus ? 1 : 0
+        border.color: Theme.focusRing
+    }
+    // Under the buttons: a click anywhere else opens the view.
+    MouseArea {
+        anchors.fill: parent
+        enabled: row.canDetail
+        cursorShape: Qt.PointingHandCursor
+        onClicked: row.opened(row.pr.repo || "", row.pr.number || 0)
     }
     Icon {
         id: glyph

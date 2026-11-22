@@ -81,14 +81,14 @@ fn app_options(quality: Quality, on_relay: bool) -> MirrorStart {
     MirrorStart { max_size: options.max_size.min(OPTIONS.max_size), ..options }
 }
 
+/// The phone is away: on the relay, or over Tailscale (likely on mobile
+/// data). Sharper and Smoother start at Balanced then, as on the relay.
 fn on_relay(device: &DeviceId) -> bool {
+    use g7link_core::ConnectionPath::{Relay, Tailscale};
     core_host::host().hub.read(|s| {
         s.devices.iter().any(|d| {
             d.id == *device
-                && matches!(
-                    d.link,
-                    g7link_core::LinkState::Online { path: g7link_core::ConnectionPath::Relay, .. }
-                )
+                && matches!(d.link, g7link_core::LinkState::Online { path: Relay | Tailscale, .. })
         })
     })
 }

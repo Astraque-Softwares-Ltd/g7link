@@ -29,6 +29,14 @@ Column {
     // The host keeps a store of threads, and restore points.
     readonly property bool history: connected && setup.history === true
     readonly property bool undo: connected && setup.undo === true
+    // The host keeps each folder's scripts (phase 6).
+    readonly property bool scriptsOn: connected && setup.scripts === true
+    // Where a folder's card starts, for "Edit scripts…" (-1: not listed).
+    function folderY(id) {
+        const at = area.folders.findIndex((f) => f.id === id)
+        const item = at >= 0 ? folderRepeater.itemAt(at) : null
+        return item ? item.mapToItem(area, 0, 0).y : -1
+    }
     readonly property var store: setup.store || ({})
 
     // "61 MB", "820 KB": what the host keeps on disk.
@@ -360,6 +368,7 @@ Column {
             title: qsTr("No folders yet.")
         }
         Repeater {
+            id: folderRepeater
             model: area.folders
             delegate: Column {
                 id: folderItem
@@ -414,6 +423,22 @@ Column {
                         checked: folderItem.modelData.checkpoints !== false
                         onToggled: (on) => Agents.setFolderCheckpoints(folderItem.modelData.id, on)
                     }
+                }
+                // Commands you run here with one click (§X5.1).
+                Line {
+                    visible: area.scriptsOn
+                    indent: 30
+                    iconPath: Icons.play
+                    title: qsTr("Scripts")
+                    description: qsTr("Commands you run in this folder with one click. They run on this PC as you, like in a terminal. G7 reads none from the folder itself.")
+                }
+                AgentScriptRows {
+                    visible: area.scriptsOn
+                    x: Theme.rowPadding + 60
+                    width: parent.width - x - Theme.rowPadding
+                    bottomPadding: 8
+                    folderId: folderItem.modelData.id
+                    scripts: folderItem.modelData.scripts || ({})
                 }
             }
         }

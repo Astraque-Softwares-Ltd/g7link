@@ -10,7 +10,7 @@ use g7link_core::TurnRange as WireRange;
 
 use super::*;
 
-fn a_thread(id: &str) -> ThreadInfo {
+pub(super) fn a_thread(id: &str) -> ThreadInfo {
     ThreadInfo {
         id: id.into(),
         agent: AgentId::Claude,
@@ -54,6 +54,7 @@ fn a_thread(id: &str) -> ThreadInfo {
         changed: None,
         wrote: None,
         ports: Vec::new(),
+        runs: Vec::new(),
     }
 }
 

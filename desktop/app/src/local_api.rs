@@ -524,6 +524,7 @@ fn handle_get_devices() -> (u16, &'static str, Value) {
                             g7link_core::ConnectionPath::Lan => "lan",
                             g7link_core::ConnectionPath::Usb => "usb",
                             g7link_core::ConnectionPath::Relay => "relay",
+                            g7link_core::ConnectionPath::Tailscale => "tailscale",
                         },
                     ),
                     LinkState::Connecting => (false, "connecting"),

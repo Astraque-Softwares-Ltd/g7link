@@ -29,6 +29,7 @@ Separating task-oriented workflows from implementation internals keeps everyday 
 - [Clipboard](clipboard.md): Sharing plain text, HTML, images, and copied files between PC and phone, Quick Settings tile and share sheet sending, `Elevated` automatic background sync, smart context chips, encrypted 50-item history, and automatic exclusion of passwords and one-time codes.
 - [Files and Transfers](files-and-transfers.md): Sending files and folders both ways, drag and drop, file manager context menu integration, pause and resume, BLAKE3 integrity verification, the persistent send queue and `Waiting to send` panel, mounting phone storage in your file manager, browsing PC files from your phone, folder sync, and LocalSend compatibility.
 - [Photos](photos.md): Browsing the phone camera roll, screenshots, and albums on your PC, full-resolution inspection, dragging photos directly into your file manager or desktop apps, and new photo alerts.
+- [Agents](agents.md): Claude Code and Codex threads on your PC, approvals, project scripts, read-only pull request review, and the Agents page's keyboard shortcuts.
 
 ### Screen, Camera, Audio, and Input
 
