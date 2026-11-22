@@ -1,44 +1,44 @@
 {
   "schema": 1,
   "channel": "stable",
-  "version": "0.1.24",
+  "version": "0.1.25",
   "name": "Pollen",
-  "published": "2026-11-21T19:27:59Z",
-  "notes": "https://github.com/Astraque-Softwares-Ltd/g7link/releases/tag/v0.1.24",
+  "published": "2026-11-22T08:45:30Z",
+  "notes": "https://github.com/Astraque-Softwares-Ltd/g7link/releases/tag/v0.1.25",
   "files": [
     {
-      "name": "G7Link-0.1.24-android.apk",
-      "url": "https://github.com/Astraque-Softwares-Ltd/g7link/releases/download/v0.1.24/G7Link-0.1.24-android.apk",
-      "sha256": "3628c27abf2442de4e36edccc097762bbc589b85b83676692870fd3c2154cdee",
-      "size": 69908278
+      "name": "G7Link-0.1.25-android.apk",
+      "url": "https://github.com/Astraque-Softwares-Ltd/g7link/releases/download/v0.1.25/G7Link-0.1.25-android.apk",
+      "sha256": "b57a741625800af1138477ad0cb9c228dbb81c06bea738fbf259be9cbaaa6b7b",
+      "size": 70561962
     },
     {
-      "name": "G7Link-0.1.24-linux-x86_64.tar.gz",
-      "url": "https://github.com/Astraque-Softwares-Ltd/g7link/releases/download/v0.1.24/G7Link-0.1.24-linux-x86_64.tar.gz",
-      "sha256": "b2de0f8cc472aabcec5cfd23a9eb99d7081df5a05f904f6e7d2779489e160dd3",
-      "size": 84406643
+      "name": "G7Link-0.1.25-linux-x86_64.tar.gz",
+      "url": "https://github.com/Astraque-Softwares-Ltd/g7link/releases/download/v0.1.25/G7Link-0.1.25-linux-x86_64.tar.gz",
+      "sha256": "5b06a7a53452623b287e69405a9f3fb991723f16863bd3154166ed364e44a923",
+      "size": 85021479
     },
     {
-      "name": "G7Link-0.1.24-x86_64.AppImage",
-      "url": "https://github.com/Astraque-Softwares-Ltd/g7link/releases/download/v0.1.24/G7Link-0.1.24-x86_64.AppImage",
-      "sha256": "c781dcf264cd0eefd5bd10ff6388906a40250ac9f0ca5ed540a09f791072553d",
-      "size": 76425720
+      "name": "G7Link-0.1.25-x86_64.AppImage",
+      "url": "https://github.com/Astraque-Softwares-Ltd/g7link/releases/download/v0.1.25/G7Link-0.1.25-x86_64.AppImage",
+      "sha256": "141245de597f9ffed9fa54135e1097fd3682cda69200d2e973d9ad409ad01c4e",
+      "size": 76974584
     },
     {
-      "name": "g7link-0.1.24-1.x86_64.rpm",
-      "url": "https://github.com/Astraque-Softwares-Ltd/g7link/releases/download/v0.1.24/g7link-0.1.24-1.x86_64.rpm",
-      "sha256": "6abea54b1b551de6071c7f9680d23bdafda96b166da8ad7a0e1e287c7012dac0",
-      "size": 83939901
+      "name": "g7link-0.1.25-1.x86_64.rpm",
+      "url": "https://github.com/Astraque-Softwares-Ltd/g7link/releases/download/v0.1.25/g7link-0.1.25-1.x86_64.rpm",
+      "sha256": "8be532fd1f44527c0294ef2490896bc41cc42ef7902a209310ef1dc9d1b0325d",
+      "size": 84543836
     },
     {
-      "name": "g7link_0.1.24_amd64.deb",
-      "url": "https://github.com/Astraque-Softwares-Ltd/g7link/releases/download/v0.1.24/g7link_0.1.24_amd64.deb",
-      "sha256": "a5b29264c4dbb61787c9ee7eb486b740f3c4011fbc239157602d8e8e7dd0a3b4",
-      "size": 62260094
+      "name": "g7link_0.1.25_amd64.deb",
+      "url": "https://github.com/Astraque-Softwares-Ltd/g7link/releases/download/v0.1.25/g7link_0.1.25_amd64.deb",
+      "sha256": "6f90dadfc93b9afc7716a212d930b4fd0e513814e54f6ebd43796c1ee8f7057a",
+      "size": 62750422
     },
     {
       "name": "install.sh",
-      "url": "https://github.com/Astraque-Softwares-Ltd/g7link/releases/download/v0.1.24/install.sh",
+      "url": "https://github.com/Astraque-Softwares-Ltd/g7link/releases/download/v0.1.25/install.sh",
       "sha256": "e9193496312e544e823f516572be200775130e7ce41edaa7302b1490a15f82df",
       "size": 27133
     }
