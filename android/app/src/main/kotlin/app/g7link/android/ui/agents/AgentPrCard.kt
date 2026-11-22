@@ -47,8 +47,9 @@ import java.util.Date
 
 /**
  * The branch's pull request on the phone (board 18): the card when there is
- * one, the form to open one when there isn't and this phone may, else why
- * not (no GitHub CLI on the PC, signed out, not on GitHub, not pushed).
+ * one, with "Changes and comments" (phase 6 §X6.6), the form to open one when
+ * there isn't and this phone may, else why not (no GitHub CLI on the PC,
+ * signed out, not on GitHub, not pushed).
  */
 @Composable
 internal fun AgentPrScreen(
@@ -60,7 +61,27 @@ internal fun AgentPrScreen(
     agentName: String,
     pushAllowed: Boolean,
     onClose: () -> Unit,
+    agents: AgentsState = AgentsState(),
+    /** Lines picked in the pull request's diff become a quote in the reply box; null: not offered. */
+    onComment: ((Quote) -> Unit)? = null,
+    /** "Ask <agent> to review it" was sent: the thread is shown. */
+    onAsked: () -> Unit = onClose,
 ) {
+    var detail by remember(threadId) { mutableStateOf(false) }
+    if (detail) {
+        AgentPrDetailScreen(
+            device = device,
+            core = core,
+            agents = agents,
+            threadId = threadId,
+            repo = null,
+            number = null,
+            onComment = onComment,
+            onAsked = { onAsked() },
+            onClose = { detail = false },
+        )
+        return
+    }
     BackHandler(onBack = onClose)
     val scheme = MaterialTheme.colorScheme
     var view by remember(threadId) { mutableStateOf<AgentCall<PrView>?>(null) }
@@ -110,7 +131,10 @@ internal fun AgentPrScreen(
                 is AgentCall.Ok -> {
                     val pr = result.value.pr
                     when {
-                        pr != null -> PrCard(pr, unreached = result.value.why == NoPr.NETWORK, host = result.value.host, onRefresh = reload)
+                        pr != null -> {
+                            PrCard(pr, unreached = result.value.why == NoPr.NETWORK, host = result.value.host, onRefresh = reload)
+                            G7RaisedButton(label = stringResource(R.string.agents_pr_detail_open), onClick = { detail = true }, modifier = Modifier.fillMaxWidth())
+                        }
                         result.value.gh != GhState.OK -> GhReason(result.value.gh, device.name)
                         else -> GitNotice(
                             when (AgentGit.prRow(status, result.value, offline = !device.online, pushAllowed = pushAllowed)) {
@@ -222,7 +246,7 @@ internal fun PrCard(pr: PrInfo, unreached: Boolean, host: String?, onRefresh: ()
 
 /** One check: its mark, its name, its state in words. */
 @Composable
-private fun CheckRow(check: PrCheck) {
+internal fun CheckRow(check: PrCheck) {
     val scheme = MaterialTheme.colorScheme
     Row(Modifier.fillMaxWidth().heightIn(min = 32.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         CheckMark(check.state, size = 13.dp)

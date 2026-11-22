@@ -5,7 +5,9 @@ import android.app.Activity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -17,6 +19,7 @@ import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.RadioButton
@@ -25,7 +28,9 @@ import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -36,15 +41,32 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleResumeEffect
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
 import app.g7link.android.R
 import app.g7link.android.ble.PcBleLink
 import app.g7link.android.core.Core
 import app.g7link.android.core.Device
+import app.g7link.android.core.Tailnet
 import app.g7link.android.ui.home.linkText
+import app.g7link.android.ui.settings.PcAddressDialog
+import app.g7link.android.ui.settings.awayReachText
+import app.g7link.android.ui.theme.G7Icons
 import app.g7link.android.ui.theme.G7RowAction
+import app.g7link.core.AwayReach
 import app.g7link.core.Link
 import app.g7link.core.RemoteRoute
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
+
+/** How often the Tailscale row is read again while the sheet is open, as a PC's address row in Settings. */
+private const val TAILSCALE_REFRESH_MS = 3_000L
+
+/** What the Tailscale row knows: Tailscale on this phone, how the PC is reached from away, and its saved address. */
+private data class TailscaleReach(val up: Boolean, val away: AwayReach?, val saved: String?)
 
 /**
  * The touchpad's connection to [device]: Auto, the network or Bluetooth, each
@@ -76,6 +98,21 @@ internal fun ConnectionSheet(device: Device, core: Core, onDismiss: () -> Unit) 
     LifecycleResumeEffect(nearby) {
         nearby.refresh()
         onPauseOrDispose {}
+    }
+
+    // The Tailscale row: read when the sheet opens and every few seconds while it shows.
+    var tailscale by remember(device.id) { mutableStateOf<TailscaleReach?>(null) }
+    var addressOpen by remember(device.id) { mutableStateOf(false) }
+    var reachRead by remember(device.id) { mutableIntStateOf(0) }
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    LaunchedEffect(core, device.id, lifecycle, reachRead) {
+        lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+            while (true) {
+                val up = withContext(Dispatchers.IO) { Tailnet.isUp(context) }
+                tailscale = TailscaleReach(up, core.awayReach(device.id), core.peerAddress(device.id))
+                delay(TAILSCALE_REFRESH_MS)
+            }
+        }
     }
 
     fun bringUp(pick: Boolean) {
@@ -146,6 +183,9 @@ internal fun ConnectionSheet(device: Device, core: Core, onDismiss: () -> Unit) 
                     onPick = { core.setRemoteRoute(device.id, RemoteRoute.NETWORK) },
                     onAction = {},
                 )
+                tailscale?.takeIf { tailscaleRowShown(it.up, it.away) }?.let { reach ->
+                    TailscaleRow(away = reach.away, onClick = { addressOpen = true })
+                }
                 RouteRow(
                     label = stringResource(R.string.remote_path_bluetooth),
                     status = rows.bluetooth,
@@ -171,6 +211,43 @@ internal fun ConnectionSheet(device: Device, core: Core, onDismiss: () -> Unit) 
                 )
             }
         }
+    }
+    if (addressOpen) {
+        PcAddressDialog(
+            core = core,
+            device = device,
+            saved = tailscale?.saved,
+            onSaved = { reachRead++ },
+            onDismiss = { addressOpen = false },
+        )
+    }
+}
+
+/**
+ * Tailscale under the network row: not a route to pick (Auto goes over it by
+ * itself when Wi-Fi isn't there), but how the PC is reached from away; a tap
+ * opens the PC's address.
+ */
+@Composable
+private fun TailscaleRow(away: AwayReach?, onClick: () -> Unit) {
+    val scheme = MaterialTheme.colorScheme
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 56.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .clickable(role = Role.Button, onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        // Lined up with the radio rows' labels.
+        Box(Modifier.size(24.dp))
+        Column(Modifier.weight(1f)) {
+            Text(stringResource(R.string.remote_path_tailscale), style = MaterialTheme.typography.bodyLarge, color = scheme.onSurface)
+            away?.let { Text(stringResource(awayReachText(it)), style = MaterialTheme.typography.bodySmall, color = scheme.onSurfaceVariant) }
+        }
+        Icon(G7Icons.chevronRight, contentDescription = null, tint = scheme.onSurfaceVariant, modifier = Modifier.size(12.dp))
     }
 }
 
@@ -238,6 +315,7 @@ private fun pathName(path: PathName): String = stringResource(
         PathName.Usb -> R.string.remote_path_usb
         PathName.Away -> R.string.remote_path_away
         PathName.Bluetooth -> R.string.remote_path_bluetooth
+        PathName.Tailscale -> R.string.remote_path_tailscale
     },
 )
 

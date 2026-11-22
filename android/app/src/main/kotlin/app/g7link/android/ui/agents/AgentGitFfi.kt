@@ -4,6 +4,7 @@ package app.g7link.android.ui.agents
 import app.g7link.core.AgentBranch
 import app.g7link.core.AgentCatalog
 import app.g7link.core.AgentCheckState
+import app.g7link.core.AgentFolder
 import app.g7link.core.AgentGhUse
 import app.g7link.core.AgentGit
 import app.g7link.core.AgentGitStrip
@@ -16,6 +17,9 @@ import app.g7link.core.AgentJob
 import app.g7link.core.AgentJobKind
 import app.g7link.core.AgentJobPhase
 import app.g7link.core.AgentPrBrief
+import app.g7link.core.AgentPrComment
+import app.g7link.core.AgentPrDetail
+import app.g7link.core.AgentPrFile
 import app.g7link.core.AgentPrInfo
 import app.g7link.core.AgentPrReview
 import app.g7link.core.AgentPrRows
@@ -24,6 +28,9 @@ import app.g7link.core.AgentPrState
 import app.g7link.core.AgentPrView
 import app.g7link.core.AgentPrWhy
 import app.g7link.core.AgentRepo
+import app.g7link.core.AgentRunBrief
+import app.g7link.core.AgentRunPhase
+import app.g7link.core.AgentScriptRun
 import app.g7link.core.AgentThread
 import app.g7link.core.AgentWritePurpose
 import app.g7link.core.Event
@@ -192,6 +199,9 @@ internal object AgentGitFfi {
             AgentPrWhy.NETWORK -> NoPr.NETWORK
             // Not a repository: no pull request can be opened from it, as from a remote not on GitHub.
             AgentPrWhy.NOT_REPO -> NoPr.NOT_GITHUB
+            // The detail's words (phase 6 §X6.3); the branch's view reads them as GitHub not answering, and as none.
+            AgentPrWhy.TOO_LARGE -> NoPr.NETWORK
+            AgentPrWhy.NO_PR -> null
         },
         host = view.github?.host,
         hosts = view.gh.hosts,
@@ -216,6 +226,101 @@ internal object AgentGitFfi {
         more = rows.more,
         hosts = rows.gh.hosts,
     )
+
+    /** A pull request read in full (`agent.pr.detail`, phase 6 §X6.5). */
+    fun detail(detail: AgentPrDetail): PrDetail = PrDetail(
+        pr = detail.pr?.let(::pr),
+        gh = gh(detail.gh.gh),
+        why = detail.why?.let(::detailWhy),
+        repo = detail.repo,
+        author = detail.author,
+        body = detail.body,
+        bodyCut = detail.bodyCut,
+        adds = count(detail.adds),
+        dels = count(detail.dels),
+        changed = count(detail.changed),
+        files = detail.files.map(::prFile),
+        filesMore = detail.filesMore,
+        comments = AgentPrDetails.ordered(detail.comments.map(::prComment)),
+        commentsOlder = count(detail.commentsOlder),
+        threadId = detail.thread,
+        readMs = long(detail.readMs),
+        hosts = detail.gh.hosts,
+    )
+
+    fun detailWhy(why: AgentPrWhy): PrDetailWhy = when (why) {
+        AgentPrWhy.NOT_GITHUB -> PrDetailWhy.NOT_GITHUB
+        AgentPrWhy.NO_UPSTREAM -> PrDetailWhy.NO_UPSTREAM
+        AgentPrWhy.DETACHED -> PrDetailWhy.DETACHED
+        AgentPrWhy.NETWORK -> PrDetailWhy.NETWORK
+        AgentPrWhy.NOT_REPO -> PrDetailWhy.NOT_REPO
+        AgentPrWhy.TOO_LARGE -> PrDetailWhy.TOO_LARGE
+        AgentPrWhy.NO_PR -> PrDetailWhy.NO_PR
+    }
+
+    private fun prFile(file: AgentPrFile): GitFile = GitFile(
+        path = file.path,
+        change = AgentPrDetails.change(file.change),
+        adds = count(file.adds),
+        dels = count(file.dels),
+    )
+
+    private fun prComment(comment: AgentPrComment): PrComment = PrComment(
+        author = comment.author,
+        atMs = long(comment.atMs),
+        body = comment.body,
+        cut = comment.cut,
+        review = AgentPrDetails.review(comment.review),
+        url = comment.url,
+    )
+
+    // ---- Project scripts (phase 6 §X4) ----
+
+    /** A catalog folder as the Scripts sheet reads it; its scripts come only while phones can run them. */
+    fun scriptsFolder(folder: AgentFolder): ScriptsFolder = ScriptsFolder(
+        id = folder.id,
+        label = folder.label,
+        phoneScripts = folder.phoneScripts,
+        count = maxOf(count(folder.scriptCount), folder.scripts.size),
+        scripts = if (folder.phoneScripts) folder.scripts.map { Script(it.id, it.name, it.command) } else emptyList(),
+    )
+
+    fun scriptRun(run: AgentScriptRun): ScriptRun = ScriptRun(
+        id = run.id,
+        threadId = run.thread,
+        scriptId = run.script,
+        name = run.name,
+        phase = runPhase(run.phase),
+        exit = run.exit,
+        startedMs = long(run.startedMs),
+        endedMs = run.endedMs?.let { long(it) },
+        by = run.by,
+        mine = run.mine,
+        lines = run.lines,
+        from = long(run.from),
+        dropped = count(run.dropped),
+        reason = run.reason,
+    )
+
+    /** A thread's list of its runs (`AgentThread.runs`): names and states only. */
+    fun briefs(thread: AgentThread): List<ScriptRun> = thread.runs.map { runBrief(thread.id, it) }
+
+    private fun runBrief(threadId: String, brief: AgentRunBrief): ScriptRun = ScriptRun(
+        id = brief.id,
+        threadId = threadId,
+        scriptId = "",
+        name = brief.name,
+        phase = runPhase(brief.phase),
+        exit = brief.exit,
+        brief = true,
+    )
+
+    fun runPhase(phase: AgentRunPhase): RunPhase = when (phase) {
+        AgentRunPhase.RUNNING -> RunPhase.RUNNING
+        AgentRunPhase.DONE -> RunPhase.DONE
+        AgentRunPhase.FAILED -> RunPhase.FAILED
+        AgentRunPhase.STOPPED -> RunPhase.STOPPED
+    }
 
     fun show(show: PrShow): AgentPrShow = when (show) {
         PrShow.MINE -> AgentPrShow.MINE
@@ -306,6 +411,17 @@ internal object AgentGitFfi {
     }
 
     private fun UInt.toIntClamped(): Int = if (this > Int.MAX_VALUE.toUInt()) Int.MAX_VALUE else toInt()
+
+    // A count or a time from the FFI, whichever unsigned or signed width it comes in.
+    private fun count(value: UInt): Int = value.toIntClamped()
+
+    private fun count(value: UByte): Int = value.toInt()
+
+    private fun count(value: Int): Int = value.coerceAtLeast(0)
+
+    private fun long(value: Long): Long = value
+
+    private fun long(value: ULong): Long = value.toLongClamped()
 
     private fun ULong.toLongClamped(): Long = if (this > Long.MAX_VALUE.toULong()) Long.MAX_VALUE else toLong()
 }

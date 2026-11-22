@@ -103,9 +103,12 @@ fun PcAddressRow(core: Core, device: Device) {
     }
 }
 
-/** Where to reach [device]: a Tailscale address or name, with an optional port. */
+/**
+ * Where to reach [device]: a Tailscale address or name, with an optional port.
+ * Also opened from the touchpad's connection sheet (its Tailscale row).
+ */
 @Composable
-private fun PcAddressDialog(
+internal fun PcAddressDialog(
     core: Core,
     device: Device,
     saved: String?,
@@ -220,8 +223,9 @@ private fun PcAddressDialog(
     )
 }
 
+/** How [away] is said under a PC's address, and under the connection sheet's Tailscale row. */
 @StringRes
-private fun awayReachText(away: AwayReach): Int = when (away) {
+internal fun awayReachText(away: AwayReach): Int = when (away) {
     AwayReach.TAILSCALE -> R.string.away_reach_tailscale
     AwayReach.MOBILE_DATA -> R.string.away_reach_mobile_data
     AwayReach.TAILSCALE_OFF -> R.string.away_reach_tailscale_off

@@ -2,9 +2,14 @@
 package app.g7link.android.ui.remote
 
 import app.g7link.android.core.BleSetup
+import app.g7link.android.core.CoreState
 import app.g7link.android.core.Device
+import app.g7link.core.AwayReach
+import app.g7link.core.DeviceInfo
 import app.g7link.core.DeviceKind
+import app.g7link.core.Event
 import app.g7link.core.Link
+import app.g7link.core.PairedDevice
 import app.g7link.core.RemotePath
 import app.g7link.core.RemoteRoute
 import org.junit.Assert.assertEquals
@@ -235,6 +240,54 @@ class RemoteConnectionTest {
         val offline = connectionRows(pc(link = Link.Offline(null), active = RemotePath.BLE), NearbyPermission.Granted, true)
         assertNull("called Network", offline.networkPath)
         assertEquals(RowStatus(RowText.NotConnected), offline.network)
+    }
+
+    @Test
+    fun `a direct connection over Tailscale is named Tailscale, not Wi-Fi`() {
+        val tailnet = Link.Online(relayed = false, usb = false, rttMs = 120u, tailnet = true)
+        assertEquals(PathName.Tailscale, networkPath(tailnet))
+        assertEquals(
+            "the header's note",
+            RemoteNote.Path(PathName.Tailscale, 120, auto = true),
+            remoteNote(pc(link = tailnet, sessionRttMs = 120u), RemoteMode.Touchpad),
+        )
+        val rows = connectionRows(pc(link = tailnet, sessionRttMs = 120u), NearbyPermission.Granted, bluetoothOn = true)
+        assertEquals("the network row reads “Tailscale · 120 ms”", PathName.Tailscale, rows.networkPath)
+        assertEquals(RowStatus(RowText.Rtt(120)), rows.network)
+        assertEquals(RowStatus(RowText.Using(PathName.Tailscale, 120)), autoRow(pc(link = tailnet, sessionRttMs = 120u), NearbyPermission.Granted, true))
+        assertEquals("relayed first", PathName.Away, networkPath(Link.Online(relayed = true, usb = false, rttMs = 80u, tailnet = true)))
+        assertEquals("then USB", PathName.Usb, networkPath(Link.Online(relayed = false, usb = true, rttMs = 1u, tailnet = true)))
+        assertEquals(PathName.WiFi, networkPath(wifi))
+    }
+
+    @Test
+    fun `the Tailscale row shows when Tailscale is up here or the PC is reached from away`() {
+        assertTrue(tailscaleRowShown(tailnetUp = true, away = null))
+        assertTrue(tailscaleRowShown(tailnetUp = true, away = AwayReach.HOME_ONLY))
+        assertTrue(tailscaleRowShown(tailnetUp = false, away = AwayReach.TAILSCALE_OFF))
+        assertTrue(tailscaleRowShown(tailnetUp = false, away = AwayReach.MOBILE_DATA))
+        assertTrue(tailscaleRowShown(tailnetUp = false, away = AwayReach.TAILSCALE))
+        assertFalse(tailscaleRowShown(tailnetUp = false, away = AwayReach.HOME_ONLY))
+        assertFalse("not read yet", tailscaleRowShown(tailnetUp = false, away = null))
+    }
+
+    @Test
+    fun `a move onto the tailnet without a reconnect reaches the note`() {
+        val paired = PairedDevice(
+            id = "pc",
+            info = DeviceInfo("guchu", DeviceKind.DESKTOP, "linux", "6.12", null, null),
+            pairedAt = 0L,
+            link = Link.Offline(null),
+            canWake = false,
+            reconnect = true,
+        )
+        var state = CoreState()
+            .reduce(Event.DeviceAdded(paired))
+            .reduce(Event.LinkChanged("pc", Link.Online(relayed = false, usb = false, rttMs = 100u)))
+        assertEquals(PathName.WiFi, networkPath(state.device("pc")!!.link))
+        // Same round trip, now over Tailscale: still a change.
+        state = state.reduce(Event.LinkChanged("pc", Link.Online(relayed = false, usb = false, rttMs = 101u, tailnet = true)))
+        assertEquals(PathName.Tailscale, networkPath(state.device("pc")!!.link))
     }
 
     @Test

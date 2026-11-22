@@ -93,6 +93,9 @@ sealed interface FullView {
 
     /** A push on the PC, as it runs and how it ended. */
     data class Push(val job: String, val branch: String, val remote: String) : FullView
+
+    /** A run of one of the folder's scripts, its output as it comes (phase 6 §X5.2). */
+    data class RunOutput(val run: String) : FullView
 }
 
 /** A link waiting for Open or Cancel: the target as the render crate let it through, and the text that showed it. */

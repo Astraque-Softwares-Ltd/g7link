@@ -496,6 +496,7 @@ data class CoreState(
                 if (oldLink is Link.Online && newLink is Link.Online &&
                     oldLink.relayed == newLink.relayed &&
                     oldLink.usb == newLink.usb &&
+                    oldLink.tailnet == newLink.tailnet &&
                     (oldLink.rttMs >= 1u) == (newLink.rttMs >= 1u) &&
                     kotlin.math.abs(oldLink.rttMs.toInt() - newLink.rttMs.toInt()) < 3 &&
                     prev.wakeState == WakeState.Idle
@@ -641,6 +642,8 @@ data class CoreState(
         // A thread's folder and its source-control jobs (§SC6.1): kept by Core.agents with the threads.
         is Event.AgentGit,
         is Event.AgentGitJob,
+        // A run of a folder's script and its last lines (phase 6 §X5.2): kept by Core.agents, never saved.
+        is Event.AgentScriptRun,
         -> this
     }
 
@@ -754,6 +757,7 @@ internal fun Event.affectsCoreState(): Boolean = when (this) {
     is Event.AgentBeside,
     is Event.AgentGit,
     is Event.AgentGitJob,
+    is Event.AgentScriptRun,
     -> false
     else -> true
 }

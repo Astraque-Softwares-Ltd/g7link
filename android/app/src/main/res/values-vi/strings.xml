@@ -365,6 +365,7 @@
 <string name="remote_path_away">Từ xa</string>
 <string name="remote_path_bluetooth">Bluetooth</string>
 <string name="remote_path_network">Mạng</string>
+<string name="remote_path_tailscale">Tailscale</string>
 <string name="remote_note_path_rtt">%1$s · %2$d ms</string>
 <string name="remote_note_auto">Tự động · %1$s</string>
 <string name="remote_note_auto_rtt">Tự động · %1$s · %2$d ms</string>
@@ -2144,4 +2145,50 @@
     <string name="agents_port_listening">Có máy chủ đang lắng nghe ở cổng %1$d</string>
     <string name="agents_port_open_on_phone">Mở trên điện thoại</string>
     <string name="agents_port_pc_only">Máy chủ chỉ phản hồi trên chính %1$s. Hãy khởi động với --host để mở ở đây.</string>
+    <!-- Agents phase 6 (contract §X5.2, §X6.6): a folder's scripts, and a pull request read in full. -->
+    <string name="agents_script_title">Script</string>
+    <string name="agents_script_run">Chạy</string>
+    <string name="agents_script_stop">Dừng</string>
+    <string name="agents_script_running_line">%1$s đang chạy</string>
+    <string name="agents_script_confirm_title">Chạy “%1$s” trên %2$s?</string>
+    <string name="agents_script_off">Để chạy script của thư mục này ở đây, hãy bật “Điện thoại có thể chạy” cho thư mục trong G7 Link trên %1$s.</string>
+    <string name="agents_script_none">Chưa chạy lần nào.</string>
+    <string name="agents_script_state_running">Đang chạy</string>
+    <string name="agents_script_state_done">Đã xong</string>
+    <string name="agents_script_state_failed_exit">Thất bại · mã thoát %1$d</string>
+    <string name="agents_script_state_failed">Thất bại</string>
+    <string name="agents_script_state_stopped">Đã dừng</string>
+    <string name="agents_script_not_started">Không khởi động được.</string>
+    <string name="agents_script_from">từ %1$s</string>
+    <string name="agents_script_tail">Đang hiện các dòng cuối. Phần còn lại ở trên %1$s.</string>
+    <string name="agents_script_busy">“%1$s” đang chạy rồi.</string>
+    <string name="agents_script_limit">Có quá nhiều script đang chạy trên %1$s. Hãy dừng bớt một cái trước.</string>
+    <string name="agents_script_gone">Script đó không còn trong danh sách của thư mục này.</string>
+    <string name="agents_pr_detail_title">Pull request #%1$d</string>
+    <string name="agents_pr_detail_open">Thay đổi và bình luận</string>
+    <string name="agents_pr_detail_by">%1$s đã mở</string>
+    <string name="agents_pr_detail_no_body">Không có mô tả.</string>
+    <string name="agents_pr_detail_changes">Thay đổi</string>
+    <string name="agents_pr_detail_checks">Kiểm tra</string>
+    <string name="agents_pr_detail_comments">Bình luận</string>
+    <string name="agents_pr_detail_files_more">Còn %1$d tệp không được liệt kê.</string>
+    <string name="agents_pr_detail_no_comments">Chưa có bình luận.</string>
+    <string name="agents_pr_detail_line_comments">Bình luận trên các dòng code không hiện ở đây. Hãy đọc chúng trên GitHub.</string>
+    <string name="agents_pr_detail_approved">đã duyệt</string>
+    <string name="agents_pr_detail_changes_requested">đã yêu cầu thay đổi</string>
+    <string name="agents_pr_detail_reviewed">đã review</string>
+    <string name="agents_pr_detail_dismissed">review đã bị bỏ qua</string>
+    <string name="agents_pr_detail_cut">Đã rút gọn cho vừa.</string>
+    <string name="agents_pr_detail_too_large">Pull request này quá lớn để hiện ở đây.</string>
+    <string name="agents_pr_detail_diff_cut">Chỉ hiện phần đầu của diff này.</string>
+    <string name="agents_pr_detail_scope">Pull request</string>
+    <string name="agents_pr_ask_review">Nhờ %1$s review</string>
+    <string name="agents_pr_ask_review_sub">Gửi một tin nhắn trong luồng này và dùng một chút gói %1$s của bạn. Không có gì được đăng lên GitHub.</string>
+    <string name="agents_pr_ask_needs_thread">Để nhờ một agent, hãy mở một luồng trong kho này, hoặc nhờ trên %1$s.</string>
+    <plurals name="agents_pr_detail_files">
+        <item quantity="other">%1$d tệp đã thay đổi</item>
+    </plurals>
+    <plurals name="agents_pr_detail_older">
+        <item quantity="other">%1$d bình luận cũ hơn không được hiện.</item>
+    </plurals>
 </resources>

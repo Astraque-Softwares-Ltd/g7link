@@ -368,6 +368,7 @@
     <string name="remote_path_away">Uzaktan</string>
     <string name="remote_path_bluetooth">Bluetooth</string>
     <string name="remote_path_network">Ağ</string>
+    <string name="remote_path_tailscale">Tailscale</string>
     <string name="remote_note_path_rtt">%1$s · %2$d ms</string>
     <string name="remote_note_auto">Otomatik · %1$s</string>
     <string name="remote_note_auto_rtt">Otomatik · %1$s · %2$d ms</string>
@@ -2248,4 +2249,52 @@
     <string name="agents_port_listening">%1$d numaralı bağlantı noktasında bir sunucu dinliyor</string>
     <string name="agents_port_open_on_phone">Telefonda aç</string>
     <string name="agents_port_pc_only">Yalnızca %1$s üzerinde yanıt veriyor. Burada açmak için --host ile başlatın.</string>
+    <!-- Agents phase 6 (contract §X5.2, §X6.6): a folder's scripts, and a pull request read in full. -->
+    <string name="agents_script_title">Betikler</string>
+    <string name="agents_script_run">Çalıştır</string>
+    <string name="agents_script_stop">Durdur</string>
+    <string name="agents_script_running_line">%1$s çalışıyor</string>
+    <string name="agents_script_confirm_title">“%1$s”, %2$s üzerinde çalıştırılsın mı?</string>
+    <string name="agents_script_off">Bu klasörün betiklerini buradan çalıştırmak için %1$s üzerindeki G7 Link\'te klasör için “Telefonlar bunları çalıştırabilir” seçeneğini açın.</string>
+    <string name="agents_script_none">Henüz çalıştırılan yok.</string>
+    <string name="agents_script_state_running">Çalışıyor</string>
+    <string name="agents_script_state_done">Bitti</string>
+    <string name="agents_script_state_failed_exit">Başarısız · çıkış kodu %1$d</string>
+    <string name="agents_script_state_failed">Başarısız</string>
+    <string name="agents_script_state_stopped">Durduruldu</string>
+    <string name="agents_script_not_started">Başlatılamadı.</string>
+    <string name="agents_script_from">%1$s tarafından</string>
+    <string name="agents_script_tail">Son satırlar gösteriliyor. Gerisi %1$s üzerinde.</string>
+    <string name="agents_script_busy">“%1$s” zaten çalışıyor.</string>
+    <string name="agents_script_limit">%1$s üzerinde çok fazla betik çalışıyor. Önce birini durdurun.</string>
+    <string name="agents_script_gone">Bu betik artık bu klasörün listesinde değil.</string>
+    <string name="agents_pr_detail_title">Pull request #%1$d</string>
+    <string name="agents_pr_detail_open">Değişiklikler ve yorumlar</string>
+    <string name="agents_pr_detail_by">%1$s açtı</string>
+    <string name="agents_pr_detail_no_body">Açıklama yok.</string>
+    <string name="agents_pr_detail_changes">Değişiklikler</string>
+    <string name="agents_pr_detail_checks">Kontroller</string>
+    <string name="agents_pr_detail_comments">Yorumlar</string>
+    <string name="agents_pr_detail_files_more">%1$d dosya daha listelenmiyor.</string>
+    <string name="agents_pr_detail_no_comments">Henüz yorum yok.</string>
+    <string name="agents_pr_detail_line_comments">Kod satırlarına yapılan yorumlar burada gösterilmez. Onları GitHub\'da okuyun.</string>
+    <string name="agents_pr_detail_approved">onayladı</string>
+    <string name="agents_pr_detail_changes_requested">değişiklik istedi</string>
+    <string name="agents_pr_detail_reviewed">inceledi</string>
+    <string name="agents_pr_detail_dismissed">inceleme geri alındı</string>
+    <string name="agents_pr_detail_cut">Sığması için kısaltıldı.</string>
+    <string name="agents_pr_detail_too_large">Bu pull request burada gösterilemeyecek kadar büyük.</string>
+    <string name="agents_pr_detail_diff_cut">Bu diff\'in yalnızca ilk kısmı gösteriliyor.</string>
+    <string name="agents_pr_detail_scope">Pull request</string>
+    <string name="agents_pr_ask_review">İncelemesini %1$s ajanından iste</string>
+    <string name="agents_pr_ask_review_sub">Bu konuşmaya bir mesaj gönderir ve %1$s planınızdan biraz kullanır. GitHub\'a hiçbir şey gönderilmez.</string>
+    <string name="agents_pr_ask_needs_thread">Bir ajana sormak için bu depoda bir konuşma açın ya da %1$s üzerinde sorun.</string>
+    <plurals name="agents_pr_detail_files">
+        <item quantity="one">%1$d dosya değişti</item>
+        <item quantity="other">%1$d dosya değişti</item>
+    </plurals>
+    <plurals name="agents_pr_detail_older">
+        <item quantity="one">Daha eski %1$d yorum gösterilmiyor.</item>
+        <item quantity="other">Daha eski %1$d yorum gösterilmiyor.</item>
+    </plurals>
 </resources>

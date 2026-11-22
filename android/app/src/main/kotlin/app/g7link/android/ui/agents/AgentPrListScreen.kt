@@ -50,8 +50,8 @@ import app.g7link.android.ui.theme.G7Icons
 /**
  * Pull requests (board 20), from the list's More: Mine, Review requested and
  * one of the PC's agent folders, read through the PC's GitHub CLI. A row
- * opens in the browser; a long-press offers its thread and Copy link. Nothing
- * else is done to a pull request here.
+ * opens the pull request in full (phase 6 §X6.6); a long-press offers its
+ * thread, Open on GitHub and Copy link. Nothing is posted to GitHub from here.
  */
 @Composable
 internal fun AgentPrListScreen(
@@ -67,6 +67,8 @@ internal fun AgentPrListScreen(
     val resources = LocalResources.current
     val context = LocalContext.current
     val folders = agents.catalog?.folders.orEmpty()
+    // A row opened in full: its repository and number, as the PC listed it.
+    var detail by rememberSaveable(device.id) { mutableStateOf<Pair<String, Int>?>(null) }
     var show by rememberSaveable(device.id) { mutableStateOf(PrShow.MINE) }
     var folder by rememberSaveable(device.id) { mutableStateOf(folders.firstOrNull()?.id) }
     var list by remember(device.id) { mutableStateOf<AgentCall<PrList>?>(null) }
@@ -75,6 +77,23 @@ internal fun AgentPrListScreen(
         if (device.online) list = core.agentPrList(device.id, show, if (show == PrShow.FOLDER) folder else null)
     }
     val copy = rememberCopy { core.say(resources.getString(R.string.agents_copied)) }
+    val opened = detail
+    if (opened != null) {
+        // Over the list, which keeps its tab and folder; its own Back comes first.
+        AgentPrDetailScreen(
+            device = device,
+            core = core,
+            agents = agents,
+            threadId = null,
+            repo = opened.first,
+            number = opened.second,
+            onComment = null,
+            onAsked = onOpenThread,
+            onClose = { detail = null },
+            modifier = modifier,
+        )
+        return
+    }
     Column(modifier.fillMaxSize().background(scheme.surface)) {
         GitHeader(title = stringResource(R.string.agents_git_prs), sub = device.name, onBack = onBack)
         Row(
@@ -127,7 +146,8 @@ internal fun AgentPrListScreen(
                             PrListRow(
                                 row = row,
                                 now = now,
-                                onOpen = { if (AgentGit.openableOn(row.url, result.value.hosts)) openLink(context, row.url) },
+                                onOpen = { detail = row.repo to row.number },
+                                onOpenGithub = if (AgentGit.openableOn(row.url, result.value.hosts)) ({ openLink(context, row.url) }) else null,
                                 onOpenThread = row.threadId?.let { id -> { onOpenThread(id) } },
                                 onCopy = { copy(row.url) },
                             )
@@ -139,9 +159,9 @@ internal fun AgentPrListScreen(
     }
 }
 
-/** A row: the glyph (open, draft), the title, the repository, "#212 · Draft · 2 d", checks; the browser glyph. */
+/** A row: the glyph (open, draft), the title, the repository, "#212 · Draft · 2 d", checks; a tap opens it in full. */
 @Composable
-private fun PrListRow(row: PrRow, now: Long, onOpen: () -> Unit, onOpenThread: (() -> Unit)?, onCopy: () -> Unit) {
+private fun PrListRow(row: PrRow, now: Long, onOpen: () -> Unit, onOpenGithub: (() -> Unit)?, onOpenThread: (() -> Unit)?, onCopy: () -> Unit) {
     val scheme = MaterialTheme.colorScheme
     var menu by remember(row.url) { mutableStateOf(false) }
     Box {
@@ -173,7 +193,7 @@ private fun PrListRow(row: PrRow, now: Long, onOpen: () -> Unit, onOpenThread: (
                     }
                 }
             }
-            Icon(AgentGlyphs.external, contentDescription = null, tint = scheme.onSurfaceVariant, modifier = Modifier.size(16.dp))
+            Icon(G7Icons.chevronRight, contentDescription = null, tint = scheme.onSurfaceVariant, modifier = Modifier.size(12.dp))
         }
         DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
             if (onOpenThread != null) {
@@ -182,6 +202,15 @@ private fun PrListRow(row: PrRow, now: Long, onOpen: () -> Unit, onOpenThread: (
                     onClick = {
                         menu = false
                         onOpenThread()
+                    },
+                )
+            }
+            if (onOpenGithub != null) {
+                DropdownMenuItem(
+                    text = { Text(stringResource(R.string.agents_git_open_github)) },
+                    onClick = {
+                        menu = false
+                        onOpenGithub()
                     },
                 )
             }

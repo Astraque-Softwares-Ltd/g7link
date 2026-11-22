@@ -3,6 +3,7 @@ package app.g7link.android.ui.remote
 
 import app.g7link.android.core.BleSetup
 import app.g7link.android.core.Device
+import app.g7link.core.AwayReach
 import app.g7link.core.Link
 import app.g7link.core.RemotePath
 import app.g7link.core.RemoteRoute
@@ -16,17 +17,26 @@ internal val RemoteMode.takesBluetooth: Boolean
     get() = this == RemoteMode.Touchpad || this == RemoteMode.AirMouse || this == RemoteMode.Presentation
 
 /** A way to the PC, as the touchpad names it. */
-internal enum class PathName { WiFi, Usb, Away, Bluetooth }
+internal enum class PathName { WiFi, Usb, Away, Bluetooth, Tailscale }
 
-/** The network's way to the PC: relayed while away, USB, or else Wi-Fi. */
+/** The network's way to the PC: relayed while away, USB, straight over Tailscale, or else Wi-Fi. */
 internal fun networkPath(link: Link): PathName {
     val online = link as? Link.Online ?: return PathName.WiFi
     return when {
         online.relayed -> PathName.Away
         online.usb -> PathName.Usb
+        online.tailnet -> PathName.Tailscale
         else -> PathName.WiFi
     }
 }
+
+/**
+ * Whether the connection sheet shows its Tailscale row: Tailscale is up on this
+ * phone, or the PC can be reached from away ([away] unknown counts as no). It
+ * isn't a route to pick: Auto goes over Tailscale by itself when Wi-Fi isn't there.
+ */
+internal fun tailscaleRowShown(tailnetUp: Boolean, away: AwayReach?): Boolean =
+    tailnetUp || (away != null && away != AwayReach.HOME_ONLY)
 
 /** The network's round trip in ms: the touchpad's measure, or else the session's own. */
 internal fun Device.networkRttMs(): Int? =

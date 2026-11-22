@@ -77,11 +77,23 @@ data class AgentsState(
     val gitStrips: Map<String, GitStrip> = emptyMap(),
     /** Commits, pushes, switches and pull requests on the PC, by id, as they run (contract §SC6.1). */
     val gitJobs: Map<String, GitJob> = emptyMap(),
+    /** Runs of the folders' scripts this phone heard of, by id, with their last lines (phase 6 §X5.2); never saved. */
+    val scriptRuns: Map<String, ScriptRun> = emptyMap(),
 ) {
     fun thread(id: String): AgentThread? = threads.firstOrNull { it.id == id }
 
     /** The strip under a thread's status line: what the PC last said of its folder, else what the thread says. */
     fun gitStrip(threadId: String): GitStrip? = gitStrips[threadId] ?: thread(threadId)?.let { AgentGitFfi.stripOf(null, it) }
+
+    /** A thread's runs: its own list with what this phone heard of each, running first. */
+    fun runsOf(threadId: String): List<ScriptRun> =
+        AgentScripts.runsOf(threadId, thread(threadId)?.let(AgentGitFfi::briefs).orEmpty(), scriptRuns)
+
+    /** The catalog folder a thread is in (by its label), as the Scripts sheet reads it. */
+    fun scriptsFolderOf(threadId: String): ScriptsFolder? {
+        val label = thread(threadId)?.folder ?: return null
+        return AgentScripts.folderOf(catalog?.folders.orEmpty().map(AgentGitFfi::scriptsFolder), label)
+    }
 
     /** The main list: neither archived nor snoozed. */
     val listed: List<AgentThread>
@@ -425,6 +437,7 @@ object AgentsModel {
         is Event.AgentBeside -> event.id
         is Event.AgentGit -> event.id
         is Event.AgentGitJob -> event.id
+        is Event.AgentScriptRun -> event.id
         else -> null
     }
 
@@ -464,6 +477,8 @@ object AgentsModel {
             state.copy(gitStrips = AgentGitStrips.put(state.gitStrips, event.thread, AgentGitFfi.stripOf(state.gitStrips[event.thread], event))),
         )
         is Event.AgentGitJob -> AgentsUpdate(withJob(state, AgentGitFfi.job(event.job)))
+        // A script's run (phase 6 §X5.2): its new lines and its state.
+        is Event.AgentScriptRun -> AgentsUpdate(withRun(state, AgentGitFfi.scriptRun(event.run)))
         else -> AgentsUpdate(state)
     }
 
@@ -488,6 +503,14 @@ object AgentsModel {
 
     /** A job as the PC answered (started, read again, stopped): it replaces what was kept. */
     fun withJobRead(state: AgentsState, job: GitJob): AgentsState = state.copy(gitJobs = AgentJobs.kept(state.gitJobs, job, read = true))
+
+    // ---- Project scripts (phase 6 §X5.2) ----
+
+    /** A run's new lines from `agent.script`. */
+    fun withRun(state: AgentsState, run: ScriptRun): AgentsState = state.copy(scriptRuns = AgentScripts.kept(state.scriptRuns, run))
+
+    /** A run as the PC answered (started, listed, read, stopped): it replaces what was kept. */
+    fun withRunRead(state: AgentsState, run: ScriptRun): AgentsState = state.copy(scriptRuns = AgentScripts.kept(state.scriptRuns, run, read = true))
 
     // ---- History and undo (contract §U7, §U8.3, §U9) ----
 
@@ -1210,6 +1233,7 @@ object AgentsModel {
             replying = state.replying - goneQuestions,
             open = if (open != null && open.threadId == threadId) open.copy(removed = true) else open,
             gitStrips = state.gitStrips - threadId,
+            scriptRuns = AgentScripts.withoutThread(state.scriptRuns, threadId),
         )
     }
 

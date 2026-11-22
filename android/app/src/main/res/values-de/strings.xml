@@ -368,6 +368,7 @@
     <string name="remote_path_away">Unterwegs</string>
     <string name="remote_path_bluetooth">Bluetooth</string>
     <string name="remote_path_network">Netzwerk</string>
+    <string name="remote_path_tailscale">Tailscale</string>
     <string name="remote_note_path_rtt">%1$s · %2$d ms</string>
     <string name="remote_note_auto">Auto · %1$s</string>
     <string name="remote_note_auto_rtt">Auto · %1$s · %2$d ms</string>
@@ -2248,4 +2249,52 @@
     <string name="agents_port_listening">Ein Server lauscht auf Port %1$d</string>
     <string name="agents_port_open_on_phone">Auf dem Telefon öffnen</string>
     <string name="agents_port_pc_only">Er antwortet nur auf %1$s selbst. Starte ihn mit --host, um ihn hier zu öffnen.</string>
+    <!-- Agents phase 6 (contract §X5.2, §X6.6): a folder's scripts, and a pull request read in full. -->
+    <string name="agents_script_title">Skripte</string>
+    <string name="agents_script_run">Ausführen</string>
+    <string name="agents_script_stop">Stoppen</string>
+    <string name="agents_script_running_line">%1$s läuft</string>
+    <string name="agents_script_confirm_title">„%1$s“ auf %2$s ausführen?</string>
+    <string name="agents_script_off">Um die Skripte dieses Ordners hier auszuführen, schalte „Smartphones können diese ausführen“ für den Ordner in G7 Link auf %1$s ein.</string>
+    <string name="agents_script_none">Noch nichts ausgeführt.</string>
+    <string name="agents_script_state_running">Läuft</string>
+    <string name="agents_script_state_done">Fertig</string>
+    <string name="agents_script_state_failed_exit">Fehlgeschlagen · Exit-Code %1$d</string>
+    <string name="agents_script_state_failed">Fehlgeschlagen</string>
+    <string name="agents_script_state_stopped">Gestoppt</string>
+    <string name="agents_script_not_started">Konnte nicht gestartet werden.</string>
+    <string name="agents_script_from">von %1$s</string>
+    <string name="agents_script_tail">Nur die letzten Zeilen werden angezeigt. Der Rest ist auf %1$s.</string>
+    <string name="agents_script_busy">„%1$s“ läuft bereits.</string>
+    <string name="agents_script_limit">Auf %1$s laufen zu viele Skripte. Stoppe zuerst eines.</string>
+    <string name="agents_script_gone">Dieses Skript steht nicht mehr in der Liste des Ordners.</string>
+    <string name="agents_pr_detail_title">Pull Request #%1$d</string>
+    <string name="agents_pr_detail_open">Änderungen und Kommentare</string>
+    <string name="agents_pr_detail_by">geöffnet von %1$s</string>
+    <string name="agents_pr_detail_no_body">Keine Beschreibung.</string>
+    <string name="agents_pr_detail_changes">Änderungen</string>
+    <string name="agents_pr_detail_checks">Checks</string>
+    <string name="agents_pr_detail_comments">Kommentare</string>
+    <string name="agents_pr_detail_files_more">%1$d weitere Dateien sind nicht aufgeführt.</string>
+    <string name="agents_pr_detail_no_comments">Noch keine Kommentare.</string>
+    <string name="agents_pr_detail_line_comments">Kommentare zu Codezeilen werden hier nicht angezeigt. Lies sie auf GitHub.</string>
+    <string name="agents_pr_detail_approved">hat genehmigt</string>
+    <string name="agents_pr_detail_changes_requested">hat Änderungen angefordert</string>
+    <string name="agents_pr_detail_reviewed">hat geprüft</string>
+    <string name="agents_pr_detail_dismissed">Review verworfen</string>
+    <string name="agents_pr_detail_cut">Gekürzt.</string>
+    <string name="agents_pr_detail_too_large">Dieser Pull Request ist zu groß, um ihn hier anzuzeigen.</string>
+    <string name="agents_pr_detail_diff_cut">Nur der erste Teil dieses Diffs wird angezeigt.</string>
+    <string name="agents_pr_detail_scope">Pull Request</string>
+    <string name="agents_pr_ask_review">%1$s um ein Review bitten</string>
+    <string name="agents_pr_ask_review_sub">Sendet eine Nachricht in diesem Thread und verbraucht ein wenig deines %1$s-Kontingents. Auf GitHub wird nichts gepostet.</string>
+    <string name="agents_pr_ask_needs_thread">Um einen Agenten zu fragen, öffne einen Thread in diesem Repository oder frag auf %1$s.</string>
+    <plurals name="agents_pr_detail_files">
+        <item quantity="one">%1$d Datei geändert</item>
+        <item quantity="other">%1$d Dateien geändert</item>
+    </plurals>
+    <plurals name="agents_pr_detail_older">
+        <item quantity="one">%1$d älterer Kommentar wird nicht angezeigt.</item>
+        <item quantity="other">%1$d ältere Kommentare werden nicht angezeigt.</item>
+    </plurals>
 </resources>

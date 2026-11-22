@@ -363,7 +363,7 @@ fun AgentThreadScreen(
 
     // ---- A dev server the agent started (contract §V9.2): its address on this link, while the link is on the network ----
     val ports = thread?.ports.orEmpty()
-    val linkPath = (device.link as? app.g7link.core.Link.Online)?.let { it.relayed to it.usb }
+    val linkPath = (device.link as? app.g7link.core.Link.Online)?.let { Triple(it.relayed, it.usb, it.tailnet) }
     val portLine by produceState<PortLine?>(null, ports, linkPath) {
         val shown = AgentPorts.shown(ports)
         val url = if (shown != null && shown.lan && linkPath != null) core.agentPortUrl(device.id, shown.port) else null
@@ -478,6 +478,11 @@ fun AgentThreadScreen(
     var gitRead by remember(threadId) { mutableIntStateOf(0) }
     var gitRefresh by remember(threadId) { mutableStateOf<String?>(null) }
     var prRefresh by remember(threadId) { mutableStateOf(false) }
+    // ---- Project scripts (phase 6 §X5.2): the folder's scripts and the thread's runs ----
+    var scriptsSheet by remember(threadId) { mutableStateOf(false) }
+    val scriptRuns = remember(agents.scriptRuns, thread) { agents.runsOf(threadId) }
+    val scriptsFolder = remember(agents.catalog, thread?.folder) { agents.scriptsFolderOf(threadId) }
+    val runningScript = AgentScripts.runningLine(scriptRuns, scriptsFolder, offline)
     var branchSheet by remember(threadId) { mutableStateOf(false) }
     var pushAsk by remember(threadId) { mutableStateOf<PushRow.Ready?>(null) }
     val pushAllowed = AgentGitFfi.pushAllowed(agents.catalog)
@@ -1024,7 +1029,14 @@ fun AgentThreadScreen(
                     full = null
                     gitRead++
                 },
+                agents = agents,
+                onComment = if (readonly || offline) null else addQuote,
+                onAsked = { full = null },
             )
+            return
+        }
+        is FullView.RunOutput -> {
+            AgentScriptOutputScreen(device = device, core = core, agents = agents, runId = view.run, onClose = { full = null })
             return
         }
         is FullView.Push -> {
@@ -1187,6 +1199,7 @@ fun AgentThreadScreen(
                 drawer = drawer,
                 continueOn = if (!offline && load == ThreadLoad.READY) device.name else null,
                 onContinue = handOver,
+                onScripts = if (AgentScripts.menuShown(scriptsFolder, scriptRuns)) ({ scriptsSheet = true }) else null,
             )
             // "Kilele is showing this thread" · Show beside (board 10a): opens on what waits, else the changes.
             if (offerBeside && thread != null && load == ThreadLoad.READY && !offline) {
@@ -1194,6 +1207,17 @@ fun AgentThreadScreen(
             }
             if (AgentGit.stripShown(strip) && strip != null && !readonly) {
                 GitStripLine(strip = strip, asOfMs = if (offline) gitSavedMs else null, now = now, onOpen = { gitSheet = true })
+            }
+            runningScript?.let { line ->
+                ScriptRunningLine(
+                    line = line,
+                    onOpen = { scriptsSheet = true },
+                    onStop = {
+                        scope.launch {
+                            if (core.agentScriptStop(device.id, line.run.id) is AgentCall.Failed) core.say(resources.getString(R.string.agents_failed_generic))
+                        }
+                    },
+                )
             }
             // What this phone saved stands in while the PC can't be reached (or hasn't answered yet).
             val saved = open != null && open.loaded && open.savedMs != null
@@ -1526,6 +1550,20 @@ fun AgentThreadScreen(
     pushAsk?.let { push ->
         PushConfirm(push = push, onPush = { remote -> startPush(push, remote) }, onDismiss = { pushAsk = null })
     }
+    if (scriptsSheet) {
+        AgentScriptsSheet(
+            device = device,
+            core = core,
+            agents = agents,
+            threadId = threadId,
+            readonly = readonly,
+            onOutput = { run ->
+                scriptsSheet = false
+                full = FullView.RunOutput(run)
+            },
+            onDismiss = { scriptsSheet = false },
+        )
+    }
     if (branchSheet) {
         gitStatus?.let { status ->
             AgentBranchSheet(
@@ -1612,6 +1650,8 @@ private fun ThreadHeader(
     /** "Continue on <PC>" (contract §V8.5): the PC's name, or null while it can't be offered. */
     continueOn: String? = null,
     onContinue: () -> Unit = {},
+    /** Scripts (phase 6 §X5.2): shown once the folder has any or the thread has runs. */
+    onScripts: (() -> Unit)? = null,
 ) {
     val scheme = MaterialTheme.colorScheme
     var menu by remember { mutableStateOf(false) }
@@ -1647,6 +1687,15 @@ private fun ThreadHeader(
                             onClick = {
                                 menu = false
                                 onContinue()
+                            },
+                        )
+                    }
+                    if (onScripts != null) {
+                        DropdownMenuItem(
+                            text = { Text(stringResource(R.string.agents_script_title)) },
+                            onClick = {
+                                menu = false
+                                onScripts()
                             },
                         )
                     }

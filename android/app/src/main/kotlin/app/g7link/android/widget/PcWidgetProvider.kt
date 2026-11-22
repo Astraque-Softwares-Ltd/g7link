@@ -194,6 +194,7 @@ class PcWidgetProvider : AppWidgetProvider() {
                         val transport = when {
                             onlineLink?.usb == true -> "USB"
                             onlineLink?.relayed == true -> "Relay"
+                            onlineLink?.tailnet == true -> "Tailscale"
                             else -> "Wi‑Fi"
                         }
                         val rtt = onlineLink?.rttMs?.takeIf { it > 0u }

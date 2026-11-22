@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
@@ -64,8 +65,11 @@ import app.g7link.core.agentDiff
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-/** Which turns the diff covers (contract §U9.1 "Changes"), or what isn't committed yet (phase 4 §SC9.1). */
-enum class DiffScope { THIS_TURN, WHOLE_THREAD, UNCOMMITTED }
+/**
+ * Which turns the diff covers (contract §U9.1 "Changes"), what isn't committed
+ * yet (phase 4 §SC9.1), or a pull request's files (phase 6 §X6.6, opened from its view).
+ */
+enum class DiffScope { THIS_TURN, WHOLE_THREAD, UNCOMMITTED, PULL_REQUEST }
 
 /** What a file of the diff shows once read. */
 @Immutable
@@ -82,7 +86,7 @@ sealed interface FileDiff {
 object AgentDiffModel {
     /** The turns [scope] covers, from a thread's newest turn [newest]. */
     fun range(scope: DiffScope, turn: UInt, newest: UInt): AgentTurnRange = when (scope) {
-        DiffScope.THIS_TURN, DiffScope.UNCOMMITTED -> AgentTurnRange.Turn(turn)
+        DiffScope.THIS_TURN, DiffScope.UNCOMMITTED, DiffScope.PULL_REQUEST -> AgentTurnRange.Turn(turn)
         DiffScope.WHOLE_THREAD -> AgentTurnRange.Span(1u, maxOf(newest, turn, 1u))
     }
 
@@ -251,6 +255,17 @@ private fun DiffHeader(title: String, sub: String?, onBack: () -> Unit, mono: Bo
     }
 }
 
+/** A scope's name, as its switch and the file's header say it. */
+@Composable
+internal fun diffScopeName(scope: DiffScope): String = stringResource(
+    when (scope) {
+        DiffScope.THIS_TURN -> R.string.agents_diff_this_turn
+        DiffScope.WHOLE_THREAD -> R.string.agents_diff_whole
+        DiffScope.UNCOMMITTED -> R.string.agents_git_uncommitted
+        DiffScope.PULL_REQUEST -> R.string.agents_pr_detail_scope
+    },
+)
+
 /** "This turn" · "Whole thread" · "Uncommitted" (when the folder is a repository). */
 @Composable
 private fun ScopeSwitch(scope: DiffScope, uncommitted: Boolean, onScope: (DiffScope) -> Unit) {
@@ -388,6 +403,74 @@ private fun FileView(
                             Icon(G7Icons.info, contentDescription = null, tint = scheme.onSurfaceVariant, modifier = Modifier.size(15.dp))
                             Text(stringResource(R.string.agents_diff_cut), style = MaterialTheme.typography.bodySmall, color = scheme.onSurfaceVariant)
                         }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * One file of a pull request (the diff view's "Pull request" scope): its diff
+ * from the PC, wrapped, where a long-press picks lines and Comment quotes them
+ * into the reply box. Nothing goes to GitHub.
+ */
+@Composable
+internal fun PullRequestFileScreen(
+    core: Core,
+    pcId: String,
+    repo: String,
+    number: Int,
+    file: GitFile,
+    onComment: ((Quote) -> Unit)?,
+    onBack: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val scheme = MaterialTheme.colorScheme
+    var shown by remember(file.path) { mutableStateOf<GitFileDiff>(GitFileDiff.Loading) }
+    LaunchedEffect(pcId, repo, number, file.path) {
+        shown = GitFileDiff.Loading
+        shown = when (val patch = core.agentPrDiff(pcId, repo, number, file.path)) {
+            is AgentCall.Ok -> gitFileDiff(patch.value)
+            is AgentCall.Failed -> GitFileDiff.Failed(patch.failure)
+        }
+    }
+    var selection by remember(file.path) { mutableStateOf<LineSelection?>(null) }
+    val state = rememberLazyListState()
+    Column(modifier.fillMaxSize().background(scheme.surface)) {
+        GitHeader(
+            title = stringResource(R.string.agents_diff_title),
+            sub = listOf(diffScopeName(DiffScope.PULL_REQUEST), file.path).joinToString(" · "),
+            onBack = onBack,
+        )
+        when (val view = shown) {
+            GitFileDiff.Loading -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp) }
+            GitFileDiff.Binary -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Text(stringResource(R.string.agents_diff_binary), style = MaterialTheme.typography.bodyLarge, color = scheme.onSurfaceVariant)
+            }
+            is GitFileDiff.Failed -> Box(Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) {
+                Text(stringResource(R.string.agents_failed_generic), style = MaterialTheme.typography.bodyMedium, color = scheme.onSurfaceVariant)
+            }
+            is GitFileDiff.Folder -> FolderNames(view, Modifier.weight(1f))
+            is GitFileDiff.Shown -> {
+                DiffLinesList(
+                    items = view.items,
+                    state = state,
+                    selection = selection,
+                    onSelect = if (onComment != null) { sel -> selection = sel } else null,
+                    modifier = Modifier.weight(1f),
+                    footer = if (view.cut) {
+                        { item(key = "cut", contentType = "label") { GitNoticeRow(stringResource(R.string.agents_pr_detail_diff_cut)) } }
+                    } else {
+                        null
+                    },
+                )
+                val picked = AgentDiffLines.count(view.items, selection)
+                if (onComment != null && picked > 0) {
+                    CommentBar(picked) {
+                        val quote = AgentQuotes.of(file.path, AgentDiffLines.quoted(view.items, selection))
+                        selection = null
+                        if (quote != null) onComment(quote)
                     }
                 }
             }

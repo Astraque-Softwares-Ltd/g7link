@@ -371,6 +371,7 @@
     <string name="remote_path_away">Away</string>
     <string name="remote_path_bluetooth">Bluetooth</string>
     <string name="remote_path_network">Network</string>
+    <string name="remote_path_tailscale">Tailscale</string>
     <string name="remote_note_path_rtt">%1$s · %2$d ms</string>
     <string name="remote_note_auto">Auto · %1$s</string>
     <string name="remote_note_auto_rtt">Auto · %1$s · %2$d ms</string>
@@ -2260,4 +2261,52 @@
     <string name="agents_port_listening">A server is listening on port %1$d</string>
     <string name="agents_port_open_on_phone">Open on phone</string>
     <string name="agents_port_pc_only">It only answers on %1$s itself. Start it with --host to open it here.</string>
+    <!-- Agents phase 6 (contract §X5.2, §X6.6): a folder's scripts, and a pull request read in full. -->
+    <string name="agents_script_title">Scripts</string>
+    <string name="agents_script_run">Run</string>
+    <string name="agents_script_stop">Stop</string>
+    <string name="agents_script_running_line">%1$s is running</string>
+    <string name="agents_script_confirm_title">Run “%1$s” on %2$s?</string>
+    <string name="agents_script_off">To run this folder\'s scripts here, turn on “Phones can run these” for the folder in G7 Link on %1$s.</string>
+    <string name="agents_script_none">No runs yet.</string>
+    <string name="agents_script_state_running">Running</string>
+    <string name="agents_script_state_done">Finished</string>
+    <string name="agents_script_state_failed_exit">Failed · exit %1$d</string>
+    <string name="agents_script_state_failed">Failed</string>
+    <string name="agents_script_state_stopped">Stopped</string>
+    <string name="agents_script_not_started">Couldn\'t start it.</string>
+    <string name="agents_script_from">from %1$s</string>
+    <string name="agents_script_tail">Showing the last lines. The rest is on %1$s.</string>
+    <string name="agents_script_busy">“%1$s” is already running.</string>
+    <string name="agents_script_limit">Too many scripts are running on %1$s. Stop one first.</string>
+    <string name="agents_script_gone">That script isn\'t in this folder\'s list any more.</string>
+    <string name="agents_pr_detail_title">Pull request #%1$d</string>
+    <string name="agents_pr_detail_open">Changes and comments</string>
+    <string name="agents_pr_detail_by">opened by %1$s</string>
+    <string name="agents_pr_detail_no_body">No description.</string>
+    <string name="agents_pr_detail_changes">Changes</string>
+    <string name="agents_pr_detail_checks">Checks</string>
+    <string name="agents_pr_detail_comments">Comments</string>
+    <string name="agents_pr_detail_files_more">%1$d more files aren\'t listed.</string>
+    <string name="agents_pr_detail_no_comments">No comments yet.</string>
+    <string name="agents_pr_detail_line_comments">Comments made on lines of code aren\'t shown here. Read them on GitHub.</string>
+    <string name="agents_pr_detail_approved">approved</string>
+    <string name="agents_pr_detail_changes_requested">requested changes</string>
+    <string name="agents_pr_detail_reviewed">reviewed</string>
+    <string name="agents_pr_detail_dismissed">review dismissed</string>
+    <string name="agents_pr_detail_cut">Shortened to fit.</string>
+    <string name="agents_pr_detail_too_large">This pull request is too large to show here.</string>
+    <string name="agents_pr_detail_diff_cut">Only the first part of this diff is shown.</string>
+    <string name="agents_pr_detail_scope">Pull request</string>
+    <string name="agents_pr_ask_review">Ask %1$s to review it</string>
+    <string name="agents_pr_ask_review_sub">Sends one message in this thread and uses a little of your %1$s plan. Nothing is posted to GitHub.</string>
+    <string name="agents_pr_ask_needs_thread">To ask an agent, open a thread in this repository, or ask on %1$s.</string>
+    <plurals name="agents_pr_detail_files">
+        <item quantity="one">%1$d file changed</item>
+        <item quantity="other">%1$d files changed</item>
+    </plurals>
+    <plurals name="agents_pr_detail_older">
+        <item quantity="one">%1$d older comment isn\'t shown.</item>
+        <item quantity="other">%1$d older comments aren\'t shown.</item>
+    </plurals>
 </resources>

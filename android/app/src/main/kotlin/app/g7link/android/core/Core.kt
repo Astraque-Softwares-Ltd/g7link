@@ -4546,6 +4546,86 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
         return result
     }
 
+    // ---- Pull request detail and project scripts (phase 6 §X5.2, §X6.6): read freely; a run behind the folder's switch on the PC ----
+
+    /**
+     * A pull request in full: the thread's branch's ([threadId]), or one the PC listed ([repo] and
+     * [number]); [refresh] reads GitHub again.
+     */
+    suspend fun agentPrDetail(pcId: String, threadId: String?, repo: String?, number: Int?, refresh: Boolean): AgentCall<app.g7link.android.ui.agents.PrDetail> =
+        when (val result = agentCall { it.agentPrDetail(pcId, threadId, repo, number?.takeIf { n -> n > 0 }?.toUInt(), refresh) }) {
+            is AgentCall.Ok -> AgentCall.Ok(app.g7link.android.ui.agents.AgentGitFfi.detail(result.value))
+            is AgentCall.Failed -> result
+        }
+
+    /** One file of a pull request's diff (the PC sends a phone at most 1 MiB of it). */
+    suspend fun agentPrDiff(pcId: String, repo: String, number: Int, path: String): AgentCall<app.g7link.android.ui.agents.GitPatch> {
+        if (number <= 0) return AgentCall.Failed(AgentFailure.OTHER)
+        return when (val result = agentCall { it.agentPrDiff(pcId, repo, number.toUInt(), path) }) {
+            is AgentCall.Ok -> AgentCall.Ok(app.g7link.android.ui.agents.AgentGitFfi.patch(result.value))
+            is AgentCall.Failed -> result
+        }
+    }
+
+    /** "Ask <agent> to review it": one fixed message in the thread, naming the pull request by number. */
+    suspend fun agentPrAsk(pcId: String, threadId: String, number: Int): AgentCall<AgentThread> {
+        if (number <= 0) return AgentCall.Failed(AgentFailure.OTHER)
+        val result = agentCall { it.agentPrAsk(pcId, threadId, number.toUInt()) }
+        if (result is AgentCall.Ok) updateAgents(pcId) { AgentsModel.withThread(it, result.value) }
+        return result
+    }
+
+    /** A thread's runs as the PC keeps them (no lines); each goes into the thread's state. */
+    suspend fun agentScriptRuns(pcId: String, threadId: String): AgentCall<List<app.g7link.android.ui.agents.ScriptRun>> =
+        when (val result = agentCall { it.agentScriptRuns(pcId, threadId) }) {
+            is AgentCall.Ok -> {
+                val runs = result.value.map(app.g7link.android.ui.agents.AgentGitFfi::scriptRun)
+                // Newest first from the PC: kept oldest first, so the newest outlast the cap.
+                updateAgents(pcId) { state -> runs.asReversed().fold(state) { acc, run -> AgentsModel.withRunRead(acc, run) } }
+                AgentCall.Ok(runs)
+            }
+            is AgentCall.Failed -> result
+        }
+
+    /** A run with its newest lines, read whole (on opening its output, or after lines went missing). */
+    suspend fun agentScriptOutput(pcId: String, runId: String): AgentCall<app.g7link.android.ui.agents.ScriptRun> =
+        when (val result = agentCall { it.agentScriptOutput(pcId, runId) }) {
+            is AgentCall.Ok -> {
+                val run = app.g7link.android.ui.agents.AgentGitFfi.scriptRun(result.value)
+                updateAgents(pcId) { AgentsModel.withRunRead(it, run) }
+                AgentCall.Ok(run)
+            }
+            is AgentCall.Failed -> result
+        }
+
+    /**
+     * Runs a folder's script in the thread, after the confirmation on this phone. The PC checks the
+     * folder's "Phones can run these" itself each time; its refusal comes back with why.
+     */
+    suspend fun agentScriptRun(pcId: String, threadId: String, scriptId: String): app.g7link.android.ui.agents.ScriptStart {
+        startJob?.join()
+        val current = node ?: return app.g7link.android.ui.agents.ScriptStart.Refused(app.g7link.android.ui.agents.ScriptRefusal.NEEDS_PC)
+        return try {
+            val run = app.g7link.android.ui.agents.AgentGitFfi.scriptRun(current.agentScriptRun(pcId, threadId, scriptId))
+            updateAgents(pcId) { AgentsModel.withRunRead(it, run) }
+            app.g7link.android.ui.agents.ScriptStart.Started(run)
+        } catch (e: G7LinkException) {
+            val word = app.g7link.android.ui.agents.AgentGitFfi.refusal(e)?.reason
+            app.g7link.android.ui.agents.ScriptStart.Refused(app.g7link.android.ui.agents.AgentScripts.refusal(agentFailure(e), word))
+        }
+    }
+
+    /** Stop on a run this phone started, or on any run of a folder whose switch is on. */
+    suspend fun agentScriptStop(pcId: String, runId: String): AgentCall<app.g7link.android.ui.agents.ScriptRun> =
+        when (val result = agentCall { it.agentScriptStop(pcId, runId) }) {
+            is AgentCall.Ok -> {
+                val run = app.g7link.android.ui.agents.AgentGitFfi.scriptRun(result.value)
+                updateAgents(pcId) { AgentsModel.withRunRead(it, run) }
+                AgentCall.Ok(run)
+            }
+            is AgentCall.Failed -> result
+        }
+
     /**
      * A job started on the PC (kept with the thread's state as its lines come), or its refusal and
      * reason: one refused before anything ran comes back already failed, with the PC's word.

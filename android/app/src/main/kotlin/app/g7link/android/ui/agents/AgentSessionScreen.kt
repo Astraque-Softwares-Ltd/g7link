@@ -324,8 +324,8 @@ fun AgentSessionScreen(
             DiffFullScreen(title = view.title, doc = view.doc, onClose = { full = null })
             return
         }
-        // A followed session has no requests, turns or source control of its own.
-        is FullView.Edit, is FullView.Changes, is FullView.Review, is FullView.Pr, is FullView.Push, null -> Unit
+        // A followed session has no requests, turns, source control or scripts of its own.
+        is FullView.Edit, is FullView.Changes, is FullView.Review, is FullView.Pr, is FullView.Push, is FullView.RunOutput, null -> Unit
     }
 
     AgentsDrawer(

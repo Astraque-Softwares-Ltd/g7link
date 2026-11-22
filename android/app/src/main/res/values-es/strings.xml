@@ -333,6 +333,7 @@
     <string name="remote_path_away">Fuera</string>
     <string name="remote_path_bluetooth">Bluetooth</string>
     <string name="remote_path_network">Red</string>
+    <string name="remote_path_tailscale">Tailscale</string>
     <string name="remote_note_path_rtt">%1$s · %2$d ms</string>
     <string name="remote_note_auto">Automático · %1$s</string>
     <string name="remote_note_auto_rtt">Automático · %1$s · %2$d ms</string>
@@ -2154,4 +2155,54 @@
     <string name="agents_port_listening">Hay un servidor escuchando en el puerto %1$d</string>
     <string name="agents_port_open_on_phone">Abrir en el teléfono</string>
     <string name="agents_port_pc_only">Solo responde en el propio %1$s. Inícialo con --host para abrirlo aquí.</string>
+    <!-- Agents phase 6 (contract §X5.2, §X6.6): a folder's scripts, and a pull request read in full. -->
+    <string name="agents_script_title">Scripts</string>
+    <string name="agents_script_run">Ejecutar</string>
+    <string name="agents_script_stop">Detener</string>
+    <string name="agents_script_running_line">%1$s se está ejecutando</string>
+    <string name="agents_script_confirm_title">¿Ejecutar «%1$s» en %2$s?</string>
+    <string name="agents_script_off">Para ejecutar aquí los scripts de esta carpeta, activa «Los teléfonos pueden ejecutarlos» para la carpeta en G7 Link en %1$s.</string>
+    <string name="agents_script_none">Aún no se ha ejecutado nada.</string>
+    <string name="agents_script_state_running">En curso</string>
+    <string name="agents_script_state_done">Terminado</string>
+    <string name="agents_script_state_failed_exit">Falló · código %1$d</string>
+    <string name="agents_script_state_failed">Falló</string>
+    <string name="agents_script_state_stopped">Detenido</string>
+    <string name="agents_script_not_started">No se pudo iniciar.</string>
+    <string name="agents_script_from">desde %1$s</string>
+    <string name="agents_script_tail">Se muestran las últimas líneas. El resto está en %1$s.</string>
+    <string name="agents_script_busy">«%1$s» ya se está ejecutando.</string>
+    <string name="agents_script_limit">Hay demasiados scripts en ejecución en %1$s. Detén uno primero.</string>
+    <string name="agents_script_gone">Ese script ya no está en la lista de esta carpeta.</string>
+    <string name="agents_pr_detail_title">Pull request #%1$d</string>
+    <string name="agents_pr_detail_open">Cambios y comentarios</string>
+    <string name="agents_pr_detail_by">abierta por %1$s</string>
+    <string name="agents_pr_detail_no_body">Sin descripción.</string>
+    <string name="agents_pr_detail_changes">Cambios</string>
+    <string name="agents_pr_detail_checks">Comprobaciones</string>
+    <string name="agents_pr_detail_comments">Comentarios</string>
+    <string name="agents_pr_detail_files_more">%1$d archivos más no aparecen.</string>
+    <string name="agents_pr_detail_no_comments">Aún no hay comentarios.</string>
+    <string name="agents_pr_detail_line_comments">Los comentarios en líneas de código no se muestran aquí. Léelos en GitHub.</string>
+    <string name="agents_pr_detail_approved">aprobó</string>
+    <string name="agents_pr_detail_changes_requested">pidió cambios</string>
+    <string name="agents_pr_detail_reviewed">revisó</string>
+    <string name="agents_pr_detail_dismissed">revisión descartada</string>
+    <string name="agents_pr_detail_cut">Acortado para que quepa.</string>
+    <string name="agents_pr_detail_too_large">Esta pull request es demasiado grande para mostrarla aquí.</string>
+    <string name="agents_pr_detail_diff_cut">Solo se muestra la primera parte de este diff.</string>
+    <string name="agents_pr_detail_scope">Pull request</string>
+    <string name="agents_pr_ask_review">Pedir a %1$s que la revise</string>
+    <string name="agents_pr_ask_review_sub">Envía un mensaje en este hilo y usa un poco de tu plan de %1$s. No se publica nada en GitHub.</string>
+    <string name="agents_pr_ask_needs_thread">Para pedírselo a un agente, abre un hilo en este repositorio o pídelo en %1$s.</string>
+    <plurals name="agents_pr_detail_files">
+        <item quantity="one">%1$d archivo cambiado</item>
+        <item quantity="many">%1$d archivos cambiados</item>
+        <item quantity="other">%1$d archivos cambiados</item>
+    </plurals>
+    <plurals name="agents_pr_detail_older">
+        <item quantity="one">No se muestra %1$d comentario anterior.</item>
+        <item quantity="many">No se muestran %1$d comentarios anteriores.</item>
+        <item quantity="other">No se muestran %1$d comentarios anteriores.</item>
+    </plurals>
 </resources>
