@@ -4,6 +4,13 @@ All notable changes to G7 Link. Versions follow
 [semantic versioning](https://semver.org); before 1.0, a minor version may
 change things that need a step from you, and its notes say so.
 
+## 0.1.26 (unreleased)
+
+### Fixed
+
+- A pull request's page leaves out the comments GitHub hides (marked
+  off-topic, spam or outdated), as GitHub does.
+
 ## 0.1.25 (2026-11-22)
 
 Run your own commands from a thread, read a pull request with its

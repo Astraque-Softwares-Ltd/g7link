@@ -1049,6 +1049,8 @@ struct GhComment {
     body: Option<String>,
     created_at: Option<String>,
     url: Option<String>,
+    /// GitHub hides it (off-topic, spam, outdated...).
+    is_minimized: Option<bool>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -1310,8 +1312,12 @@ fn pr_file(file: GhFile) -> Option<PrFile> {
     Some(PrFile { path, change: change.to_owned(), adds: count(file.additions), dels: count(file.deletions) })
 }
 
-/// A conversation comment: left out without an author or a body.
+/// A conversation comment: left out without an author or a body, and when
+/// GitHub hides it.
 fn comment(c: GhComment, hosts: &[String]) -> Option<PrComment> {
+    if c.is_minimized == Some(true) {
+        return None;
+    }
     let (body, cut) = clean_cut(c.body?.trim_end(), MAX_PR_COMMENT);
     if body.trim().is_empty() {
         return None;
@@ -1785,8 +1791,21 @@ mod tests {
             body: Some("hi".into()),
             created_at: Some("bad date".into()),
             url: Some("https://elsewhere.test/x".into()),
+            is_minimized: Some(false),
         };
         let c = comment(c, &hosts()).unwrap();
         assert_eq!((c.at_ms, c.url, c.review), (0, None, None));
+        let hidden = GhComment {
+            author: author(),
+            body: Some("off topic".into()),
+            is_minimized: Some(true),
+            ..GhComment::default()
+        };
+        assert!(comment(hidden, &hosts()).is_none(), "GitHub hides it, so G7 does too");
+        let read: GhComment = serde_json::from_str(
+            r#"{"author":{"login":"someone"},"body":"spam","isMinimized":true,"minimizedReason":"spam"}"#,
+        )
+        .unwrap();
+        assert!(comment(read, &hosts()).is_none(), "the flag is read from gh's own field name");
     }
 }
