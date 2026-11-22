@@ -2,7 +2,8 @@
 //! Source control on a PC's agent threads (`docs/protocol/agents.md` §8):
 //! the folder's status and uncommitted diff, reviewing and committing
 //! files, push and fetch, branches, the branch's pull request and the lists
-//! of them, and "Ask <agent> to write it".
+//! of them, and "Ask <agent> to write it"; and (§13) a pull request's
+//! detail and diff, read-only, and "Ask <agent> to review it".
 //!
 //! Plain protocol v1: no capability. Everything follows the PC's `agents`
 //! toggle (`Denied` when off); push and opening a pull request also its
@@ -317,6 +318,26 @@ pub enum AgentPrWhy {
     Network,
     /// "This folder isn't a git repository."
     NotRepo,
+    /// "This pull request is too large to show here."
+    TooLarge,
+    /// The thread's branch has no pull request.
+    NoPr,
+}
+
+impl AgentPrWhy {
+    fn from_wire(word: &str) -> Option<Self> {
+        use core::pr::why;
+        Some(match word {
+            why::NOT_GITHUB => Self::NotGithub,
+            why::NO_UPSTREAM => Self::NoUpstream,
+            why::DETACHED => Self::Detached,
+            why::NETWORK => Self::Network,
+            why::NOT_REPO => Self::NotRepo,
+            why::TOO_LARGE => Self::TooLarge,
+            why::NO_PR => Self::NoPr,
+            _ => return None,
+        })
+    }
 }
 
 // ---- What a thread gains ----
@@ -840,19 +861,11 @@ pub struct AgentPrView {
 
 impl AgentPrView {
     fn from_core(v: core::AgentPrView) -> Option<Self> {
-        use core::pr::why;
         Some(Self {
             gh: AgentGhState::from_core(v.gh)?,
             pr: v.pr.and_then(AgentPrInfo::from_core),
             github: v.github.map(|h| AgentGitHub { repo: h.repo, host: h.host }),
-            why: v.why.as_deref().and_then(|w| match w {
-                why::NOT_GITHUB => Some(AgentPrWhy::NotGithub),
-                why::NO_UPSTREAM => Some(AgentPrWhy::NoUpstream),
-                why::DETACHED => Some(AgentPrWhy::Detached),
-                why::NETWORK => Some(AgentPrWhy::Network),
-                why::NOT_REPO => Some(AgentPrWhy::NotRepo),
-                _ => None,
-            }),
+            why: v.why.as_deref().and_then(AgentPrWhy::from_wire),
         })
     }
 }
@@ -920,6 +933,127 @@ impl AgentPrRows {
                 })
                 .collect(),
             more: r.more,
+        })
+    }
+}
+
+// ---- Pull request detail (§13) ----
+
+/// A file a pull request changes: its letter from `change` (`added`,
+/// `deleted`, `renamed`, `copied`, `modified`, or `changed` for anything
+/// else), its path relative to the repository, "+%1 −%2".
+#[derive(Clone, PartialEq, Eq, uniffi::Record)]
+pub struct AgentPrFile {
+    pub path: String,
+    pub change: String,
+    pub adds: u32,
+    pub dels: u32,
+}
+
+quiet_debug!(AgentPrFile { change, adds, dels });
+
+/// A comment on the pull request's conversation, or a review's summary
+/// (`review`: `approved`, `changes_requested`, `commented` or `dismissed`).
+/// Render `body` as Markdown under the render crate's bounds.
+#[derive(Clone, PartialEq, Eq, uniffi::Record)]
+pub struct AgentPrComment {
+    pub author: String,
+    pub at_ms: i64,
+    pub body: String,
+    /// "Shortened to fit."
+    pub cut: bool,
+    pub review: Option<String>,
+    /// `https`; open it only on a host of `AgentGhState.hosts`.
+    pub url: Option<String>,
+}
+
+quiet_debug!(AgentPrComment { at_ms, cut, review });
+
+/// A pull request's description, changed files, checks and conversation.
+/// Read-only: nothing here posts to GitHub. Below the comments, always:
+/// "Comments made on lines of code aren't shown here. Read them on GitHub."
+#[derive(Clone, PartialEq, Eq, uniffi::Record)]
+pub struct AgentPrDetail {
+    /// The card on top (state, title, "into", checks, review line).
+    pub pr: Option<AgentPrInfo>,
+    pub gh: AgentGhState,
+    /// `Network`: "GitHub couldn't be reached", the rest is what was read
+    /// last; `TooLarge`: "This pull request is too large to show here."
+    pub why: Option<AgentPrWhy>,
+    /// `owner/name`: pass it to `agent_pr_diff`.
+    pub repo: String,
+    /// "opened by %1".
+    pub author: String,
+    /// The description, Markdown ("No description." when empty).
+    pub body: String,
+    /// "Shortened to fit."
+    pub body_cut: bool,
+    pub adds: u32,
+    pub dels: u32,
+    /// "%n files changed".
+    pub changed: u32,
+    /// At most 300.
+    pub files: Vec<AgentPrFile>,
+    /// "%1 more files aren't listed." (`changed` minus `files`).
+    pub files_more: bool,
+    /// Oldest first, the newest 50.
+    pub comments: Vec<AgentPrComment>,
+    /// "%n older comments aren't shown."
+    pub comments_older: u32,
+    /// A thread on the PC on that repository and branch: "Ask %1 to review
+    /// it" goes there; null: "To ask an agent, open a thread in this
+    /// repository, or ask on %1."
+    pub thread: Option<String>,
+    /// "Read %1".
+    pub read_ms: i64,
+}
+
+quiet_debug!(AgentPrDetail { why, files_more, comments_older, thread });
+
+impl AgentPrDetail {
+    fn from_core(d: core::AgentPrDetail) -> Option<Self> {
+        use core::pr::change;
+        Some(Self {
+            gh: AgentGhState::from_core(d.gh)?,
+            pr: d.pr.and_then(AgentPrInfo::from_core),
+            why: d.why.as_deref().and_then(AgentPrWhy::from_wire),
+            repo: d.repo,
+            author: d.author,
+            body: d.body,
+            body_cut: d.body_cut,
+            adds: d.adds,
+            dels: d.dels,
+            changed: d.changed,
+            files: d
+                .files
+                .into_iter()
+                .map(|f| AgentPrFile {
+                    change: if change::ALL.contains(&f.change.as_str()) {
+                        f.change
+                    } else {
+                        change::CHANGED.into()
+                    },
+                    path: f.path,
+                    adds: f.adds,
+                    dels: f.dels,
+                })
+                .collect(),
+            files_more: d.files_more,
+            comments: d
+                .comments
+                .into_iter()
+                .map(|c| AgentPrComment {
+                    author: c.author,
+                    at_ms: ms(c.at_ms),
+                    body: c.body,
+                    cut: c.cut,
+                    review: c.review,
+                    url: c.url,
+                })
+                .collect(),
+            comments_older: d.comments_older,
+            thread: d.thread,
+            read_ms: ms(d.read_ms),
         })
     }
 }
@@ -1155,6 +1289,58 @@ impl G7LinkNode {
         AgentThread::from_core(thread).ok_or_else(|| malformed("agent.write"))
     }
 
+    /// A pull request's detail: the thread's branch's (`thread`), or one
+    /// `agent_pr_list` listed (`repo` and `number`, both or neither). Read
+    /// only; GitHub that can't be reached is `why` `Network` with the last
+    /// detail read, never an error.
+    #[uniffi::method(default(thread = None, repo = None, number = None, refresh = false))]
+    pub async fn agent_pr_detail(
+        &self,
+        id: String,
+        thread: Option<String>,
+        repo: Option<String>,
+        number: Option<u32>,
+        refresh: bool,
+    ) -> Result<AgentPrDetail> {
+        let id = parse_id(&id)?;
+        let node = self.node.clone();
+        let request = core::AgentPrDetailRequest { thread, repo, number, refresh };
+        let detail = self.run(async move { node.agent_pr_detail(id, request).await }).await?;
+        AgentPrDetail::from_core(detail).ok_or_else(|| malformed("agent.pr.detail"))
+    }
+
+    /// One listed file's diff in a pull request ("Pull request" scope of the
+    /// diff view), at most 1 MiB (`truncated`: "Only the first part of this
+    /// diff is shown.").
+    pub async fn agent_pr_diff(
+        &self,
+        id: String,
+        repo: String,
+        number: u32,
+        path: String,
+    ) -> Result<AgentGitPatch> {
+        let id = parse_id(&id)?;
+        let node = self.node.clone();
+        let p = self.run(async move { node.agent_pr_diff(id, repo, number, path).await }).await?;
+        Ok(AgentGitPatch {
+            patch: p.patch,
+            truncated: p.truncated,
+            binary: p.binary,
+            names: p.names,
+            more_names: p.more_names,
+        })
+    }
+
+    /// "Ask <agent> to review it", after the user confirmed: the PC sends
+    /// one fixed message in the thread naming pull request `number` by
+    /// number and link. Nothing is posted to GitHub.
+    pub async fn agent_pr_ask(&self, id: String, thread: String, number: u32) -> Result<AgentThread> {
+        let id = parse_id(&id)?;
+        let node = self.node.clone();
+        let thread = self.run(async move { node.agent_ask_review(id, thread, number).await }).await?;
+        AgentThread::from_core(thread).ok_or_else(|| malformed("agent.write"))
+    }
+
     /// A thread's strip as saved on this phone, at once and offline.
     pub async fn agent_cached_git(&self, id: String, thread: String) -> Result<AgentCachedGit> {
         let id = parse_id(&id)?;
@@ -1198,5 +1384,39 @@ mod tests {
         assert_eq!(status.files[0].staged, Some(AgentGitStaged::PartlyStaged));
         assert!(!format!("{status:?}").contains("a.rs"));
         assert_eq!(AgentCheckState::from_wire("neutral"), AgentCheckState::Pending, "never pass");
+    }
+
+    #[test]
+    fn a_pull_requests_detail_crosses_with_its_words() {
+        let detail = core::AgentPrDetail {
+            gh: core::AgentGhState { gh: "ok".into(), ..Default::default() },
+            why: Some("too_large".into()),
+            repo: "acme/app".into(),
+            author: "secret".into(),
+            files: vec![core::AgentPrFile {
+                path: "secret.rs".into(),
+                change: "type_changed".into(),
+                adds: 1,
+                dels: 2,
+            }],
+            comments: vec![core::AgentPrComment {
+                body: "secret".into(),
+                review: Some("approved".into()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let detail = AgentPrDetail::from_core(detail).unwrap();
+        assert_eq!(detail.why, Some(AgentPrWhy::TooLarge));
+        assert_eq!(detail.files[0].change, "changed");
+        assert_eq!(detail.comments[0].review.as_deref(), Some("approved"));
+        assert!(!format!("{detail:?}").contains("secret"));
+        assert_eq!(AgentPrWhy::from_wire("no_pr"), Some(AgentPrWhy::NoPr));
+        assert_eq!(AgentPrWhy::from_wire("archived"), None);
+        let gone = core::AgentPrDetail {
+            gh: core::AgentGhState { gh: "maybe".into(), ..Default::default() },
+            ..Default::default()
+        };
+        assert!(AgentPrDetail::from_core(gone).is_none());
     }
 }

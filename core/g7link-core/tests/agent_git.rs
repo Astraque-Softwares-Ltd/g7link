@@ -12,10 +12,10 @@ use std::{
 use g7link_core::{
     AgentBranch, AgentBranches, AgentCheck, AgentGhState, AgentGit, AgentGitChanged, AgentGitFile,
     AgentGitPatchPage, AgentGitRemote, AgentGitReviewed, AgentGitReviewedFile, AgentGitWorktree, AgentJob,
-    AgentJobError, AgentPrBrief, AgentPrCreateRequest, AgentPrInfo, AgentPrListRequest, AgentPrRow,
-    AgentPrRows, AgentPrView, AgentReply, AgentRequest, AgentThread, AgentWrote, DeviceId, DeviceInfo,
-    DeviceKind, Error, LinkState, Node, NodeConfig, NodeEvent, PairingEvent, PlainKeyProtector, Platform,
-    PowerLevel, agent, git, pr,
+    AgentJobError, AgentPrBrief, AgentPrComment, AgentPrCreateRequest, AgentPrDetail, AgentPrDetailRequest,
+    AgentPrFile, AgentPrInfo, AgentPrListRequest, AgentPrRow, AgentPrRows, AgentPrView, AgentReply,
+    AgentRequest, AgentThread, AgentWrote, DeviceId, DeviceInfo, DeviceKind, Error, LinkState, Node,
+    NodeConfig, NodeEvent, PairingEvent, PlainKeyProtector, Platform, PowerLevel, agent, git, pr,
 };
 use g7link_protocol::messages::types;
 use tempfile::TempDir;
@@ -143,6 +143,46 @@ fn pr_info(checks: usize) -> AgentPrInfo {
     }
 }
 
+/// A pull request's detail as GitHub might give it through a careless
+/// host: control characters, a path out of the repository, 100 comments.
+fn pr_detail() -> AgentPrDetail {
+    let mut files = vec![
+        AgentPrFile { path: SMALL.into(), change: "modified".into(), adds: 2, dels: 1 },
+        AgentPrFile { path: "../../etc/passwd".into(), change: "modified".into(), ..Default::default() },
+    ];
+    files.extend((0..350).map(|i| AgentPrFile {
+        path: format!("gen/f{i}.rs"),
+        change: "added".into(),
+        adds: 1,
+        dels: 0,
+    }));
+    AgentPrDetail {
+        pr: Some(pr_info(3)),
+        gh: gh(),
+        repo: "acme/app".into(),
+        author: "octo\u{202E}cat".into(),
+        body: format!("Fixes the retry.\u{1b}[2J\n{}", "b".repeat(40_000)),
+        adds: 352,
+        dels: 1,
+        changed: 352,
+        files,
+        comments: (0..100u64)
+            .map(|i| AgentPrComment {
+                author: format!("rev{i}"),
+                at_ms: 1_795_000_000_000 + i,
+                body: "c".repeat(4_000),
+                review: (i == 99).then(|| "approved".to_owned()),
+                url: Some(format!("https://github.com/acme/app/pull/212#c{i}")),
+                ..Default::default()
+            })
+            .collect(),
+        comments_older: 3,
+        thread: Some(THREAD.into()),
+        read_ms: 1_795_000_000_000,
+        ..Default::default()
+    }
+}
+
 impl HostPlatform {
     fn requests(&self) -> Vec<(DeviceId, AgentRequest)> {
         self.requests.lock().unwrap().clone()
@@ -254,6 +294,26 @@ impl Platform for HostPlatform {
                 more: false,
                 gh: gh(),
             }),
+            AgentRequest::PrDetail { .. } => AgentReply::PrDetail(pr_detail()),
+            AgentRequest::PrDiff { path, offset, .. } => {
+                let at = offset.unwrap_or(0);
+                AgentReply::GitPatch(match path.as_str() {
+                    ENDLESS => AgentGitPatchPage {
+                        patch: format!("+{}\n", "x".repeat(PAGE - 2)),
+                        next: Some(at + PAGE as u64),
+                        ..Default::default()
+                    },
+                    _ if at == 0 => AgentGitPatchPage {
+                        patch: "diff --git a/src/sync.rs b/src/sync.rs\n".into(),
+                        next: Some(40),
+                        // A pull request's diff has no folder names: never passed on.
+                        names: vec!["docs/a.md".into()],
+                        ..Default::default()
+                    },
+                    _ => AgentGitPatchPage { patch: "-a\n+b\n".into(), ..Default::default() },
+                })
+            }
+            AgentRequest::AskReview { thread: id, .. } => AgentReply::Thread(thread(&id)),
             AgentRequest::Ask { thread: id, purpose } => {
                 let mut t = thread(&id);
                 t.wrote = Some(AgentWrote { purpose, turn: 3, text: "Fix the retry".into(), at_ms: 1 });
@@ -334,6 +394,7 @@ fn catalog() -> g7link_core::AgentCatalog {
             label: "g7linux".into(),
             checkpoints: true,
             follow_remote: true,
+            ..Default::default()
         }],
         modes: vec!["supervised".into()],
         // The platform's word is never taken: the core says it per phone.
@@ -778,4 +839,116 @@ async fn turning_agents_off_refuses_everything_and_forgets_the_reviews() {
     let again = phone.node.agent_git_commit(pc_id, THREAD.into(), review.review, "Fix it".into()).await;
     assert!(matches!(again, Err(Error::NotFound)), "{again:?}");
     assert_eq!(pc.host.requests().len(), before);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_pull_requests_detail_and_diff_fit_the_phone_and_a_review_is_asked() {
+    let (pc, phone) = pair(false).await;
+    let (pc_id, phone_id) = (pc.node.device_id(), phone.node.device_id());
+
+    let request =
+        AgentPrDetailRequest { repo: Some("acme/app".into()), number: Some(212), ..Default::default() };
+    let detail = timed("detail", phone.node.agent_pr_detail(pc_id, request)).await.unwrap();
+    assert_eq!(detail.pr.as_ref().map(|p| p.number), Some(212));
+    assert_eq!(detail.author, "octocat");
+    assert!(detail.body.starts_with("Fixes the retry.[2J\n"));
+    assert!(detail.body_cut && detail.body.len() == pr::MAX_BODY_BYTES);
+    assert_eq!(detail.files.len(), pr::MAX_FILES, "the first 300, across the parts");
+    assert!(detail.files_more);
+    assert_eq!(detail.files[0].path, SMALL);
+    assert!(detail.files.iter().all(|f| !f.path.contains("..")), "no path out of the repository");
+    assert_eq!(detail.comments.len(), pr::MAX_COMMENTS, "a phone gets the newest 50");
+    assert_eq!(detail.comments[0].author, "rev50");
+    assert_eq!(detail.comments[49].review.as_deref(), Some("approved"));
+    assert_eq!(detail.comments_older, 53);
+    assert_eq!(detail.thread.as_deref(), Some(THREAD));
+
+    let by_thread = AgentPrDetailRequest { thread: Some(THREAD.into()), refresh: true, ..Default::default() };
+    timed("detail of a thread", phone.node.agent_pr_detail(pc_id, by_thread)).await.unwrap();
+
+    let diff =
+        timed("diff", phone.node.agent_pr_diff(pc_id, "acme/app".into(), 212, SMALL.into())).await.unwrap();
+    assert_eq!(diff.patch, "diff --git a/src/sync.rs b/src/sync.rs\n-a\n+b\n", "both pages, joined");
+    assert!(!diff.truncated && diff.names.is_empty());
+    let endless = timed("endless", phone.node.agent_pr_diff(pc_id, "acme/app".into(), 212, ENDLESS.into()))
+        .await
+        .unwrap();
+    assert!(endless.truncated && endless.patch.len() <= git::MAX_PATCH_BYTES);
+
+    let asked = timed("ask", phone.node.agent_ask_review(pc_id, THREAD.into(), 212)).await.unwrap();
+    assert_eq!(asked.id, THREAD);
+    assert_eq!(asked.wrote, None, "a review writes nothing back");
+
+    let requests = pc.host.requests();
+    assert!(requests.iter().all(|(from, _)| *from == phone_id));
+    let asked: Vec<AgentRequest> = requests.into_iter().map(|(_, r)| r).collect();
+    assert!(asked.iter().any(|r| matches!(r,
+        AgentRequest::PrDetail { thread: None, repo: Some(repo), number: Some(212), refresh: false } if repo == "acme/app")));
+    assert!(asked.iter().any(|r| matches!(r,
+        AgentRequest::PrDetail { thread: Some(t), repo: None, number: None, refresh: true } if t == THREAD)));
+    assert!(
+        asked
+            .iter()
+            .any(|r| matches!(r, AgentRequest::PrDiff { offset: Some(40), path, .. } if path == SMALL))
+    );
+    assert!(
+        asked.iter().any(|r| matches!(r, AgentRequest::AskReview { thread, pr: 212 } if thread == THREAD))
+    );
+    assert!(!asked.iter().any(|r| matches!(r, AgentRequest::Ask { .. })), "a review isn't \"write it\"");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_pull_request_out_of_its_limits_never_reaches_the_host() {
+    let (pc, phone) = pair(true).await;
+    let pc_id = pc.node.device_id();
+    let ask = |t: &'static str, body: serde_json::Value| {
+        let node = &phone.node;
+        async move { node.debug_agent_request(pc_id, t, &body).await }
+    };
+    let cases = [
+        (types::AGENT_PR_DETAIL, serde_json::json!({})),
+        (types::AGENT_PR_DETAIL, serde_json::json!({ "repo": "acme/app" })),
+        (types::AGENT_PR_DETAIL, serde_json::json!({ "number": 212 })),
+        (types::AGENT_PR_DETAIL, serde_json::json!({ "repo": "acme/app", "number": 0 })),
+        (types::AGENT_PR_DETAIL, serde_json::json!({ "repo": "-x/y", "number": 1 })),
+        (types::AGENT_PR_DETAIL, serde_json::json!({ "repo": "a/b/c/d", "number": 1 })),
+        (types::AGENT_PR_DETAIL, serde_json::json!({ "repo": "x".repeat(141), "number": 1 })),
+        (types::AGENT_PR_DETAIL, serde_json::json!({ "thread": "/home/me" })),
+        (types::AGENT_PR_DIFF, serde_json::json!({ "repo": "acme/app", "number": 212, "path": "../x" })),
+        (
+            types::AGENT_PR_DIFF,
+            serde_json::json!({ "repo": "acme/app", "number": 212, "path": "d/".repeat(257) }),
+        ),
+        (types::AGENT_PR_DIFF, serde_json::json!({ "repo": "../x", "number": 212, "path": "a.rs" })),
+        (types::AGENT_PR_DIFF, serde_json::json!({ "repo": "acme/app", "number": 0, "path": "a.rs" })),
+        (types::AGENT_WRITE, serde_json::json!({ "thread": THREAD, "purpose": "review" })),
+        (types::AGENT_WRITE, serde_json::json!({ "thread": THREAD, "purpose": "review", "pr": 0 })),
+        (types::AGENT_WRITE, serde_json::json!({ "thread": THREAD, "purpose": "commit", "pr": 212 })),
+    ];
+    for (t, body) in cases {
+        assert!(matches!(ask(t, body.clone()).await, Err(Error::Protocol(_))), "{t} {body}");
+    }
+    // Nothing posts: no message comments, reviews, approves or starts a review thread.
+    let body = serde_json::json!({ "repo": "acme/app", "number": 212, "body": "LGTM" });
+    for t in ["agent.pr.review", "agent.pr.comment", "agent.pr.approve", "agent.pr.start", "agent.pr.close"] {
+        assert!(ask(t, body.clone()).await.is_err(), "{t}");
+    }
+    assert!(pc.host.requests().is_empty(), "nothing reached the host: {:?}", pc.host.asked());
+
+    // The phone's own core doesn't send them either.
+    let bad = AgentPrDetailRequest { repo: Some("-x/y".into()), number: Some(1), ..Default::default() };
+    assert!(phone.node.agent_pr_detail(pc_id, bad).await.is_err());
+    assert!(phone.node.agent_pr_diff(pc_id, "acme/app".into(), 212, "/etc/passwd".into()).await.is_err());
+    assert!(phone.node.agent_ask_review(pc_id, THREAD.into(), 0).await.is_err());
+    assert!(pc.host.requests().is_empty());
+
+    // With the `agents` toggle off, they're refused before the host hears of them.
+    pc.node.set_device_toggle(phone.node.device_id(), agent::TOGGLE, false).unwrap();
+    let request = AgentPrDetailRequest { thread: Some(THREAD.into()), ..Default::default() };
+    assert!(matches!(phone.node.agent_pr_detail(pc_id, request).await, Err(Error::Denied)));
+    let diff = phone.node.agent_pr_diff(pc_id, "acme/app".into(), 212, SMALL.into()).await;
+    assert!(matches!(diff, Err(Error::Denied)), "{diff:?}");
+    let review = phone.node.agent_ask_review(pc_id, THREAD.into(), 212).await;
+    assert!(matches!(review, Err(Error::Denied)), "{review:?}");
+    assert!(pc.host.requests().is_empty());
 }

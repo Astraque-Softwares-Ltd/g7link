@@ -229,6 +229,12 @@ pub const RPCS: &[RpcOp] = &[
     rpc(types::AGENT_WRITE, svc::AGENT, "write", false),
     rpc(types::AGENT_SESSION_REPLY, svc::AGENT, "session.reply", false),
     rpc(types::AGENT_HANDOFF_OPEN, svc::AGENT, "handoff.open", false),
+    rpc(types::AGENT_SCRIPT_RUN, svc::AGENT, "script.run", false),
+    rpc(types::AGENT_SCRIPT_STOP, svc::AGENT, "script.stop", false),
+    rpc(types::AGENT_SCRIPT_RUNS, svc::AGENT, "script.runs", false),
+    rpc(types::AGENT_SCRIPT_OUTPUT, svc::AGENT, "script.output", true),
+    rpc(types::AGENT_PR_DETAIL, svc::AGENT, "pr.detail", true),
+    rpc(types::AGENT_PR_DIFF, svc::AGENT, "pr.diff", true),
 ];
 
 /// The RPC operation whose request frame has type `t`.
@@ -296,7 +302,8 @@ pub fn lane_of(t: &str) -> Option<Lane> {
         | AGENT_GIT
         | AGENT_GIT_PROGRESS
         | AGENT_HANDOFF
-        | AGENT_BESIDE => Lane::Service(svc::AGENT),
+        | AGENT_BESIDE
+        | AGENT_SCRIPT => Lane::Service(svc::AGENT),
 
         MEDIA_FILE | MEDIA_FILE_META => Lane::Stream { svc: svc::MEDIA, op: "file" },
         MEDIA_ART | MEDIA_ART_META => Lane::Stream { svc: svc::MEDIA, op: "art" },
@@ -617,6 +624,7 @@ mod tests {
             (AGENT_GIT_PROGRESS, svc::AGENT),
             (AGENT_HANDOFF, svc::AGENT),
             (AGENT_BESIDE, svc::AGENT),
+            (AGENT_SCRIPT, svc::AGENT),
         ];
         for (t, service) in lanes {
             assert_eq!(lane_of(t), Some(Lane::Service(service)), "{t}");
@@ -658,7 +666,7 @@ mod tests {
             assert_eq!(rpc_by_header(op.svc, op.op), Some(*op));
             assert_ne!(op.op, OP_LANE);
         }
-        assert_eq!(RPCS.len(), 82);
+        assert_eq!(RPCS.len(), 88);
         let paged: Vec<&str> = RPCS.iter().filter(|op| op.paged).map(|op| op.t).collect();
         assert_eq!(
             paged,
@@ -690,6 +698,9 @@ mod tests {
                 types::AGENT_GIT_REVIEW,
                 types::AGENT_GIT_BRANCHES,
                 types::AGENT_PR_LIST,
+                types::AGENT_SCRIPT_OUTPUT,
+                types::AGENT_PR_DETAIL,
+                types::AGENT_PR_DIFF,
             ]
         );
         assert_eq!(rpc_of(types::INPUT_EVENT), None, "a lane message");
@@ -978,6 +989,9 @@ mod tests {
             split_once(AgentGitReview::default()),
             split_once(AgentBranches::default()),
             split_once(AgentPrRows::default()),
+            split_once(crate::messages::AgentScriptRun::default()),
+            split_once(crate::messages::AgentPrDetail::default()),
+            split_once(crate::messages::AgentGitPatch::default()),
         ];
         assert_eq!(counts.len(), RPCS.iter().filter(|op| op.paged).count());
         assert!(counts.iter().all(|&n| n == 1));

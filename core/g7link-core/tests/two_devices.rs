@@ -9325,7 +9325,7 @@ async fn usb_upgrade_reconnect_and_realtime_pcm_do_not_starve_control_rpcs() {
     let (pc_id, phone_id) = (pc.node.device_id(), phone.node.device_id());
     assert!(matches!(
         pc.node.paired_devices().unwrap()[0].link,
-        LinkState::Online { path: ConnectionPath::Lan, .. }
+        LinkState::Online { path: ConnectionPath::Lan | ConnectionPath::Tailscale, .. }
     ));
 
     // Attach USB tunnel while a LAN session is already live: both sides upgrade to ConnectionPath::Usb.
@@ -9611,7 +9611,7 @@ async fn spoofed_usb_hello_is_not_trusted_without_matching_quic_identity() {
 
     assert!(matches!(
         phone.node.paired_devices().unwrap()[0].link,
-        LinkState::Online { path: ConnectionPath::Lan, .. }
+        LinkState::Online { path: ConnectionPath::Lan | ConnectionPath::Tailscale, .. }
     ));
 
     // 1. Phone side: a local TCP client sends a spoofed UsbHello claiming the paired PC's
@@ -9641,18 +9641,20 @@ async fn spoofed_usb_hello_is_not_trusted_without_matching_quic_identity() {
 
     tokio::time::sleep(Duration::from_millis(400)).await;
 
-    // Neither side trusts the unauthenticated UsbHello: links stay on Lan and fake_id is not discovered.
+    // Neither side trusts the unauthenticated UsbHello: links stay direct (on a machine with
+    // Tailscale up, two local nodes may settle on its address, named `Tailscale`), never USB,
+    // and fake_id is not discovered.
     assert!(
         matches!(
             phone.node.paired_devices().unwrap()[0].link,
-            LinkState::Online { path: ConnectionPath::Lan, .. }
+            LinkState::Online { path: ConnectionPath::Lan | ConnectionPath::Tailscale, .. }
         ),
         "phone session must remain on Lan when UsbHello is not backed by QUIC identity"
     );
     assert!(
         matches!(
             pc.node.paired_devices().unwrap()[0].link,
-            LinkState::Online { path: ConnectionPath::Lan, .. }
+            LinkState::Online { path: ConnectionPath::Lan | ConnectionPath::Tailscale, .. }
         ),
         "pc session must remain on Lan when UsbHello is not backed by QUIC identity"
     );
@@ -9799,6 +9801,7 @@ fn agent_catalog() -> g7link_core::AgentCatalog {
             label: "g7linux".into(),
             checkpoints: true,
             follow_remote: false,
+            ..Default::default()
         }],
         modes: vec!["supervised".into(), "auto_edit".into()],
         push: false,

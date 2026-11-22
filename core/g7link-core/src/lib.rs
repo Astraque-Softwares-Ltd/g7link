@@ -15,6 +15,7 @@ pub mod agent_handoff;
 pub mod agent_history;
 pub mod agent_presence;
 pub mod agent_reply;
+pub mod agent_scripts;
 pub mod agents;
 mod ble_link;
 mod calls;
@@ -72,8 +73,9 @@ pub use agent_git::{
     AgentBranch, AgentBranches, AgentCheck, AgentCheckCounts, AgentGhState, AgentGit, AgentGitChanged,
     AgentGitFile, AgentGitHub, AgentGitLast, AgentGitPatch, AgentGitPatchPage, AgentGitRemote,
     AgentGitReview, AgentGitReviewFile, AgentGitReviewed, AgentGitReviewedFile, AgentGitWorktree, AgentJob,
-    AgentJobError, AgentJobResult, AgentPrBrief, AgentPrCreateRequest, AgentPrInfo, AgentPrListRequest,
-    AgentPrRow, AgentPrRows, AgentPrView, AgentWrote, git, pr,
+    AgentJobError, AgentJobResult, AgentPrBrief, AgentPrComment, AgentPrCreateRequest, AgentPrDetail,
+    AgentPrDetailRequest, AgentPrDiffRequest, AgentPrFile, AgentPrInfo, AgentPrListRequest, AgentPrRow,
+    AgentPrRows, AgentPrView, AgentWrote, git, pr,
 };
 pub use agent_handoff::{AgentHandedOff, AgentHandoff, AgentHandoffOpen, AgentPcHandoff};
 pub use agent_history::{
@@ -84,6 +86,7 @@ pub use agent_history::{
 };
 pub use agent_presence::{AgentPcPresence, AgentPresence, AgentView, AgentViewing, presence};
 pub use agent_reply::{AgentReplyTarget, AgentSessionReplied, AgentSessionReply, session_reply};
+pub use agent_scripts::{AgentRunBrief, AgentScript, AgentScriptRun, scripts};
 pub use agents::{
     AgentAsk, AgentAsked, AgentCatalog, AgentCatalogAgent, AgentCatalogFolder, AgentCommand, AgentConfigure,
     AgentContext, AgentDraft, AgentDraftSaved, AgentDraftSet, AgentEvent, AgentExport, AgentFailure,

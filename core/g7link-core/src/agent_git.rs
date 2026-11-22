@@ -2,7 +2,9 @@
 //! Source control on a PC's agent threads, from a phone
 //! (`docs/protocol/agents.md` §8): the folder's status and uncommitted diff,
 //! reviewing files and committing them, push and fetch, branches, the
-//! branch's pull request and the lists of them, and "Ask <agent> to write it".
+//! branch's pull request and the lists of them, and "Ask <agent> to write
+//! it"; and (§13) a pull request's detail and diff, read-only, and "Ask
+//! <agent> to review it".
 //!
 //! PC side: the core checks the toggles and every limit before anything
 //! reaches the platform, and enforces what a phone may do. A commit goes
@@ -30,9 +32,10 @@ pub use g7link_protocol::messages::{
     AgentGitJobRequest, AgentGitLast, AgentGitPatch, AgentGitPatchRequest, AgentGitProgress,
     AgentGitPushRequest, AgentGitRemote, AgentGitReview, AgentGitReviewFile, AgentGitReviewRequest,
     AgentGitSwitchRequest, AgentGitThread, AgentGitWorktree, AgentJob, AgentJobError, AgentJobResult,
-    AgentPrBrief, AgentPrCreateRequest, AgentPrInfo, AgentPrListRequest, AgentPrRow, AgentPrRows,
-    AgentPrView, AgentPrViewRequest, AgentWriteRequest, AgentWrote, clean_typed_text, git, is_branch_name,
-    is_commit_message, is_git_job_id, is_https_url, is_remote_name, is_review_token, pr,
+    AgentPrBrief, AgentPrComment, AgentPrCreateRequest, AgentPrDetail, AgentPrDetailRequest,
+    AgentPrDiffRequest, AgentPrFile, AgentPrInfo, AgentPrListRequest, AgentPrRow, AgentPrRows, AgentPrView,
+    AgentPrViewRequest, AgentWriteRequest, AgentWrote, clean_typed_text, git, is_branch_name,
+    is_commit_message, is_git_job_id, is_https_url, is_pr_repo, is_remote_name, is_review_token, pr,
 };
 use g7link_protocol::{
     DeviceId, Envelope, ErrorCode,
@@ -277,6 +280,8 @@ pub(crate) fn is_request(t: &str) -> bool {
             | types::AGENT_PR_CREATE
             | types::AGENT_PR_LIST
             | types::AGENT_WRITE
+            | types::AGENT_PR_DETAIL
+            | types::AGENT_PR_DIFF
     )
 }
 
@@ -299,6 +304,7 @@ enum Answer {
     Review(AgentGitReview),
     Branches(AgentBranches),
     Prs(AgentPrRows),
+    Detail(Box<AgentPrDetail>),
 }
 
 fn plain(env: Envelope) -> Answer {
@@ -339,6 +345,7 @@ pub(crate) async fn handle_request(
         Answer::Review(body) => rsp.paged(body).await,
         Answer::Branches(body) => rsp.paged(body).await,
         Answer::Prs(body) => rsp.paged(body).await,
+        Answer::Detail(body) => rsp.paged(*body).await,
         Answer::Patch { body, read } => {
             let whole = !body.truncated;
             let sent = rsp.paged_sent(body).await?;
@@ -363,6 +370,7 @@ enum Expects {
     Pr,
     Prs,
     Thread,
+    Detail,
 }
 
 impl Expects {
@@ -373,7 +381,8 @@ impl Expects {
             AgentRequest::GitBranches { .. } => Self::Branches,
             AgentRequest::PrView { .. } => Self::Pr,
             AgentRequest::PrList { .. } => Self::Prs,
-            AgentRequest::Ask { .. } => Self::Thread,
+            AgentRequest::Ask { .. } | AgentRequest::AskReview { .. } => Self::Thread,
+            AgentRequest::PrDetail { .. } => Self::Detail,
             _ => Self::Job,
         }
     }
@@ -494,7 +503,21 @@ fn request_of(
         }
         types::AGENT_WRITE => {
             let r = agents::decode::<AgentWriteRequest>(env, AgentWriteRequest::is_valid).ok_or_else(bad)?;
-            AgentRequest::Ask { thread: r.thread, purpose: r.purpose }
+            match r.pr {
+                // `is_valid`: a number comes with a review and only then.
+                Some(pr) => AgentRequest::AskReview { thread: r.thread, pr },
+                None => AgentRequest::Ask { thread: r.thread, purpose: r.purpose },
+            }
+        }
+        types::AGENT_PR_DETAIL => {
+            let r = agents::decode::<AgentPrDetailRequest>(env, AgentPrDetailRequest::is_valid)
+                .ok_or_else(bad)?;
+            AgentRequest::PrDetail { thread: r.thread, repo: r.repo, number: r.number, refresh: r.refresh }
+        }
+        types::AGENT_PR_DIFF => {
+            let r =
+                agents::decode::<AgentPrDiffRequest>(env, AgentPrDiffRequest::is_valid).ok_or_else(bad)?;
+            AgentRequest::PrDiff { repo: r.repo, number: r.number, path: r.path, offset: None }
         }
         _ => return Err(Envelope::error(ErrorCode::Unsupported, "unknown agent request")),
     };
@@ -606,7 +629,13 @@ async fn answer(shared: &Arc<Shared>, peer: DeviceId, env: &Envelope) -> Answer 
         {
             return plain(refused);
         }
-        return patch(shared, peer, thread, path, review).await;
+        let read = review.clone().map(|token| (token, path.clone()));
+        let pages = |offset| AgentRequest::GitPatch { thread: thread.clone(), path: path.clone(), offset };
+        return patch(shared, peer, pages, read).await;
+    }
+    if let AgentRequest::PrDiff { repo, number, path, .. } = request {
+        let pages = |offset| AgentRequest::PrDiff { repo: repo.clone(), number, path: path.clone(), offset };
+        return patch(shared, peer, pages, None).await;
     }
     let mut taken = None;
     if let AgentRequest::GitCommit { thread, paths, review, .. } = &mut request {
@@ -667,27 +696,31 @@ async fn answer(shared: &Arc<Shared>, peer: DeviceId, env: &Envelope) -> Answer 
             Some(thread) => ok_with(&agents::thread_for(thread, control)),
             None => malformed(),
         },
+        (Expects::Detail, AgentReply::PrDetail(detail)) => match detail.sanitized() {
+            Some(detail) => Answer::Detail(Box::new(detail)),
+            None => malformed(),
+        },
         _ => something_else(),
     }
 }
 
-/// PC: one file's uncommitted patch, following the host's pages up to
-/// [`git::MAX_PATCH_BYTES`]; a later page that fails ends it, cut. With a
-/// review, it counts as read only when it came whole.
+/// PC: one file's uncommitted patch (`GitPatch`), or its diff in a pull
+/// request (`PrDiff`), following the host's pages (`pages` asks for the one
+/// at an offset) up to [`git::MAX_PATCH_BYTES`]; a later page that fails
+/// ends it, cut. With `read` (a review's token and the file), it counts as
+/// read only when it came whole.
 async fn patch(
     shared: &Arc<Shared>,
     peer: DeviceId,
-    thread: String,
-    path: String,
-    review: Option<String>,
+    pages: impl Fn(Option<u64>) -> AgentRequest,
+    read: Option<(String, String)>,
 ) -> Answer {
     let started = Instant::now();
     let mut whole = AgentGitPatch::default();
     let mut offset = None;
     let mut ended = false;
     for _ in 0..MAX_PATCH_PAGES {
-        let request = AgentRequest::GitPatch { thread: thread.clone(), path: path.clone(), offset };
-        let page = match agents::ask_platform(shared, peer, request).await {
+        let page = match agents::ask_platform(shared, peer, pages(offset)).await {
             Ok(AgentReply::GitPatch(page)) => page,
             Ok(AgentReply::Refused(error)) if offset.is_none() => return plain(refusal_of(&error)),
             Ok(_) if offset.is_none() => return something_else(),
@@ -727,7 +760,7 @@ async fn patch(
         whole.truncated = true;
     }
     let body = whole.sanitized();
-    Answer::Patch { read: review.map(|token| (token, path)), body }
+    Answer::Patch { read, body }
 }
 
 /// PC: a thread's folder changed; every phone that gets agent events hears
@@ -1016,9 +1049,57 @@ impl Node {
     /// request (`purpose`, one of [`git::purpose`]); its answer comes as the
     /// thread's `wrote`.
     pub async fn agent_write(&self, peer: DeviceId, thread: String, purpose: String) -> Result<AgentThread> {
-        let body = AgentWriteRequest { thread, purpose };
+        let body = AgentWriteRequest { thread, purpose, pr: None };
         if !body.is_valid() {
             return Err(invalid("agent.write"));
+        }
+        let shared = self.shared();
+        let thread: AgentThread = single(shared, peer, types::AGENT_WRITE, &body).await?;
+        let thread = thread.sanitized().ok_or_else(|| invalid("agent.write reply"))?;
+        crate::agent_history::thread_arrived(shared, peer, &thread).await;
+        Ok(thread)
+    }
+
+    /// Phone: a pull request's description, changed files (300), checks and
+    /// conversation (the newest 50): the thread's branch's (`thread`), or
+    /// one `agent_pr_list` listed (`repo` and `number`). GitHub that can't
+    /// be reached is `why: "network"` with the last detail read.
+    pub async fn agent_pr_detail(
+        &self,
+        peer: DeviceId,
+        request: AgentPrDetailRequest,
+    ) -> Result<AgentPrDetail> {
+        if !request.is_valid() {
+            return Err(invalid(types::AGENT_PR_DETAIL));
+        }
+        let detail: AgentPrDetail = paged(self.shared(), peer, types::AGENT_PR_DETAIL, &request).await?;
+        detail.sanitized().ok_or_else(|| invalid("agent.pr.detail reply"))
+    }
+
+    /// Phone: one listed file's diff in a pull request, at most 1 MiB
+    /// (`truncated` past that).
+    pub async fn agent_pr_diff(
+        &self,
+        peer: DeviceId,
+        repo: String,
+        number: u32,
+        path: String,
+    ) -> Result<AgentGitPatch> {
+        let body = AgentPrDiffRequest { repo, number, path };
+        if !body.is_valid() {
+            return Err(invalid(types::AGENT_PR_DIFF));
+        }
+        let reply: AgentGitPatch = paged(self.shared(), peer, types::AGENT_PR_DIFF, &body).await?;
+        Ok(AgentGitPatch { names: Vec::new(), more_names: 0, ..reply.sanitized() })
+    }
+
+    /// Phone: "Ask <agent> to review it": the PC sends its fixed message,
+    /// naming pull request `pr` by number and link, in the thread. `BUSY`
+    /// unless the thread is idle with nothing queued.
+    pub async fn agent_ask_review(&self, peer: DeviceId, thread: String, pr: u32) -> Result<AgentThread> {
+        let body = AgentWriteRequest { thread, purpose: git::purpose::REVIEW.to_owned(), pr: Some(pr) };
+        if !body.is_valid() {
+            return Err(invalid(types::AGENT_WRITE));
         }
         let shared = self.shared();
         let thread: AgentThread = single(shared, peer, types::AGENT_WRITE, &body).await?;
@@ -1061,6 +1142,8 @@ mod tests {
             types::AGENT_PR_CREATE,
             types::AGENT_PR_LIST,
             types::AGENT_WRITE,
+            types::AGENT_PR_DETAIL,
+            types::AGENT_PR_DIFF,
         ] {
             assert!(is_request(t) && !is_event(t), "{t}");
             assert!(g7link_protocol::lanes::rpc_of(t).is_some(), "{t}");

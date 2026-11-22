@@ -337,6 +337,7 @@ fn catalog() -> g7link_core::AgentCatalog {
             label: "g7linux".into(),
             checkpoints: true,
             follow_remote: false,
+            ..Default::default()
         }],
         modes: vec!["supervised".into()],
         push: false,

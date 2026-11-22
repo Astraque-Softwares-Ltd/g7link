@@ -106,6 +106,34 @@ pub fn is_tailnet_ip(ip: std::net::IpAddr) -> bool {
     }
 }
 
+/// A session's selected path (or its first, with none selected), as
+/// [`path_of`] names it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Picked {
+    Relay,
+    /// A direct path to `ip`; `usb` when it's the USB bridge's port.
+    Ip {
+        ip: std::net::IpAddr,
+        usb: bool,
+    },
+    /// Anything else a transport may add.
+    Other,
+}
+
+/// What a session's path is called, from its selected path and whether any
+/// of its paths is the USB bridge's: the relay; USB; a direct path to a
+/// tailnet address (`Tailscale`); any other direct path (`Lan`). Naming
+/// only: which paths are allowed or dialed doesn't depend on it.
+fn path_of(selected: Option<Picked>, any_usb: bool) -> ConnectionPath {
+    match selected {
+        Some(Picked::Relay) => ConnectionPath::Relay,
+        Some(Picked::Ip { usb: true, .. }) => ConnectionPath::Usb,
+        _ if any_usb => ConnectionPath::Usb,
+        Some(Picked::Ip { ip, .. }) if is_tailnet_ip(ip) => ConnectionPath::Tailscale,
+        _ => ConnectionPath::Lan,
+    }
+}
+
 /// Returns true if two IPv6 addresses share the same `/64` subnet prefix.
 #[cfg(test)]
 pub(crate) fn is_same_ipv6_subnet(a: std::net::Ipv6Addr, b: std::net::Ipv6Addr) -> bool {
@@ -418,21 +446,15 @@ impl Session {
         }
         let paths = self.conn.paths();
         let selected = paths.iter().find(|p| p.is_selected()).or_else(|| paths.iter().next());
-        match selected {
-            Some(p) if p.is_relay() => ConnectionPath::Relay,
-            Some(p) if matches!(p.remote_addr(), iroh::TransportAddr::Ip(addr) if self.is_usb_addr(addr)) => {
-                ConnectionPath::Usb
-            }
-            _ => {
-                if paths.iter().any(
-                    |p| matches!(p.remote_addr(), iroh::TransportAddr::Ip(addr) if self.is_usb_addr(addr)),
-                ) {
-                    ConnectionPath::Usb
-                } else {
-                    ConnectionPath::Lan
-                }
-            }
-        }
+        let picked = selected.map(|p| match p.remote_addr() {
+            _ if p.is_relay() => Picked::Relay,
+            iroh::TransportAddr::Ip(addr) => Picked::Ip { ip: addr.ip(), usb: self.is_usb_addr(addr) },
+            _ => Picked::Other,
+        });
+        let any_usb = paths
+            .iter()
+            .any(|p| matches!(p.remote_addr(), iroh::TransportAddr::Ip(addr) if self.is_usb_addr(addr)));
+        path_of(picked, any_usb)
     }
 
     /// The peer's direct IP addresses currently in use, for reconnecting later.
@@ -1326,14 +1348,18 @@ async fn heartbeat(session: Arc<Session>, shared: Weak<Shared>) {
             }
         }
         let (answered, rtt) = ping_round(session, started).await;
-        if let Some(rtt) = rtt
-            && let Some(shared) = shared.upgrade()
-        {
-            let rtt_ms = rtt.as_millis().min(u128::from(u32::MAX)) as u32;
-            let path = session.path_rtt();
-            wire_stats::rtt(rtt, path);
-            let previous = session.rtt_ms.swap(rtt_ms, Ordering::Relaxed);
-            if previous.abs_diff(rtt_ms) >= 5 {
+        if let Some(shared) = shared.upgrade() {
+            let mut moved = false;
+            if let Some(rtt) = rtt {
+                let rtt_ms = rtt.as_millis().min(u128::from(u32::MAX)) as u32;
+                let path = session.path_rtt();
+                wire_stats::rtt(rtt, path);
+                let previous = session.rtt_ms.swap(rtt_ms, Ordering::Relaxed);
+                moved = previous.abs_diff(rtt_ms) >= 5;
+            }
+            // A move between paths (Wi-Fi to the tailnet) is published by the
+            // next heartbeat even when the round trip stays about the same.
+            if moved || shared.path_moved(session) {
                 shared.publish_online(session);
             }
         }
@@ -1361,9 +1387,10 @@ fn received_bytes(session: &Session) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        Interactive, Liveness, PathVerdict, PathWatch, Strikes, heartbeat_period, is_lan_ip, is_lan_peer_ip,
-        is_same_ipv6_subnet, is_tailnet_ip,
+        Interactive, Liveness, PathVerdict, PathWatch, Picked, Strikes, heartbeat_period, is_lan_ip,
+        is_lan_peer_ip, is_same_ipv6_subnet, is_tailnet_ip, path_of,
     };
+    use crate::ConnectionPath;
     use std::{
         net::{IpAddr, Ipv6Addr, SocketAddr},
         sync::Arc,
@@ -1428,6 +1455,29 @@ mod tests {
         for bad in ["100.63.0.1", "100.128.0.1", "192.168.1.1", "fd7a:115c:a1e1::1", "fd12::1"] {
             assert!(!is_tailnet_ip(bad.parse().unwrap()), "expected {bad} not to be a tailnet IP");
         }
+    }
+
+    #[test]
+    fn a_direct_path_to_a_tailnet_address_is_named_tailscale() {
+        let ip = |text: &str, usb: bool| Some(Picked::Ip { ip: text.parse().unwrap(), usb });
+        for tailnet in ["100.64.0.1", "100.101.102.103", "fd7a:115c:a1e0::1", "::ffff:100.100.1.2"] {
+            assert_eq!(path_of(ip(tailnet, false), false), ConnectionPath::Tailscale, "{tailnet}");
+        }
+        for lan in ["192.168.1.42", "10.0.0.15", "fe80::1", "fd12::1", "100.63.0.1", "100.128.0.1", "8.8.8.8"]
+        {
+            assert_eq!(path_of(ip(lan, false), false), ConnectionPath::Lan, "{lan}");
+        }
+        // The relay and USB keep their names; a tailnet address doesn't change them.
+        assert_eq!(path_of(Some(Picked::Relay), false), ConnectionPath::Relay);
+        assert_eq!(path_of(Some(Picked::Relay), true), ConnectionPath::Relay);
+        assert_eq!(path_of(ip("127.0.0.1", true), false), ConnectionPath::Usb);
+        assert_eq!(path_of(ip("100.64.0.1", false), true), ConnectionPath::Usb, "the USB bridge has a path");
+        // No path known yet, or one this build can't place: as before, `Lan`.
+        assert_eq!(path_of(None, false), ConnectionPath::Lan);
+        assert_eq!(path_of(Some(Picked::Other), false), ConnectionPath::Lan);
+        assert_eq!(path_of(None, true), ConnectionPath::Usb);
+        assert!(ConnectionPath::Tailscale.is_direct_ip() && ConnectionPath::Lan.is_direct_ip());
+        assert!(!ConnectionPath::Relay.is_direct_ip() && !ConnectionPath::Usb.is_direct_ip());
     }
 
     #[test]

@@ -257,6 +257,15 @@ pub mod types {
     pub const AGENT_HANDOFF_OPEN: &str = "agent.handoff.open";
     // ---- agent: the phone beside the PC (docs/protocol/agents.md §11) ----
     pub const AGENT_BESIDE: &str = "agent.beside";
+    // ---- agent: project scripts (docs/protocol/agents.md §12) ----
+    pub const AGENT_SCRIPT_RUN: &str = "agent.script.run";
+    pub const AGENT_SCRIPT_STOP: &str = "agent.script.stop";
+    pub const AGENT_SCRIPT_RUNS: &str = "agent.script.runs";
+    pub const AGENT_SCRIPT_OUTPUT: &str = "agent.script.output";
+    pub const AGENT_SCRIPT: &str = "agent.script";
+    // ---- agent: pull request detail (docs/protocol/agents.md §13) ----
+    pub const AGENT_PR_DETAIL: &str = "agent.pr.detail";
+    pub const AGENT_PR_DIFF: &str = "agent.pr.diff";
 }
 
 /// What kind of device this is.
@@ -6133,7 +6142,7 @@ impl AgentCatalogAgent {
 }
 
 /// One folder in an [`AgentCatalog`]: its id and label, never its path.
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct AgentCatalogFolder {
     pub id: String,
     pub label: String,
@@ -6145,11 +6154,32 @@ pub struct AgentCatalogFolder {
     /// shown ("Keep in step with the remote", §8). Set on the PC only.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub follow_remote: bool,
+    // ---- Project scripts (`docs/protocol/agents.md` §12) ----
+    /// "Phones can run these": a phone may start and stop its scripts. Set
+    /// on the PC only; off unless the PC says so.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub phone_scripts: bool,
+    /// How many scripts the folder has, at most [`scripts::MAX_SCRIPTS`],
+    /// whether or not they're listed.
+    #[serde(default, skip_serializing_if = "is_zero_u8")]
+    pub script_count: u8,
+    /// Its scripts, in order: only with `phone_scripts`, empty otherwise.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scripts: Vec<AgentScript>,
 }
 
+fn is_zero_u8(n: &u8) -> bool {
+    *n == 0
+}
+
+/// Never prints a script.
 impl std::fmt::Debug for AgentCatalogFolder {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("AgentCatalogFolder").field("id", &self.id).finish_non_exhaustive()
+        f.debug_struct("AgentCatalogFolder")
+            .field("id", &self.id)
+            .field("phone_scripts", &self.phone_scripts)
+            .field("script_count", &self.script_count)
+            .finish_non_exhaustive()
     }
 }
 
@@ -6185,10 +6215,11 @@ impl AgentCatalog {
         self.agents.len() <= agent::MAX_AGENTS
             && self.agents.iter().all(AgentCatalogAgent::is_valid)
             && self.folders.len() <= agent::MAX_FOLDERS
-            && self
-                .folders
-                .iter()
-                .all(|f| is_valid_agent_id(&f.id) && f.label.len() <= agent::MAX_LABEL_BYTES)
+            && self.folders.iter().all(|f| {
+                is_valid_agent_id(&f.id)
+                    && f.label.len() <= agent::MAX_LABEL_BYTES
+                    && agent_scripts::is_valid_folder_scripts(f)
+            })
             && self.modes.len() <= agent::MAX_MODES
             && self.modes.iter().all(|m| is_agent_word(m))
     }
@@ -6205,6 +6236,7 @@ impl AgentCatalog {
         self.folders.truncate(agent::MAX_FOLDERS);
         for f in &mut self.folders {
             clean_line(&mut f.label, agent::MAX_LABEL_BYTES);
+            agent_scripts::clean_folder_scripts(f);
         }
         self.modes.retain(|m| is_agent_word(m));
         self.modes.truncate(agent::MAX_MODES);
@@ -6327,6 +6359,10 @@ pub struct AgentThread {
     /// TCP ports its agent's processes listen on (dev servers), oldest first.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ports: Vec<AgentPort>,
+    // ---- Project scripts (`docs/protocol/agents.md` §12) ----
+    /// Its scripts' runs: running first, then ended ones the PC still keeps.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub runs: Vec<AgentRunBrief>,
 }
 
 /// One step of a thread's plan (`AgentThread.plan`).
@@ -6405,6 +6441,7 @@ impl AgentThread {
             && agent_history::is_valid_thread_history(self)
             && agent_git::is_valid_thread_git(self)
             && agent_beside::is_valid_thread_ports(self)
+            && agent_scripts::is_valid_thread_runs(self)
     }
 
     /// The thread within its limits, or `None` when an id or a wire word is bad.
@@ -6441,6 +6478,7 @@ impl AgentThread {
         agent_history::clean_thread_history(&mut self);
         agent_git::clean_thread_git(&mut self);
         agent_beside::clean_thread_ports(&mut self);
+        agent_scripts::clean_thread_runs(&mut self);
         Some(self)
     }
 
@@ -7696,6 +7734,8 @@ mod agent_handoff;
 pub use agent_handoff::*;
 mod agent_beside;
 pub use agent_beside::*;
+mod agent_scripts;
+pub use agent_scripts::*;
 
 /// The `agent/export` stream: one thread or session as Markdown per stream
 /// (`docs/protocol/agents.md` §4).
@@ -10169,6 +10209,7 @@ mod tests {
                 label: "g7linux".into(),
                 checkpoints: true,
                 follow_remote: false,
+                ..Default::default()
             }],
             modes: vec![agent::mode::SUPERVISED.into()],
             push: false,

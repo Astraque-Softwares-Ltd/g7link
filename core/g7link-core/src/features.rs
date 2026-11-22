@@ -160,6 +160,7 @@ impl UpgradeAction {
             UpgradeAction::EnablePath(ConnectionPath::Relay) => ("enablePath", "relay".into()),
             UpgradeAction::EnablePath(ConnectionPath::Lan) => ("enablePath", "lan".into()),
             UpgradeAction::EnablePath(ConnectionPath::Usb) => ("enablePath", "usb".into()),
+            UpgradeAction::EnablePath(ConnectionPath::Tailscale) => ("enablePath", "tailscale".into()),
             UpgradeAction::EnableDeviceToggle(toggle) => ("enableToggle", toggle.into()),
             UpgradeAction::UpdateApp(Role::Phone) => ("updateApp", "phone".into()),
             UpgradeAction::UpdateApp(Role::Desktop) => ("updateApp", "desktop".into()),

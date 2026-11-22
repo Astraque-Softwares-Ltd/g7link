@@ -93,15 +93,15 @@ fn openable(ip: IpAddr, lan: &impl Fn(IpAddr) -> bool) -> bool {
 
 /// Where port `port` of a PC answers for this phone, given the link's
 /// `path` and its direct addresses (`selected`: the one in use): only over
-/// a LAN path, at the address in use when it can be opened, else another
-/// (IPv4 first).
+/// a direct path to an address on this network or the tailnet, at the
+/// address in use when it can be opened, else another (IPv4 first).
 fn url_for(
     path: ConnectionPath,
     addrs: &[(IpAddr, bool)],
     lan: impl Fn(IpAddr) -> bool,
     port: u16,
 ) -> Option<String> {
-    if path != ConnectionPath::Lan || port < beside::MIN_PORT {
+    if !path.is_direct_ip() || port < beside::MIN_PORT {
         return None;
     }
     let (_, ip) = addrs
@@ -120,7 +120,7 @@ fn url_for(
 fn port_url(shared: &Shared, pc: DeviceId, port: u16) -> Option<String> {
     let session = shared.session(&pc)?;
     let path = session.path();
-    if path != ConnectionPath::Lan {
+    if !path.is_direct_ip() {
         return None;
     }
     let addrs: Vec<(IpAddr, bool)> = session
@@ -154,7 +154,7 @@ fn local_addrs(
 fn pc_port_url(shared: &Shared, phone: DeviceId, port: u16) -> Option<String> {
     let session = shared.session(&phone)?;
     let path = session.path();
-    if path != ConnectionPath::Lan {
+    if !path.is_direct_ip() {
         return None;
     }
     let paths: Vec<(IpAddr, Option<IpAddr>, bool)> = session
@@ -239,6 +239,12 @@ mod tests {
         );
         assert_eq!(url_for(ConnectionPath::Relay, &lan, any, PORT), None, "the relay");
         assert_eq!(url_for(ConnectionPath::Usb, &lan, any, PORT), None, "USB");
+        // Over the tailnet, as before it had its own name: the address in use.
+        let tailnet = [(ip("100.101.102.103"), true)];
+        assert_eq!(
+            url_for(ConnectionPath::Tailscale, &tailnet, crate::session::is_lan_ip, PORT).as_deref(),
+            Some("http://100.101.102.103:5173/")
+        );
         assert_eq!(url_for(ConnectionPath::Lan, &lan, any, 80), None, "under 1024");
         assert_eq!(url_for(ConnectionPath::Lan, &[], any, PORT), None, "no direct address");
         let wan = |ip: IpAddr| ip != self::ip("203.0.113.9");

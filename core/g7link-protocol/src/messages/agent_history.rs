@@ -1991,6 +1991,7 @@ mod tests {
             label: "g7linux".into(),
             checkpoints: true,
             follow_remote: false,
+            ..Default::default()
         };
         round_trip(
             types::AGENT_CATALOG,

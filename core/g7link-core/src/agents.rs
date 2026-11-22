@@ -328,6 +328,33 @@ pub enum AgentRequest {
     /// While the PC is locked, remember it (one, for 10 minutes) and open it
     /// at unlock. Never unlock, type or send. Answered with `HandedOff`.
     Handoff { thread: String, seq: Option<u64> },
+    // ---- Project scripts (`docs/protocol/agents.md` §12) ----
+    /// `agent.script.run`: run script `script` (its id) of the thread's
+    /// folder, started by the phone that asked: the host gets `by` that
+    /// phone, always, and checks the folder's "Phones can run these" itself.
+    /// Answered with `ScriptRun`, or `Refused` with a word of
+    /// `scripts::refused` (`phone_scripts_off`, `script_running`, `runs`,
+    /// `no_script`, `folder_missing`).
+    ScriptRun { thread: String, script: String },
+    /// `agent.script.stop`, by the phone that asked. As `ScriptRun`.
+    ScriptStop { run: String },
+    /// `agent.script.runs`: the thread's runs, newest first. Answered with `ScriptRuns`.
+    ScriptRuns { thread: String },
+    /// `agent.script.output`: a run with the lines the host keeps. Answered
+    /// with `ScriptRun`.
+    ScriptOutput { run: String },
+    // ---- Pull request detail (`docs/protocol/agents.md` §13) ----
+    /// `agent.pr.detail`: the thread's branch's pull request (`thread`), or
+    /// `repo`'s `number` (both or neither; the host checks it listed them).
+    /// Answered with `PrDetail`.
+    PrDetail { thread: Option<String>, repo: Option<String>, number: Option<u32>, refresh: bool },
+    /// One page of `agent.pr.diff` from `offset` (the host's `pr.diff`):
+    /// `path` as the detail listed it. Answered with `GitPatch`.
+    PrDiff { repo: String, number: u32, path: String, offset: Option<u64> },
+    /// `agent.write` with `purpose: "review"`: "Ask <agent> to review it",
+    /// pull request `pr` (the host's `thread.send { purpose: "review", pr }`).
+    /// Answered with `Thread`.
+    AskReview { thread: String, pr: u32 },
 }
 
 /// Never prints a prompt, text or token (protocol v0 §11).
@@ -541,6 +568,26 @@ impl std::fmt::Debug for AgentRequest {
             Self::Handoff { thread, seq } => {
                 f.debug_struct("Handoff").field("thread", thread).field("seq", seq).finish()
             }
+            Self::ScriptRun { thread, script } => {
+                f.debug_struct("ScriptRun").field("thread", thread).field("script", script).finish()
+            }
+            Self::ScriptStop { run } => f.debug_struct("ScriptStop").field("run", run).finish(),
+            Self::ScriptRuns { thread } => f.debug_struct("ScriptRuns").field("thread", thread).finish(),
+            Self::ScriptOutput { run } => f.debug_struct("ScriptOutput").field("run", run).finish(),
+            Self::PrDetail { thread, number, refresh, .. } => f
+                .debug_struct("PrDetail")
+                .field("thread", thread)
+                .field("number", number)
+                .field("refresh", refresh)
+                .finish_non_exhaustive(),
+            Self::PrDiff { number, offset, .. } => f
+                .debug_struct("PrDiff")
+                .field("number", number)
+                .field("offset", offset)
+                .finish_non_exhaustive(),
+            Self::AskReview { thread, pr } => {
+                f.debug_struct("AskReview").field("thread", thread).field("pr", pr).finish()
+            }
         }
     }
 }
@@ -617,6 +664,18 @@ pub enum AgentReply {
     /// [`crate::agent_handoff::AgentHandedOff`]'s constructors); any other
     /// word is `Internal`.
     HandedOff(crate::agent_handoff::AgentHandedOff),
+    /// `ScriptRun`, `ScriptStop`, `ScriptOutput` (§12): the run with the
+    /// lines the host gave (the core cuts them to fit the phone), its `by`
+    /// the starting phone's name (`None`: this PC); `by` here is that
+    /// phone's id, so the core can tell the one that asked it's `mine`.
+    ScriptRun {
+        run: crate::agent_scripts::AgentScriptRun,
+        by: Option<DeviceId>,
+    },
+    /// `ScriptRuns`, newest first, each with the device that started it.
+    ScriptRuns(Vec<(crate::agent_scripts::AgentScriptRun, Option<DeviceId>)>),
+    /// `PrDetail` (§13).
+    PrDetail(crate::agent_git::AgentPrDetail),
 }
 
 /// Never prints a thumbnail's bytes.
@@ -656,6 +715,11 @@ impl std::fmt::Debug for AgentReply {
             Self::Refused(error) => f.debug_tuple("Refused").field(error).finish(),
             Self::Replied(replied) => f.debug_tuple("Replied").field(replied).finish(),
             Self::HandedOff(done) => f.debug_tuple("HandedOff").field(&done.result).finish(),
+            Self::ScriptRun { run, by } => {
+                f.debug_struct("ScriptRun").field("run", run).field("by", &by.map(|d| d.short())).finish()
+            }
+            Self::ScriptRuns(runs) => f.debug_tuple("ScriptRuns").field(&runs.len()).finish(),
+            Self::PrDetail(detail) => f.debug_tuple("PrDetail").field(detail).finish(),
         }
     }
 }
@@ -2223,6 +2287,10 @@ pub(crate) async fn handle(
         t if crate::agent_beside::is_message(t) => {
             crate::agent_beside::handle(shared, peer, env, rsp).await?;
         }
+        t if crate::agent_scripts::is_request(t) => {
+            crate::agent_scripts::handle_request(shared, peer, env, rsp).await?;
+        }
+        t if crate::agent_scripts::is_event(t) => crate::agent_scripts::handle_event(shared, peer, env),
         types::AGENT_CATALOG if shared.we_offer(agent::REMOTE) => {
             let Ok(catalog) = env.body::<AgentCatalog>() else { return Ok(true) };
             if !catalog.is_valid() {

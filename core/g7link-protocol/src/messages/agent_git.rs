@@ -158,11 +158,18 @@ pub mod git {
         pub const ALL: &[&str] = &[LARGE, FOLDER];
     }
 
-    /// What "Ask <agent> to write it" is for (`purpose`).
+    /// What "Ask <agent> to write it" is for (`purpose`), and "Ask <agent>
+    /// to review it" (`review`, with the pull request's number).
     pub mod purpose {
         pub const COMMIT: &str = "commit";
         pub const PR: &str = "pr";
+        /// "Ask <agent> to review it" (§13): needs `pr`; the thread's
+        /// `wrote` never holds it.
+        pub const REVIEW: &str = "review";
+        /// What the agent writes when asked, and `AgentThread.wrote` holds.
         pub const ALL: &[&str] = &[COMMIT, PR];
+        /// Every `agent.write`'s `purpose`.
+        pub const ASK: &[&str] = &[COMMIT, PR, REVIEW];
     }
 
     /// The reasons a job fails or a request is refused with that a phone
@@ -271,7 +278,8 @@ pub mod pr {
         pub const ALL: &[&str] = &[MINE, REVIEW, FOLDER];
     }
 
-    /// Why `agent.pr.view` has no pull request to show, or an old one (`why`).
+    /// Why `agent.pr.view` or `agent.pr.detail` has no pull request to
+    /// show, or an old one (`why`).
     pub mod why {
         pub const NOT_GITHUB: &str = "not_github";
         pub const NO_UPSTREAM: &str = "no_upstream";
@@ -280,7 +288,46 @@ pub mod pr {
         pub const NETWORK: &str = "network";
         /// The folder isn't a git repository.
         pub const NOT_REPO: &str = "not_repo";
-        pub const ALL: &[&str] = &[NOT_GITHUB, NO_UPSTREAM, DETACHED, NETWORK, NOT_REPO];
+        /// The pull request is too large to show here (§13).
+        pub const TOO_LARGE: &str = "too_large";
+        /// The thread's branch has no pull request (§13).
+        pub const NO_PR: &str = "no_pr";
+        pub const ALL: &[&str] = &[NOT_GITHUB, NO_UPSTREAM, DETACHED, NETWORK, NOT_REPO, TOO_LARGE, NO_PR];
+    }
+
+    // ---- Pull request detail (§13) ----
+
+    /// Changed files of a pull request a phone gets: the first.
+    pub const MAX_FILES: usize = 300;
+    /// Comments and reviews a phone gets: the newest.
+    pub const MAX_COMMENTS: usize = 50;
+    /// One comment's or review's body, in bytes.
+    pub const MAX_COMMENT_BYTES: usize = 4096;
+    /// An author's login, in bytes.
+    pub const MAX_AUTHOR_BYTES: usize = 64;
+    /// One repository part (`owner`, `name`, a host), in bytes.
+    pub const MAX_REPO_PART_BYTES: usize = 100;
+
+    /// How a pull request changed a file (`change`). One this build doesn't
+    /// know reads as `changed`.
+    pub mod change {
+        pub const ADDED: &str = "added";
+        pub const DELETED: &str = "deleted";
+        pub const RENAMED: &str = "renamed";
+        pub const COPIED: &str = "copied";
+        pub const MODIFIED: &str = "modified";
+        pub const CHANGED: &str = "changed";
+        pub const ALL: &[&str] = &[ADDED, DELETED, RENAMED, COPIED, MODIFIED, CHANGED];
+    }
+
+    /// A review's verdict on a comment (`review`); absent: a comment, or a
+    /// word this build doesn't know.
+    pub mod verdict {
+        pub const APPROVED: &str = "approved";
+        pub const CHANGES_REQUESTED: &str = "changes_requested";
+        pub const COMMENTED: &str = "commented";
+        pub const DISMISSED: &str = "dismissed";
+        pub const ALL: &[&str] = &[APPROVED, CHANGES_REQUESTED, COMMENTED, DISMISSED];
     }
 }
 
@@ -1862,21 +1909,383 @@ impl AgentPrRows {
     }
 }
 
-// ---- Ask the agent to write it ----
+// ---- Pull request detail (§13) ----
+
+/// Whether `repo` names a repository as `gh --repo` takes it: `owner/name`,
+/// or `host/owner/name`; each part 1 to 100 of `[A-Za-z0-9._-]`, not
+/// starting with `-` or `.`; at most [`git::MAX_REPO_BYTES`] in all.
+pub fn is_pr_repo(repo: &str) -> bool {
+    let parts: Vec<&str> = repo.split('/').collect();
+    repo.len() <= git::MAX_REPO_BYTES
+        && (2..=3).contains(&parts.len())
+        && parts.iter().all(|part| {
+            (1..=pr::MAX_REPO_PART_BYTES).contains(&part.len())
+                && !part.starts_with(['-', '.'])
+                && part.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+        })
+}
+
+/// Body of `agent.pr.detail`: the thread's branch's pull request (`thread`),
+/// or one `agent.pr.list` listed (`repo` and `number`); `refresh` reads it
+/// from GitHub now.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct AgentPrDetailRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub number: Option<u32>,
+    #[serde(default, skip_serializing_if = "Not::not")]
+    pub refresh: bool,
+}
+
+impl AgentPrDetailRequest {
+    /// A thread, or a repository and a number (both, the number not 0), or
+    /// all three.
+    pub fn is_valid(&self) -> bool {
+        self.thread.as_deref().is_none_or(is_valid_agent_id)
+            && match (&self.repo, self.number) {
+                (Some(repo), Some(number)) => is_pr_repo(repo) && number >= 1,
+                (None, None) => self.thread.is_some(),
+                _ => false,
+            }
+    }
+}
+
+/// A file a pull request changes.
+#[derive(Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct AgentPrFile {
+    /// Relative to the repository.
+    pub path: String,
+    /// One of [`pr::change`]; one this build doesn't know reads as `changed`.
+    pub change: String,
+    #[serde(default)]
+    pub adds: u32,
+    #[serde(default)]
+    pub dels: u32,
+}
+
+/// Never prints the path.
+impl std::fmt::Debug for AgentPrFile {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AgentPrFile")
+            .field("change", &self.change)
+            .field("adds", &self.adds)
+            .field("dels", &self.dels)
+            .finish_non_exhaustive()
+    }
+}
+
+impl AgentPrFile {
+    fn is_valid(&self) -> bool {
+        is_relative_path(&self.path) && is_agent_word(&self.change)
+    }
+
+    /// Within its limits, or `None` when its path isn't one that stays in
+    /// the repository (never cut: a cut path would name another file).
+    fn sanitized(mut self) -> Option<Self> {
+        if !is_relative_path(&self.path) {
+            return None;
+        }
+        if !pr::change::ALL.contains(&self.change.as_str()) {
+            self.change = pr::change::CHANGED.to_owned();
+        }
+        Some(self)
+    }
+}
+
+/// A comment on a pull request's conversation, or a review's summary
+/// (`review` set). Comments made on lines of code aren't among them.
+#[derive(Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct AgentPrComment {
+    /// Its author's login.
+    pub author: String,
+    /// Unix milliseconds.
+    #[serde(default)]
+    pub at_ms: u64,
+    /// Markdown, at most [`pr::MAX_COMMENT_BYTES`].
+    #[serde(default)]
+    pub body: String,
+    /// `body` was cut to fit.
+    #[serde(default, skip_serializing_if = "Not::not")]
+    pub cut: bool,
+    /// One of [`pr::verdict`]: a review's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review: Option<String>,
+    /// `https` on a host the GitHub CLI is signed in to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+}
+
+/// Never prints the author, the body or the link.
+impl std::fmt::Debug for AgentPrComment {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AgentPrComment")
+            .field("at_ms", &self.at_ms)
+            .field("bytes", &self.body.len())
+            .field("cut", &self.cut)
+            .field("review", &self.review)
+            .finish_non_exhaustive()
+    }
+}
+
+impl AgentPrComment {
+    fn is_valid(&self) -> bool {
+        self.author.len() <= pr::MAX_AUTHOR_BYTES
+            && is_one_line(&self.author)
+            && self.body.len() <= pr::MAX_COMMENT_BYTES
+            && is_typed_text(&self.body)
+            && fits_word(&self.review)
+            && self.url.as_deref().is_none_or(is_https_url)
+    }
+
+    fn sanitized(mut self) -> Self {
+        clean_line(&mut self.author, pr::MAX_AUTHOR_BYTES);
+        let (body, cut) = clean_agent_text(&self.body.replace("\r\n", "\n"), true, pr::MAX_COMMENT_BYTES);
+        self.body = body;
+        self.cut |= cut;
+        known_word(&mut self.review, pr::verdict::ALL);
+        self.url = self.url.filter(|u| is_https_url(u));
+        self
+    }
+}
+
+/// Whether `text` holds no control character but newline and tab, and no
+/// bidi control.
+fn is_typed_text(text: &str) -> bool {
+    !text.chars().any(|c| is_bidi_control(c) || (c.is_control() && !matches!(c, '\n' | '\t')))
+}
+
+/// Body of the `agent.pr.detail` answer (paged: `files` and `comments` are
+/// split across the parts, the rest repeats): a pull request's description,
+/// changed files, checks and conversation. GitHub that can't be reached is
+/// `why: "network"` with the last detail read, if any.
+#[derive(Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct AgentPrDetail {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pr: Option<AgentPrInfo>,
+    pub gh: AgentGhState,
+    /// One of [`pr::why`]; absent when the word isn't known here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub why: Option<String>,
+    /// `owner/name`, or `host/owner/name`; empty with no pull request.
+    #[serde(default)]
+    pub repo: String,
+    /// Who opened it: "opened by %1".
+    #[serde(default)]
+    pub author: String,
+    /// Its description, Markdown, at most [`pr::MAX_BODY_BYTES`].
+    #[serde(default)]
+    pub body: String,
+    /// `body` was cut to fit: "Shortened to fit."
+    #[serde(default, skip_serializing_if = "Not::not")]
+    pub body_cut: bool,
+    /// Lines added and deleted, and files changed, in all.
+    #[serde(default)]
+    pub adds: u32,
+    #[serde(default)]
+    pub dels: u32,
+    #[serde(default)]
+    pub changed: u32,
+    /// At most [`pr::MAX_FILES`]; `files_more` past that.
+    #[serde(default)]
+    pub files: Vec<AgentPrFile>,
+    #[serde(default, skip_serializing_if = "Not::not")]
+    pub files_more: bool,
+    /// Oldest first, the newest [`pr::MAX_COMMENTS`].
+    #[serde(default)]
+    pub comments: Vec<AgentPrComment>,
+    /// Older ones not sent: "%n older comments aren't shown."
+    #[serde(default)]
+    pub comments_older: u32,
+    /// A thread on the PC on that repository and head branch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread: Option<String>,
+    /// When the PC read it from GitHub, Unix milliseconds.
+    #[serde(default)]
+    pub read_ms: u64,
+}
+
+/// Never prints the description, an author, a path or a comment.
+impl std::fmt::Debug for AgentPrDetail {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AgentPrDetail")
+            .field("pr", &self.pr)
+            .field("why", &self.why)
+            .field("bytes", &self.body.len())
+            .field("files", &self.files.len())
+            .field("files_more", &self.files_more)
+            .field("comments", &self.comments.len())
+            .field("comments_older", &self.comments_older)
+            .field("thread", &self.thread)
+            .finish_non_exhaustive()
+    }
+}
+
+impl AgentPrDetail {
+    pub fn is_valid(&self) -> bool {
+        self.pr.as_ref().is_none_or(AgentPrInfo::is_valid)
+            && self.gh.is_valid()
+            && fits_word(&self.why)
+            && (self.repo.is_empty() || is_pr_repo(&self.repo))
+            && self.author.len() <= pr::MAX_AUTHOR_BYTES
+            && is_one_line(&self.author)
+            && self.body.len() <= pr::MAX_BODY_BYTES
+            && is_typed_text(&self.body)
+            && self.files.len() <= pr::MAX_FILES
+            && self.files.iter().all(AgentPrFile::is_valid)
+            && self.comments.len() <= pr::MAX_COMMENTS
+            && self.comments.iter().all(AgentPrComment::is_valid)
+            && self.thread.as_deref().is_none_or(is_valid_agent_id)
+    }
+
+    /// The detail a phone may have: text cleaned and cut (then flagged),
+    /// files out of the repository left out, at most [`pr::MAX_FILES`]
+    /// (`files_more` past that), the newest [`pr::MAX_COMMENTS`] comments
+    /// (the rest counted in `comments_older`); `None` for a `gh` this build
+    /// doesn't know.
+    pub fn sanitized(mut self) -> Option<Self> {
+        self.gh = self.gh.sanitized()?;
+        self.pr = self.pr.and_then(AgentPrInfo::sanitized);
+        known_word(&mut self.why, pr::why::ALL);
+        if !is_pr_repo(&self.repo) {
+            self.repo = String::new();
+        }
+        clean_line(&mut self.author, pr::MAX_AUTHOR_BYTES);
+        let (body, cut) = clean_agent_text(&self.body.replace("\r\n", "\n"), true, pr::MAX_BODY_BYTES);
+        self.body = body;
+        self.body_cut |= cut;
+        self.files = std::mem::take(&mut self.files).into_iter().filter_map(AgentPrFile::sanitized).collect();
+        if self.files.len() > pr::MAX_FILES {
+            self.files.truncate(pr::MAX_FILES);
+            self.files_more = true;
+        }
+        let older = self.comments.len().saturating_sub(pr::MAX_COMMENTS);
+        self.comments.drain(..older);
+        self.comments_older = self.comments_older.saturating_add(u32::try_from(older).unwrap_or(u32::MAX));
+        self.comments =
+            std::mem::take(&mut self.comments).into_iter().map(AgentPrComment::sanitized).collect();
+        self.thread = self.thread.filter(|t| is_valid_agent_id(t));
+        Some(self)
+    }
+
+    fn clone_without_lists(&self) -> Self {
+        Self {
+            pr: self.pr.clone(),
+            gh: self.gh.clone(),
+            why: self.why.clone(),
+            repo: self.repo.clone(),
+            author: self.author.clone(),
+            body: String::new(),
+            body_cut: self.body_cut,
+            adds: self.adds,
+            dels: self.dels,
+            changed: self.changed,
+            files: Vec::new(),
+            files_more: self.files_more,
+            comments: Vec::new(),
+            comments_older: self.comments_older,
+            thread: self.thread.clone(),
+            read_ms: self.read_ms,
+        }
+    }
+}
+
+/// One piece of an [`AgentPrDetail`]'s parts: a file or a comment.
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+pub enum AgentPrDetailItem {
+    File(AgentPrFile),
+    Comment(AgentPrComment),
+}
+
+impl crate::lanes::Paged for AgentPrDetail {
+    type Item = AgentPrDetailItem;
+
+    /// The files, then the comments.
+    fn take_items(&mut self) -> Vec<AgentPrDetailItem> {
+        let files = std::mem::take(&mut self.files).into_iter().map(AgentPrDetailItem::File);
+        let comments = std::mem::take(&mut self.comments).into_iter().map(AgentPrDetailItem::Comment);
+        files.chain(comments).collect()
+    }
+
+    fn set_items(&mut self, items: Vec<AgentPrDetailItem>) {
+        self.files.clear();
+        self.comments.clear();
+        for item in items {
+            match item {
+                AgentPrDetailItem::File(file) => self.files.push(file),
+                AgentPrDetailItem::Comment(comment) => self.comments.push(comment),
+            }
+        }
+    }
+
+    /// Everything but the lists and the description repeats; the
+    /// description goes in the first part only.
+    fn continued(&self, items: Vec<AgentPrDetailItem>) -> Self {
+        let mut part = self.clone_without_lists();
+        <Self as crate::lanes::Paged>::set_items(&mut part, items);
+        part
+    }
+
+    fn append(&mut self, more: Self) {
+        self.files.extend(more.files);
+        self.comments.extend(more.comments);
+        self.files_more |= more.files_more;
+        self.body_cut |= more.body_cut;
+    }
+}
+
+/// Body of `agent.pr.diff`: one file's diff in a pull request
+/// `agent.pr.detail` listed. The answer is an [`AgentGitPatch`] of at most
+/// [`git::MAX_PATCH_BYTES`] (`truncated` past that), in parts.
+#[derive(Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct AgentPrDiffRequest {
+    pub repo: String,
+    pub number: u32,
+    /// As the detail listed it; the PC looks it up, never passes it on trust.
+    pub path: String,
+}
+
+/// Never prints the path.
+impl std::fmt::Debug for AgentPrDiffRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AgentPrDiffRequest").field("number", &self.number).finish_non_exhaustive()
+    }
+}
+
+impl AgentPrDiffRequest {
+    pub fn is_valid(&self) -> bool {
+        is_pr_repo(&self.repo) && self.number >= 1 && is_relative_path(&self.path)
+    }
+}
+
+// ---- Ask the agent to write it, or to review a pull request ----
 
 /// Body of `agent.write`: asks the thread's agent, in the thread, to write
-/// a commit message or a pull request's title and description. The PC sends
-/// a fixed message of its own; the answer comes back as the thread's `wrote`.
+/// a commit message or a pull request's title and description, or (§13,
+/// `review` with `pr`) to review pull request `pr`. The PC sends a fixed
+/// message of its own; what the agent writes comes back as the thread's
+/// `wrote` (never for a review).
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct AgentWriteRequest {
     pub thread: String,
-    /// One of [`git::purpose`].
+    /// One of [`git::purpose::ASK`].
     pub purpose: String,
+    /// The pull request to review: with `review` only, and then needed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pr: Option<u32>,
 }
 
 impl AgentWriteRequest {
     pub fn is_valid(&self) -> bool {
-        is_valid_agent_id(&self.thread) && git::purpose::ALL.contains(&self.purpose.as_str())
+        is_valid_agent_id(&self.thread)
+            && git::purpose::ASK.contains(&self.purpose.as_str())
+            && match self.pr {
+                Some(number) => self.purpose == git::purpose::REVIEW && number >= 1,
+                None => self.purpose != git::purpose::REVIEW,
+            }
     }
 }
 
@@ -2132,8 +2541,17 @@ mod tests {
         );
         assert!(!AgentPrListRequest { show: "folder".into(), folder: None, refresh: false }.is_valid());
         assert!(!AgentPrListRequest { show: "all".into(), folder: None, refresh: false }.is_valid());
-        assert!(AgentWriteRequest { thread: thread.clone(), purpose: "pr".into() }.is_valid());
-        assert!(!AgentWriteRequest { thread, purpose: "merge".into() }.is_valid());
+        let write = |purpose: &str, pr: Option<u32>| AgentWriteRequest {
+            thread: thread.clone(),
+            purpose: purpose.into(),
+            pr,
+        };
+        assert!(write("pr", None).is_valid() && write("commit", None).is_valid());
+        assert!(!write("merge", None).is_valid());
+        assert!(write("review", Some(212)).is_valid());
+        assert!(!write("review", None).is_valid(), "a review names its pull request");
+        assert!(!write("review", Some(0)).is_valid());
+        assert!(!write("commit", Some(212)).is_valid(), "a number only with a review");
     }
 
     #[test]
@@ -2227,6 +2645,7 @@ mod tests {
                 label: "app".into(),
                 checkpoints: true,
                 follow_remote: true,
+                ..Default::default()
             }],
             push: true,
             ..Default::default()
@@ -2254,6 +2673,8 @@ mod tests {
             (types::AGENT_PR_CREATE, "pr.create", false),
             (types::AGENT_PR_LIST, "pr.list", true),
             (types::AGENT_WRITE, "write", false),
+            (types::AGENT_PR_DETAIL, "pr.detail", true),
+            (types::AGENT_PR_DIFF, "pr.diff", true),
         ];
         for (t, op, paged) in rpcs {
             let rpc = rpc_of(t).unwrap_or_else(|| panic!("{t} is an RPC"));
@@ -2270,9 +2691,196 @@ mod tests {
             "agent.pr.ready",
             "agent.worktree.remove",
             "agent.folders.set",
+            "agent.pr.review",
+            "agent.pr.comment",
+            "agent.pr.start",
         ] {
             assert_eq!(lane_of(never), None, "{never} has no message");
         }
+    }
+
+    fn detail() -> AgentPrDetail {
+        AgentPrDetail {
+            pr: Some(AgentPrInfo { number: 212, state: "open".into(), ..Default::default() }),
+            gh: AgentGhState {
+                gh: pr::gh::OK.into(),
+                hosts: vec!["github.com".into()],
+                ..Default::default()
+            },
+            repo: "acme/app".into(),
+            author: "octo\u{202E}cat\n".into(),
+            body: "Fixes the retry.\r\n\u{1b}[31mred\n".into(),
+            adds: 12,
+            dels: 3,
+            changed: 2,
+            files: vec![
+                AgentPrFile { path: "src/sync.rs".into(), change: "modified".into(), adds: 10, dels: 3 },
+                AgentPrFile { path: "docs/new.md".into(), change: "added".into(), adds: 2, dels: 0 },
+                AgentPrFile {
+                    path: "../../etc/passwd".into(),
+                    change: "modified".into(),
+                    ..Default::default()
+                },
+                AgentPrFile { path: "/abs".into(), change: "deleted".into(), ..Default::default() },
+                AgentPrFile { path: "x.rs".into(), change: "type_changed".into(), ..Default::default() },
+            ],
+            comments: vec![
+                AgentPrComment {
+                    author: "rev".into(),
+                    at_ms: 1,
+                    body: "Looks fine".into(),
+                    review: Some("approved".into()),
+                    url: Some("https://github.com/acme/app/pull/212#r1".into()),
+                    ..Default::default()
+                },
+                AgentPrComment {
+                    author: "bot".into(),
+                    at_ms: 2,
+                    body: "x".repeat(5000),
+                    review: Some("pending".into()),
+                    url: Some("http://example.com".into()),
+                    ..Default::default()
+                },
+            ],
+            thread: Some("abc".into()),
+            read_ms: 9,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_pull_requests_detail_fits_a_phone() {
+        let clean = detail().sanitized().unwrap();
+        assert!(clean.is_valid(), "{clean:?}");
+        assert_eq!(clean.author, "octocat");
+        assert_eq!(clean.body, "Fixes the retry.\n[31mred\n");
+        let paths: Vec<&str> = clean.files.iter().map(|f| f.path.as_str()).collect();
+        assert_eq!(paths, ["src/sync.rs", "docs/new.md", "x.rs"], "no path out of the repository");
+        assert_eq!(clean.files[2].change, "changed", "a word not known here reads as changed");
+        assert_eq!(clean.comments[0].review.as_deref(), Some("approved"));
+        assert_eq!(clean.comments[1].review, None);
+        assert_eq!(clean.comments[1].url, None, "only https opens");
+        assert!(clean.comments[1].cut && clean.comments[1].body.len() == pr::MAX_COMMENT_BYTES);
+
+        let many = AgentPrDetail {
+            body: "b".repeat(pr::MAX_BODY_BYTES + 1),
+            files: (0..400)
+                .map(|i| AgentPrFile {
+                    path: format!("f{i}.rs"),
+                    change: "added".into(),
+                    ..Default::default()
+                })
+                .collect(),
+            comments: (0..100)
+                .map(|i| AgentPrComment { author: format!("a{i}"), at_ms: i, ..Default::default() })
+                .collect(),
+            comments_older: 7,
+            ..detail()
+        }
+        .sanitized()
+        .unwrap();
+        assert!(many.body_cut && many.body.len() == pr::MAX_BODY_BYTES);
+        assert_eq!((many.files.len(), many.files_more), (pr::MAX_FILES, true));
+        assert_eq!(many.comments.len(), pr::MAX_COMMENTS);
+        assert_eq!(many.comments[0].author, "a50", "the newest, oldest first");
+        assert_eq!(many.comments_older, 57);
+        assert!(
+            AgentPrDetail { gh: AgentGhState { gh: "maybe".into(), ..Default::default() }, ..detail() }
+                .sanitized()
+                .is_none()
+        );
+        let why = AgentPrDetail { why: Some("too_large".into()), ..detail() }.sanitized().unwrap();
+        assert_eq!(why.why.as_deref(), Some(pr::why::TOO_LARGE));
+        let later = AgentPrDetail { why: Some("archived".into()), ..detail() }.sanitized().unwrap();
+        assert_eq!(later.why, None);
+    }
+
+    #[test]
+    fn a_detail_goes_in_parts_and_joins() {
+        let big = AgentPrDetail {
+            body: "d".repeat(30_000),
+            files: (0..300)
+                .map(|i| AgentPrFile {
+                    path: format!("{}/f{i}.rs", "dir".repeat(100)),
+                    change: "modified".into(),
+                    adds: i,
+                    dels: 1,
+                })
+                .collect(),
+            comments: (0..50u32)
+                .map(|i| AgentPrComment {
+                    author: format!("a{i}"),
+                    at_ms: u64::from(i),
+                    body: "c".repeat(4096),
+                    ..Default::default()
+                })
+                .collect(),
+            ..detail()
+        }
+        .sanitized()
+        .unwrap();
+        let parts = big.clone().split(RPC_PART_TARGET);
+        assert!(parts.len() > 1, "{} parts", parts.len());
+        for part in &parts {
+            assert!(Envelope::new(types::PART, part).unwrap().to_cbor().len() <= RPC_PART_TARGET + 8 * 1024);
+        }
+        assert!(parts.iter().skip(1).all(|p| p.body.is_empty() && p.repo == big.repo));
+        let mut joined = parts[0].clone();
+        for part in parts.into_iter().skip(1) {
+            joined.append(part);
+        }
+        assert_eq!(joined, big);
+    }
+
+    #[test]
+    fn pull_request_requests_hold_their_limits() {
+        for ok in ["acme/app", "github.example.com/acme/app", "a-b/c.d_e", &format!("{}/x", "o".repeat(100))]
+        {
+            assert!(is_pr_repo(ok), "{ok}");
+        }
+        for bad in [
+            "",
+            "acme",
+            "a/b/c/d",
+            "-x/y",
+            "x/.y",
+            "../x",
+            "acme/app/",
+            "acme//app",
+            "https://github.com/acme/app",
+            "acme/app name",
+            "me@host/acme/app",
+            &format!("{}/x", "o".repeat(101)),
+            &format!("{}/{}", "o".repeat(70), "n".repeat(70)),
+        ] {
+            assert!(!is_pr_repo(bad), "{bad:?}");
+        }
+        let req = |thread: Option<&str>, repo: Option<&str>, number: Option<u32>| AgentPrDetailRequest {
+            thread: thread.map(Into::into),
+            repo: repo.map(Into::into),
+            number,
+            refresh: false,
+        };
+        assert!(req(Some("abc"), None, None).is_valid());
+        assert!(req(None, Some("acme/app"), Some(212)).is_valid());
+        assert!(req(Some("abc"), Some("acme/app"), Some(212)).is_valid());
+        assert!(!req(None, None, None).is_valid());
+        assert!(!req(None, Some("acme/app"), None).is_valid());
+        assert!(!req(None, None, Some(212)).is_valid());
+        assert!(!req(None, Some("acme/app"), Some(0)).is_valid(), "number 0");
+        assert!(!req(None, Some("-x/y"), Some(1)).is_valid());
+        assert!(!req(Some("/home"), None, None).is_valid());
+        let diff = |repo: &str, number: u32, path: &str| AgentPrDiffRequest {
+            repo: repo.into(),
+            number,
+            path: path.into(),
+        };
+        assert!(diff("acme/app", 212, "src/sync.rs").is_valid());
+        assert!(!diff("acme/app", 0, "src/sync.rs").is_valid());
+        assert!(!diff("a/b/c/d", 1, "src/sync.rs").is_valid());
+        assert!(!diff("acme/app", 1, "../x").is_valid());
+        assert!(!diff("acme/app", 1, "/etc/passwd").is_valid());
+        assert!(!diff("acme/app", 1, &"d/".repeat(257)).is_valid(), "a path over 512 bytes");
     }
 
     #[test]
@@ -2282,12 +2890,22 @@ mod tests {
         let job = AgentJob { lines: vec!["secret line".into()], ..Default::default() };
         let wrote = AgentWrote { text: "secret text".into(), ..Default::default() };
         let row = AgentPrRow { title: "secret title".into(), ..Default::default() };
+        let detail = AgentPrDetail {
+            body: "secret body".into(),
+            author: "secret".into(),
+            files: vec![AgentPrFile { path: "secret.rs".into(), ..Default::default() }],
+            comments: vec![AgentPrComment { body: "secret".into(), ..Default::default() }],
+            ..Default::default()
+        };
+        let diff = AgentPrDiffRequest { path: "secret.rs".into(), ..Default::default() };
         for printed in [
             format!("{file:?}"),
             format!("{commit:?}"),
             format!("{job:?}"),
             format!("{wrote:?}"),
             format!("{row:?}"),
+            format!("{detail:?}"),
+            format!("{diff:?}"),
         ] {
             assert!(!printed.contains("secret"), "{printed}");
         }

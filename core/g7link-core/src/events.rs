@@ -19,6 +19,19 @@ pub enum ConnectionPath {
     Usb,
     /// Through a relay server (away mode).
     Relay,
+    /// A direct connection over Tailscale: the selected path's peer address
+    /// is a tailnet one ([`is_tailnet_ip`](crate::is_tailnet_ip)).
+    /// Allowed and dialed exactly as [`Lan`](Self::Lan) is; only its name
+    /// differs.
+    Tailscale,
+}
+
+impl ConnectionPath {
+    /// A direct path to an address the peer has on this network or its
+    /// tailnet: [`Lan`](Self::Lan) or [`Tailscale`](Self::Tailscale).
+    pub fn is_direct_ip(self) -> bool {
+        matches!(self, Self::Lan | Self::Tailscale)
+    }
 }
 
 /// Connection state of a paired device.
@@ -548,5 +561,11 @@ pub enum NodeEvent {
         device: DeviceId,
         thread: String,
         pane: String,
+    },
+    /// Phone: a run of a PC's project script: its new lines and where it
+    /// stands (`agent.script`); the last has its final phase.
+    AgentScriptRun {
+        device: DeviceId,
+        run: crate::AgentScriptRun,
     },
 }

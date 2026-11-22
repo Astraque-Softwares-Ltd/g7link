@@ -867,6 +867,16 @@ impl Shared {
         }
     }
 
+    /// Whether `session`'s path is no longer the one its link was last
+    /// published with (only while that link says it's online).
+    pub(crate) fn path_moved(&self, session: &Session) -> bool {
+        let published = match lock(&self.links).get(&session.peer) {
+            Some(LinkState::Online { path, .. }) => *path,
+            _ => return false,
+        };
+        published != session.path()
+    }
+
     pub fn away_mode(&self) -> bool {
         self.away_mode.load(std::sync::atomic::Ordering::Relaxed)
     }

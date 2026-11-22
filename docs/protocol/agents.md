@@ -928,7 +928,7 @@ RPC agent/git.job        t = "agent.git.job"        b = { job, stop? }          
 RPC agent/pr.view        t = "agent.pr.view"        b = { thread, refresh? }                     → ok { pr?: AgentPrInfo, gh: AgentGhState, github?, why? }
 RPC agent/pr.create      t = "agent.pr.create"      b = { thread, title, body, base?, draft? }   → ok AgentJob
 RPC agent/pr.list        t = "agent.pr.list"        b = { show, folder?, refresh? }              → ok { prs: [AgentPrRow], more, gh: AgentGhState }   paged
-RPC agent/write          t = "agent.write"          b = { thread, purpose }                      → ok AgentThread
+RPC agent/write          t = "agent.write"          b = { thread, purpose, pr? }                 → ok AgentThread
 ```
 
 The job event is `agent.git.progress`, and "ask the agent to write it" is
@@ -1035,7 +1035,9 @@ AgentPrRow   = { number, title, repo, state, draft?, updated_ms, url, branch?, c
   message (`purpose: "commit"`) or a pull request's title and description
   (`"pr"`); when that turn ends the thread's `wrote` holds the answer until
   the next commit or pull request, the next ask, or a day. `BUSY` unless the
-  thread is idle with nothing queued.
+  thread is idle with nothing queued. `purpose: "review"` with `pr` asks the
+  agent to review a pull request instead (§13); `pr` comes with that
+  purpose only.
 - **Pull requests** are read through the GitHub CLI on the PC.
   `agent.pr.view` answers the branch's pull request, or `why` there's none:
   `"not_github"`, `"no_upstream"`, `"detached"`, `"not_repo"`; with `"network"`, `pr` is the
@@ -1272,7 +1274,8 @@ AgentThread += ports?: [{ port: uint, reach: text }]                         // 
   when its socket does, and all go when the agent's process ends. The PC
   finds them by reading its own process table; it never connects to one.
 - A phone offers to open only a `"lan"` port, and only while its link to the
-  PC is a direct path on the local network (not the relay, not USB):
+  PC is a direct path on the local network or the tailnet (not the relay,
+  not USB):
   `http://<the PC's address on that link>:<port>/`, in the phone's own
   browser, after the same confirmation as an opened link. For a `"pc"` port
   it says how to make the server answer on the network instead. A phone
@@ -1290,7 +1293,173 @@ Limits:
 
 There are no requests here, so no errors of their own.
 
-## 12. Implementation notes
+## 12. Project scripts
+
+Added in G7 Link 0.1.25. A folder's scripts are commands the PC's user typed
+for it in G7 Link on the PC (`dev` / `npm run dev`); G7 never reads one from
+a file in the folder. A script runs from a thread, in the thread's folder
+(its worktree, for a thread in one), through the PC user's shell, as that
+user, until it ends or is stopped; it isn't an agent's turn and the agent
+doesn't see it. A phone sees every run of a thread it can read, with the
+last lines. It can start and stop a folder's scripts only while that
+folder's **"Phones can run these"** switch is on, which is set on the PC and
+**off by default**; the PC's agent host checks it on every request. It's
+plain protocol v1: no capability, governed by the `agents` toggle (§1).
+Nothing here travels on Bluetooth.
+
+```
+t = "agent.script"          b = { run: AgentScriptRun }                    PC → phone, agent lane
+
+RPC agent/script.run     t = "agent.script.run"     b = { thread, script }   → ok AgentScriptRun
+RPC agent/script.stop    t = "agent.script.stop"    b = { run }              → ok AgentScriptRun
+RPC agent/script.runs    t = "agent.script.runs"    b = { thread }           → ok { runs: [AgentScriptRun] }
+RPC agent/script.output  t = "agent.script.output"  b = { run }              → ok AgentScriptRun   paged
+
+AgentCatalog.folders[] += phone_scripts?: bool,   // "Phones can run these", set on the PC
+                          script_count?: uint,    // how many scripts the folder has
+                          scripts?: [AgentScript] // only with phone_scripts
+AgentThread += runs?: [{ id, name, phase, exit? }]  // running first, then ended ones still kept
+
+AgentScript    = { id, name, command }
+AgentScriptRun = { id, thread, script, name,
+                   phase: text,                   // "running" | "done" | "failed" | "stopped"
+                   exit?: int, started_ms, ended_ms?,
+                   by?: text,                     // the phone that started it, by its name; absent: the PC
+                   mine?: bool,                   // the phone this goes to started it
+                   lines?: [text], from, dropped,
+                   reason?: text }                // "spawn" | "signal": why a failed run failed
+```
+
+- **Scripts.** A catalog folder says how many scripts it has
+  (`script_count`) and whether phones may run them (`phone_scripts`). Only
+  then does it list them, commands included, so a phone can show the line it
+  would run. With the switch off a phone gets no script and no command, and
+  says to turn the switch on in G7 Link on the PC. The PC sends
+  `agent.catalog` again when a folder's scripts or switch change. A phone
+  can't add, edit or remove a script, or turn the switch on: no message
+  says so.
+- **Running one.** `agent.script.run` runs one of the thread's folder's
+  scripts, by its id, as this phone's request. A phone asks its user first,
+  each time, showing the command; the PC shows its user a notice naming the
+  phone, the script and the folder. One run of a script per place at a time
+  (`BUSY`, `script_running`), four running in a thread and eight on the PC
+  (`BUSY`, `runs`). A run that couldn't start answers `failed` with
+  `reason: "spawn"`. A thread that can only be read is `DENIED`.
+- **Stopping.** `agent.script.stop` stops a run this phone started, or any
+  run of a folder whose switch is on; otherwise `DENIED`. A run also stops
+  when the thread is deleted, the folder removed or the agent host stops;
+  nothing restarts it, and nothing starts one by itself.
+- **Output.** `agent.script` brings a run's new lines (to every phone with
+  the toggle on), at most the newest 40 and 8 KiB, and the last one its
+  final `phase`. `agent.script.output` answers a run with its newest 200
+  lines and 32 KiB. `from` numbers the first line sent, counting from the
+  run's first; `dropped` counts lines not kept or left out to fit. Lines are
+  what the script printed, cleaned on the PC as a job's are (§8): control
+  characters, URLs' user parts and the PC's home folder taken out, each at
+  most 512 characters. A phone shows them as plain text, never as Markdown
+  or links, and keeps nothing of a run.
+- **`agent.script.runs`** lists a thread's runs, newest first, at most 12,
+  without lines. The PC keeps an ended run for 30 minutes; a run it no
+  longer keeps is `NOT_FOUND`.
+- **Never to a phone**: a run's command, a folder's path, where a run runs,
+  or a script's command while the folder's switch is off. A receiver drops
+  a run with a `phase` it doesn't know, and reads a `reason` it doesn't
+  know as absent.
+
+Limits (bytes of UTF-8 unless noted):
+
+| Field | Limit |
+|---|---|
+| `scripts` | 12 a folder; `script_count` 0 to 12 |
+| `AgentScript.id`, `script` | `s` and 8 lowercase hex digits |
+| `name` | 1 to 40, one line |
+| `command` | 1 to 1024, one line (no control character but tab, no bidi control) |
+| `run`, `AgentScriptRun.id` | 16 lowercase hex digits |
+| `runs` | 8 in a thread; 12 in an `agent.script.runs` answer |
+| `by` | 64, one line |
+| `lines` | 40 and 8 KiB in `agent.script`; 200 and 32 KiB in an answer; each 512 characters |
+
+Errors as §2.3, and: `DENIED` while the folder's switch is off (message
+`phone_scripts_off`), for a thread that can only be read, and for a stop of
+another device's run of a folder whose switch is off; `BUSY` with
+`script_running` or `runs`; `NOT_FOUND` for an unknown thread or run, and a
+script no longer in the folder's list (`no_script`); `BAD_MESSAGE` for a
+request out of its limits, and a folder missing on the PC
+(`folder_missing`).
+
+## 13. Pull request detail
+
+Added in G7 Link 0.1.25. A phone reads a pull request's description,
+changed files and their diff, checks and conversation, and can ask the
+thread's agent to review it. It's **read-only**: no message comments on,
+reviews, approves, edits, closes or merges a pull request, and G7 posts
+nothing to GitHub. It's plain protocol v1: no capability, governed by the
+`agents` toggle (§1). Nothing here travels on Bluetooth.
+
+```
+RPC agent/pr.detail   t = "agent.pr.detail"   b = { thread?, repo?, number?, refresh? }   → ok AgentPrDetail   paged
+RPC agent/pr.diff     t = "agent.pr.diff"     b = { repo, number, path }                  → ok { patch, truncated, binary }   paged
+RPC agent/write       t = "agent.write"       b = { thread, purpose: "review", pr }      → ok AgentThread
+
+AgentPrDetail  = { pr?: AgentPrInfo, gh: AgentGhState, why?: text,   // as §8's, and "too_large" | "no_pr"
+                   repo, author, body, body_cut?: bool, adds, dels, changed,
+                   files: [{ path, change, adds, dels }], files_more?: bool,
+                   comments: [AgentPrComment], comments_older,
+                   thread?, read_ms }
+AgentPrComment = { author, at_ms, body, cut?: bool,
+                   review?: text,                // "approved" | "changes_requested" | "commented" | "dismissed"
+                   url? }
+```
+
+- **`agent.pr.detail`** answers the thread's branch's pull request
+  (`thread`), or one `agent.pr.list` listed in the last 10 minutes (`repo`
+  and `number`, both or neither; otherwise `BAD_MESSAGE`). `why` as
+  `agent.pr.view`, `"no_pr"` when the branch has none, and `"too_large"`;
+  with `"network"` the detail is the last one read, if any. `body` is
+  Markdown, at most 32 KiB (`body_cut`); files at most 300 (`files_more`),
+  each relative to the repository, its `change` one of `added`, `deleted`,
+  `renamed`, `copied`, `modified` or `changed` (a word a receiver doesn't
+  know reads as `changed`); the conversation's newest 50 comments and
+  reviews' summaries, oldest first, each at most 4,096 bytes (`cut`),
+  `comments_older` counting the rest. A review's summary carries its
+  `review`. Comments made on lines of code aren't among them: a phone says
+  so and links to GitHub. `thread` is a thread on the PC on that repository
+  and branch.
+- **`agent.pr.diff`** sends one file the detail listed, at most 1 MiB
+  (`truncated` past that), in pieces the receiver joins as §8's patch. A
+  path the detail doesn't list is `BAD_MESSAGE`.
+- **Ask to review it.** `agent/write` with `purpose: "review"` and the pull
+  request's `pr` sends the thread, as an ordinary message from the user, the
+  PC's fixed request to review that pull request, naming it by number and a
+  link the PC builds, never by its title or text. The thread's own mode
+  applies: the agent's reads of the pull request ask as any tool would.
+  `BUSY` unless the thread is idle with nothing queued; `BAD_MESSAGE` when
+  the thread's folder isn't on that repository or the pull request wasn't
+  listed. Nothing comes back in `wrote`. No message starts a thread for a
+  review from a phone.
+- A receiver renders `body` and comments as Markdown under its own bounds:
+  raw HTML as text, no remote image, a link opened only after asking. It
+  opens a `url` only when it's `https` on one of `gh.hosts`.
+- A receiver reads a `why`, `change` or `review` it doesn't know as above,
+  and leaves out a file whose path isn't relative or climbs out with `..`.
+
+Limits (bytes of UTF-8 unless noted):
+
+| Field | Limit |
+|---|---|
+| `repo` | `owner/name` or `host/owner/name`, each part 1 to 100 of `[A-Za-z0-9._-]`, not starting with `-` or `.`; 140 in all |
+| `number`, `pr` | 1 or more |
+| `path` | 1 to 512, relative |
+| `body` | 32768 |
+| `files` | 300 |
+| `comments` | 50 to a phone; `body` 4096; `author` 64 |
+| `agent.pr.diff` answer | `patch` 1 MiB |
+
+Errors as §2.3, and: `BAD_MESSAGE` for a request out of its limits, a
+pull request not listed, and a path the detail doesn't list; `BUSY` for a
+review while the thread works.
+
+## 14. Implementation notes
 
 - G7 Link desktop talks to the agent host (`g7-agents`) on a local socket and
   relays its threads; the folder's path never leaves the PC. The PC's
@@ -1375,6 +1544,25 @@ There are no requests here, so no errors of their own.
   `G7LinkError.Timeout`: not known whether it was typed. The FFI's
   `agent_session_reply_check` and `agent_session_reply` clean the text
   first (line ends made `\n`, other control characters dropped).
+- The core answers §12's requests after checking the toggle and the limits
+  (an id that isn't its shape, or an op it doesn't know, never reaches the
+  platform), then asks the platform (`AgentRequest::ScriptRun`,
+  `ScriptStop`, `ScriptRuns`, `ScriptOutput`), always as that phone's
+  request. The folder's switch is the agent host's to check, on every
+  request; G7 Link desktop passes the phone on as the request's origin. A
+  host's refusal comes back as `AgentReply::Refused` with its reason word,
+  which becomes the error's message. The core cuts a run's lines to fit
+  and sets `mine`; G7 Link desktop passes the host's `script.progress` on
+  as `agent.script` (`Node::agent_script_progress`). On the phone the FFI's
+  errors are as for §8: `Denied` for `phone_scripts_off` (and the toggle),
+  `NotFound`, and `Internal` with a reason starting `BUSY` (`script_running`
+  or `runs` follows).
+- The core answers §13's requests after checking the toggle and the
+  limits, follows the host's pages of a diff up to 1 MiB as for §8's
+  patch, and makes a detail fit a phone (50 comments, cleaned text,
+  relative paths). `agent/write` with `review` reaches the platform as
+  `AgentRequest::AskReview`; the host checks the pull request was listed
+  and builds the message itself.
 - G7 Link desktop's second prompt, for `agent_sessions`: title "Let %1 see
   sessions started on this PC?"; body "It will be able to list and read the
   Claude and Codex sessions you start here in a terminal or the Claude app, in

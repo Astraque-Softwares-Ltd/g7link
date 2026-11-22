@@ -26,6 +26,7 @@ mod agent_history;
 mod agent_presence;
 mod agent_reply;
 pub mod agent_rows;
+mod agent_scripts;
 
 pub use agent_beside::*;
 pub use agent_control::*;
@@ -34,6 +35,7 @@ pub use agent_handoff::*;
 pub use agent_history::*;
 pub use agent_presence::*;
 pub use agent_reply::*;
+pub use agent_scripts::*;
 
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(3);
 
@@ -358,6 +360,10 @@ pub enum Link {
         #[uniffi(default = false)]
         usb: bool,
         rtt_ms: u32,
+        /// A direct connection over Tailscale ("Tailscale", a name in every
+        /// language). Allowed and reached exactly as Wi-Fi is.
+        #[uniffi(default = false)]
+        tailnet: bool,
     },
 }
 
@@ -1414,6 +1420,14 @@ pub enum Event {
         thread: String,
         pane: AgentPane,
     },
+    /// A run of PC `id`'s project script: append `run.lines` (they follow
+    /// on from what came before; `run.from` is the first one's number; a gap
+    /// means some weren't sent, read `agent_script_output` again). The last
+    /// has its final `phase`. Show them as plain text.
+    AgentScriptRun {
+        id: String,
+        run: AgentScriptRun,
+    },
 }
 
 /// Play on phone: a video file a PC offers for the phone to play itself
@@ -1849,6 +1863,18 @@ pub struct AgentFolder {
     /// is shown ("Keep in step with the remote", set on the PC).
     #[uniffi(default = false)]
     pub follow_remote: bool,
+    /// "Phones can run these", set on the PC: this phone may start and stop
+    /// the folder's scripts. Off: "To run this folder's scripts here, turn
+    /// on “Phones can run these” for the folder in G7 Link on %1."
+    #[uniffi(default = false)]
+    pub phone_scripts: bool,
+    /// How many scripts the folder has, whether or not they're listed:
+    /// offer Scripts in a thread's menu when it isn't 0.
+    #[uniffi(default = 0)]
+    pub script_count: u8,
+    /// Its scripts, in order: only with `phone_scripts`.
+    #[uniffi(default = [])]
+    pub scripts: Vec<AgentScript>,
 }
 
 impl std::fmt::Debug for AgentFolder {
@@ -1915,6 +1941,9 @@ impl From<core::AgentCatalog> for AgentCatalog {
                     label: f.label,
                     checkpoints: f.checkpoints,
                     follow_remote: f.follow_remote,
+                    phone_scripts: f.phone_scripts,
+                    script_count: f.script_count,
+                    scripts: f.scripts.into_iter().map(Into::into).collect(),
                 })
                 .collect(),
             // A mode this build doesn't know can't be started from here.
@@ -2028,6 +2057,10 @@ pub struct AgentThread {
     /// `agent_port_url`.
     #[uniffi(default = [])]
     pub ports: Vec<AgentPort>,
+    /// Its scripts' runs, running first, then ended ones the PC still keeps
+    /// (at most 8): "%1 is running" under the status line while one runs.
+    #[uniffi(default = [])]
+    pub runs: Vec<AgentRunBrief>,
 }
 
 /// A plan step's state.
@@ -2126,6 +2159,7 @@ impl AgentThread {
             changed: t.changed,
             wrote: t.wrote.and_then(AgentWrote::from_core),
             ports: t.ports.into_iter().map(Into::into).collect(),
+            runs: t.runs.into_iter().filter_map(AgentRunBrief::from_core).collect(),
         })
     }
 }
@@ -3854,6 +3888,7 @@ impl From<LinkState> for Link {
                 relayed: path == ConnectionPath::Relay,
                 usb: path == ConnectionPath::Usb,
                 rtt_ms,
+                tailnet: path == ConnectionPath::Tailscale,
             },
         }
     }
@@ -4431,6 +4466,9 @@ impl Event {
             },
             NodeEvent::AgentBeside { device, thread, pane } => {
                 Event::AgentBeside { id: device.to_string(), thread, pane: AgentPane::from_wire(&pane)? }
+            }
+            NodeEvent::AgentScriptRun { device, run } => {
+                Event::AgentScriptRun { id: device.to_string(), run: AgentScriptRun::from_core(run)? }
             }
             // Shown on PCs only.
             NodeEvent::AgentsRequested { .. }
@@ -7798,11 +7836,20 @@ mod tests {
                 label: "g7linux".into(),
                 checkpoints: true,
                 follow_remote: true,
+                phone_scripts: true,
+                script_count: 1,
+                scripts: vec![core::AgentScript {
+                    id: "s0a1b2c3d".into(),
+                    name: "dev".into(),
+                    command: "npm run dev".into(),
+                }],
             }],
             modes: vec!["supervised".into(), "plan".into(), "full_access".into()],
             push: true,
         });
         assert!(catalog.push && catalog.folders[0].follow_remote);
+        assert!(catalog.folders[0].phone_scripts && catalog.folders[0].script_count == 1);
+        assert_eq!(catalog.folders[0].scripts[0].command, "npm run dev");
         assert_eq!(catalog.modes, vec![AgentMode::Supervised, AgentMode::Plan]);
         assert_eq!(AgentMode::Plan.wire(), "plan");
         assert_eq!(catalog.agents[0].auth.as_deref(), Some("api_key"));
