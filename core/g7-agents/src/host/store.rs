@@ -47,6 +47,11 @@ struct StoredFolder {
     checkpoints: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     follow_remote: bool,
+    /// Phase 6: the folder's own commands, and "Phones can run these".
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    scripts: Vec<api::Script>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    phone_scripts: bool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -181,6 +186,8 @@ impl Store {
                 mcp_seen: f.mcp_seen,
                 checkpoints: f.checkpoints,
                 follow_remote: f.follow_remote,
+                scripts: crate::host::scripts::loaded(f.scripts),
+                phone_scripts: f.phone_scripts,
             })
             .collect()
     }
@@ -199,6 +206,8 @@ impl Store {
                     mcp_seen: f.mcp_seen.clone(),
                     checkpoints: f.checkpoints,
                     follow_remote: f.follow_remote,
+                    scripts: f.scripts.clone(),
+                    phone_scripts: f.phone_scripts,
                 })
                 .collect(),
         };
@@ -403,7 +412,8 @@ impl StoreHandle {
     }
 
     pub fn save_thread(&self, info: &api::ThreadInfo, cols: db::ThreadCols) {
-        let info = info.clone();
+        // Runs live as long as the host: never stored.
+        let info = api::ThreadInfo { runs: Vec::new(), ..info.clone() };
         self.db_later("save a thread", move |db| db.save_thread(&info, &cols));
     }
 
@@ -556,12 +566,75 @@ mod tests {
             mcp_seen: vec![FolderMcp { agent: AgentId::Claude, names: vec!["github".into()] }],
             checkpoints: false,
             follow_remote: false,
+            scripts: Vec::new(),
+            phone_scripts: false,
         };
         store.save_folders(std::slice::from_ref(&folder)).unwrap();
         let loaded = store.load_folders();
         assert_eq!(loaded[0].id, folder.id);
         assert!(!loaded[0].exists);
         assert!(!loaded[0].checkpoints, "the restore points switch is kept");
+        let plain = fs::read_to_string(dir.path().join("folders.json")).unwrap();
+        assert!(!plain.contains("scripts"), "not written while empty and off: {plain}");
+
+        // Scripts and the phones' switch are kept as they were.
+        let script =
+            api::Script { id: "s0123abcd".into(), name: "dev".into(), command: "npm run dev".into() };
+        let with = Folder { scripts: vec![script.clone()], phone_scripts: true, ..folder.clone() };
+        store.save_folders(std::slice::from_ref(&with)).unwrap();
+        let loaded = store.load_folders();
+        assert_eq!(
+            (loaded[0].scripts.as_slice(), loaded[0].phone_scripts),
+            (std::slice::from_ref(&script), true)
+        );
+        let file: serde_json::Value =
+            serde_json::from_slice(&fs::read(dir.path().join("folders.json")).unwrap()).unwrap();
+        assert_eq!(file["version"], 1, "no migration");
+    }
+
+    #[test]
+    fn an_older_folders_file_loads_and_a_script_out_of_bounds_is_dropped() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().to_owned()).unwrap();
+        let long = "n".repeat(api::MAX_SCRIPT_NAME + 1);
+        let file = serde_json::json!({"version": 1, "folders": [
+            {"id": "f0123456789ab", "label": "old", "path": "/tmp", "added_ms": 1},
+            {"id": "f0123456789ac", "label": "new", "path": "/var", "added_ms": 2, "phone_scripts": true,
+             "scripts": [
+                {"id": "s00000001", "name": "dev", "command": "npm run dev"},
+                {"id": "nope", "name": "bad id", "command": "x"},
+                {"id": "s00000002", "name": long, "command": "x"},
+                {"id": "s00000003", "name": "two", "command": "a\nb"},
+                {"id": "s00000004", "name": "DEV", "command": "again"},
+                {"id": "s00000005", "name": "test", "command": "make test"}
+             ]}
+        ]});
+        fs::write(dir.path().join("folders.json"), file.to_string()).unwrap();
+        let loaded = store.load_folders();
+        assert_eq!(loaded.len(), 2);
+        assert!(loaded[0].scripts.is_empty() && !loaded[0].phone_scripts, "an older file: neither field");
+        let names: Vec<&str> = loaded[1].scripts.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, ["dev", "test"]);
+        assert!(loaded[1].phone_scripts);
+    }
+
+    #[tokio::test]
+    async fn a_threads_runs_are_never_stored() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(dir.path()).unwrap();
+        let store = StoreHandle::spawn(Store::open(dir.path().to_owned()).unwrap(), Some(db)).unwrap();
+        let brief = api::RunBrief {
+            id: "0123456789abcdef".into(),
+            script_id: "s00000001".into(),
+            name: "dev".into(),
+            phase: api::RunPhase::Running,
+            exit: None,
+        };
+        let info = api::ThreadInfo { runs: vec![brief], ..crate::host::threads::test_info(AgentId::Claude) };
+        store.save_thread(&info, db::ThreadCols { next_seq: 1, next_turn: 1, ..Default::default() });
+        let loaded = store.db(|db| db.load_threads()).await.unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert!(loaded[0].info.runs.is_empty(), "no run outlives its host");
     }
 
     #[test]

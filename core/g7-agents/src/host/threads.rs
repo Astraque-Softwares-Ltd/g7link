@@ -588,8 +588,9 @@ impl Registry {
         info.pending = 0;
         info.asking = 0;
         info.step = None;
-        // Its agent's process is gone, and what it listened on with it.
+        // Its agent's process is gone, and what it listened on with it; no run outlives a host.
         info.ports.clear();
+        info.runs.clear();
         // A queue that outlived its host waits for the user.
         info.queue_held = !info.queued.is_empty();
         if info.state_since_ms == 0 {
@@ -864,6 +865,8 @@ impl Host {
                 mcp_seen: Vec::new(),
                 checkpoints: true,
                 follow_remote: false,
+                scripts: Vec::new(),
+                phone_scripts: false,
             };
             let mut list = reg.folders.clone();
             list.push(folder.clone());
@@ -925,6 +928,8 @@ impl Host {
             reg.folders = list;
         }
         self.lock_commands().forget_folder(id);
+        // Its scripts' runs stop with it.
+        self.scripts.stop_folder(id);
         if let Some(place) = removed.as_ref().and_then(|f| self.folder_place(f)) {
             tokio::spawn(async move {
                 let _ = crate::host::git::remove_repo(&place).await;
@@ -935,11 +940,26 @@ impl Host {
     }
 
     /// `folders.set`: the folder's MCP switch, used from each thread's next
-    /// process, and its restore points switch, from the next turn. What is
-    /// `None` is unchanged.
+    /// process, and its restore points switch, from the next turn; its
+    /// scripts and "Phones can run these" (phase 6), which change no run.
+    /// What is `None` is unchanged. Who may set what is the caller's check.
     pub async fn folders_set(&self, p: &FoldersSetParams) -> Result<Folder, RpcError> {
         let _serial = self.folders_lock.lock().await;
         let id = p.id.as_str();
+        let scripts = {
+            let reg = self.lock_reg();
+            let Some(folder) = reg.folders.iter().find(|f| f.id == id).filter(|_| is_valid_folder_id(id))
+            else {
+                return Err(err(ErrorCode::NotFound, "No such folder."));
+            };
+            match &p.scripts {
+                Some(wanted) => Some(
+                    crate::host::scripts::wanted(wanted.clone(), &folder.scripts)
+                        .map_err(crate::host::scripts::Bad::refusal)?,
+                ),
+                None => None,
+            }
+        };
         let set = |folder: &mut Folder| {
             if let Some(mcp) = p.mcp {
                 folder.mcp = mcp;
@@ -949,6 +969,12 @@ impl Host {
             }
             if let Some(follow) = p.follow_remote {
                 folder.follow_remote = follow;
+            }
+            if let Some(scripts) = &scripts {
+                folder.scripts.clone_from(scripts);
+            }
+            if let Some(phones) = p.phone_scripts {
+                folder.phone_scripts = phones;
             }
         };
         let list = {
@@ -1167,6 +1193,7 @@ impl Host {
             changed: None,
             wrote: None,
             ports: Vec::new(),
+            runs: Vec::new(),
         };
         let mut entry = Entry::new(info, 1, Some(cwd));
         entry.worktree_dir = prepared.map(|w| w.dir);
@@ -1192,7 +1219,10 @@ impl Host {
         let info =
             reg.threads.get(&id).map(|e| e.info.clone()).ok_or_else(|| err(ErrorCode::Internal, "lost"))?;
         drop(reg);
-        self.remember_prompt(&p.prompt, &p.origin);
+        // G7's own review message isn't the person's to recall.
+        if p.purpose.is_none() {
+            self.remember_prompt(&p.prompt, &p.origin);
+        }
         self.draft_sent(&format!("new:{}", p.folder_id), &p.origin);
         Ok(info)
     }
@@ -1469,6 +1499,8 @@ impl Host {
                 }
             });
             self.awake.working(thread_id, false);
+            // Its script runs stop with it.
+            self.scripts.stop_thread(thread_id);
             if let Some(images) = self.images.clone() {
                 let thread = thread_id.to_owned();
                 tokio::spawn(async move { images.remove_thread(&thread).await });
@@ -1597,6 +1629,7 @@ impl Host {
             changed: None,
             wrote: None,
             ports: Vec::new(),
+            runs: Vec::new(),
         };
         let mut entry = Entry::new(info, notice_seq + 1, Some(cwd));
         entry.users_before = u32::try_from(users).unwrap_or(u32::MAX);
@@ -1644,9 +1677,8 @@ impl Host {
                 let token = entry.session.take().and_then(|s| s.bridge_token);
                 let interrupted = entry.turn.interrupt_requested;
                 let running = entry.info.state.is_running();
-                // What its processes listened on goes with them.
-                self.lock_ports().ended(thread_id, generation);
-                let had_ports = !std::mem::take(&mut entry.info.ports).is_empty();
+                // What its processes listened on goes with them; a script run's stays.
+                let had_ports = self.ports_drop(entry, &crate::host::ports::Owner::Agent(generation));
                 if had_ports && !running {
                     self.hub.broadcast(&Event::ThreadState(ThreadResult { thread: entry.info.clone() }));
                 }
@@ -2110,13 +2142,14 @@ impl Host {
         entry.info.error = end.error.as_ref().filter(|_| end.outcome == Outcome::Failed).map(clean_error);
         // "Ask <agent> to write it": the answer, when this was that turn and it ended done.
         if let Some((purpose, asked_turn)) = entry.asked.take()
+            && purpose != Purpose::Review
             && end.outcome == Outcome::Done
             && asked_turn == entry.turn_no
         {
             let answer = turn.final_text.as_deref().or(turn.last_text.as_deref()).unwrap_or_default();
             let text = crate::host::source::wrote_text(answer);
             if !text.is_empty() {
-                entry.info.wrote = Some(Wrote { purpose, turn: asked_turn, text, at_ms: now_ms() });
+                entry.info.wrote = Some(Box::new(Wrote { purpose, turn: asked_turn, text, at_ms: now_ms() }));
             }
         }
         if end.outcome == Outcome::Done && !summary.is_empty() {
@@ -3266,6 +3299,7 @@ pub(crate) fn test_info(agent: AgentId) -> ThreadInfo {
         changed: None,
         wrote: None,
         ports: Vec::new(),
+        runs: Vec::new(),
     }
 }
 
@@ -3328,6 +3362,7 @@ impl Host {
             changed: None,
             wrote: None,
             ports: Vec::new(),
+            runs: Vec::new(),
         };
         let (tx, rx) = mpsc::unbounded_channel();
         let mut entry = Entry::new(info, 1, Some(PathBuf::from("/tmp")));
@@ -3383,6 +3418,8 @@ impl Host {
             mcp_seen: Vec::new(),
             checkpoints: true,
             follow_remote: false,
+            scripts: Vec::new(),
+            phone_scripts: false,
         });
     }
 
@@ -3588,6 +3625,7 @@ mod tests {
                     format!("limit {} {}", agent.as_str(), thread.map(|t| t.id).unwrap_or_default())
                 }
                 Note::PhoneGit { device, .. } => format!("git {device}"),
+                Note::PhoneScript { device, script, .. } => format!("script {device} {script}"),
             });
         }
         seen

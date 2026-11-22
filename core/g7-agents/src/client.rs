@@ -927,6 +927,43 @@ pub mod calls {
     pub fn ui_beside(params: UiBesideParams) -> Call<()> {
         Call::new(method::UI_BESIDE, &params, unit)
     }
+
+    // ---- Project scripts (phase 6): only to a host that offers `cap::SCRIPTS` ----
+
+    /// A person starts one of the thread's folder's scripts: the run,
+    /// running (or `failed` with `error.reason: "spawn"`); `script.progress` follows it.
+    pub fn script_run(params: ScriptRunParams) -> Call<ScriptRun> {
+        Call::new(method::SCRIPT_RUN, &params, |v| parse_as::<ScriptRunResult>(v).map(|r| r.run))
+    }
+
+    /// Stops a running run (`TERM`, then `KILL` after [`RUN_STOP_GRACE_MS`]); the run as it is.
+    pub fn script_stop(params: ScriptStopParams) -> Call<ScriptRun> {
+        Call::new(method::SCRIPT_STOP, &params, |v| parse_as::<ScriptRunResult>(v).map(|r| r.run))
+    }
+
+    /// A thread's runs, newest first, without their lines.
+    pub fn script_runs(thread_id: String) -> Call<Vec<ScriptRun>> {
+        Call::new(method::SCRIPT_RUNS, &ScriptRunsParams { thread_id }, |v| {
+            parse_as::<ScriptRunsResult>(v).map(|r| r.runs)
+        })
+    }
+
+    /// A run with its kept lines numbered `from` and later; `NOT_FOUND` once forgotten.
+    pub fn script_output(params: ScriptOutputParams) -> Call<ScriptRun> {
+        Call::new(method::SCRIPT_OUTPUT, &params, |v| parse_as::<ScriptRunResult>(v).map(|r| r.run))
+    }
+
+    // ---- Pull request detail (phase 6): only to a host that offers `cap::PR_DETAIL` ----
+
+    /// A pull request's description, files, checks and comments: read-only.
+    pub fn pr_detail(params: PrDetailParams) -> Call<PrDetailResult> {
+        Call::new(method::PR_DETAIL, &params, parse_as).slow()
+    }
+
+    /// One page of a file's part of a pull request's diff.
+    pub fn pr_diff(params: PrDiffParams) -> Call<GitPatchResult> {
+        Call::new(method::PR_DIFF, &params, parse_as).slow()
+    }
 }
 
 /// Generates one typed method per call builder, async or blocking.
@@ -1025,6 +1062,12 @@ macro_rules! with_calls {
             ui_photo_done(params: UiPhotoDoneParams) -> ();
             ui_photo_stop() -> ();
             ui_beside(params: UiBesideParams) -> ();
+            script_run(params: ScriptRunParams) -> ScriptRun;
+            script_stop(params: ScriptStopParams) -> ScriptRun;
+            script_runs(thread_id: String) -> Vec<ScriptRun>;
+            script_output(params: ScriptOutputParams) -> ScriptRun;
+            pr_detail(params: PrDetailParams) -> PrDetailResult;
+            pr_diff(params: PrDiffParams) -> GitPatchResult;
         }
     };
 }

@@ -2,7 +2,8 @@
 //! Track G (phase 4 §SC4, §SC11.1 G): pull requests through `gh`, with a fake `gh` (a shell script
 //! this file writes) first on a `PATH` that holds nothing else but a few shell tools, so the real
 //! `gh` can never run and nothing reaches the network. The fake records each call's argv, its
-//! environment and its stdin, and prints a hand-written fixture with fictional values.
+//! environment, its stdin and where it ran, and prints a hand-written fixture with fictional values.
+//! Phase 6 (§X6.1, §X12 G): a pull request's detail and diff, and `split_diff`'s fixtures.
 #![cfg(feature = "host")]
 
 use std::ffi::OsString;
@@ -14,10 +15,11 @@ use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use g7_agents::api::{PrDetail, is_stripped_char};
 use g7_agents::host::git::Git;
 use g7_agents::host::scm::{
     CheckState, GhUse, GitStatus, Lines, Mergeable, Method, NewPr, PrState, Reason, ReviewState, Scm, Show,
-    Spot,
+    Spot, split_diff,
 };
 
 const FAKE_GH: &str = r#"#!/bin/sh
@@ -37,6 +39,7 @@ n=$(cat "$d/n" 2>/dev/null || echo 0); n=$((n+1)); echo "$n" > "$d/n"
 c=$(cat "$d/count-$key" 2>/dev/null || echo 0); c=$((c+1)); echo "$c" > "$d/count-$key"
 printf '%s\0' "$@" > "$d/argv-$n"
 env > "$d/env-$n"
+pwd > "$d/cwd-$n"
 cat > "$d/stdin-$n"
 a="$d/answers/$key"
 if [ -e "$a.$c.out" ] || [ -e "$a.$c.code" ]; then a="$a.$c"; fi
@@ -53,6 +56,11 @@ const SEARCH_FIELDS: &str = "number,title,repository,state,isDraft,updatedAt,url
 const LIST_FIELDS: &str = "number,title,state,isDraft,updatedAt,url,headRefName,statusCheckRollup";
 const REPO_FIELDS: &str =
     "nameWithOwner,mergeCommitAllowed,squashMergeAllowed,rebaseMergeAllowed,defaultBranchRef";
+const DETAIL_FIELDS: &str = "number,title,state,isDraft,url,reviewDecision,mergeable,mergeStateStatus,baseRefName,headRefName,headRefOid,updatedAt,statusCheckRollup,author,body,additions,deletions,changedFiles,files,comments,reviews";
+const HEAD: &str = "0123456789abcdef0123456789abcdef01234567";
+const OTHER_HEAD: &str = "ffffffffffffffffffffffffffffffffffffffff";
+const TOKEN_VARIABLES: [&str; 4] =
+    ["GH_TOKEN=", "GITHUB_TOKEN=", "GH_ENTERPRISE_TOKEN=", "GITHUB_ENTERPRISE_TOKEN="];
 
 fn real_git() -> Option<PathBuf> {
     let path = std::env::var_os("PATH").unwrap_or_default();
@@ -67,6 +75,10 @@ fn real_git() -> Option<PathBuf> {
 fn fixture(name: &str) -> String {
     fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/scm/gh").join(name))
         .unwrap()
+}
+
+fn diff_fixture(name: &str) -> Vec<u8> {
+    fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/scm/prdiff").join(name)).unwrap()
 }
 
 struct Fake {
@@ -196,6 +208,26 @@ impl Fake {
 
     fn stdin_of(&self, n: usize) -> Vec<u8> {
         fs::read(self.calls.join(format!("stdin-{n}"))).unwrap()
+    }
+
+    fn cwd_of(&self, n: usize) -> PathBuf {
+        PathBuf::from(fs::read_to_string(self.calls.join(format!("cwd-{n}"))).unwrap().trim_end())
+    }
+
+    /// The calls whose argv starts `first second`.
+    fn calls_of(&self, first: &str, second: &str) -> Vec<usize> {
+        (1..=self.count()).filter(|&n| is(&self.argv(n), first, second)).collect()
+    }
+
+    /// The answer to `key` from a file this test wrote (for answers too large to inline).
+    fn answer_file(&self, key: &str, bytes: &[u8], code: i32) {
+        let a = self.calls.join("answers").join(key);
+        fs::write(a.with_extension("out"), bytes).unwrap();
+        fs::write(a.with_extension("code"), code.to_string()).unwrap();
+    }
+
+    async fn detail(&self, refresh: bool) -> Result<PrDetail, Reason> {
+        self.scm.pr_detail(self.spot.folder(), "fictional/repo", 212, refresh).await.map_err(|e| e.reason)
     }
 
     async fn status(&self) -> GitStatus {
@@ -724,4 +756,467 @@ async fn every_call_is_a_row_of_the_closed_list() {
             assert!(!argv.iter().any(|a| a == never), "{argv:?}");
         }
     }
+}
+
+// ---- One pull request, read-only (phase 6 §X6.1) ----
+
+/// One part of a generated diff: an added text file of `lines` lines of 101 bytes.
+fn added_part(path: &str, lines: usize) -> Vec<u8> {
+    let mut part =
+        format!("diff --git a/{path} b/{path}\n--- /dev/null\n+++ b/{path}\n@@ -0,0 +1,{lines} @@\n")
+            .into_bytes();
+    for i in 0..lines {
+        part.extend_from_slice(format!("+{i:099}\n").as_bytes());
+    }
+    part
+}
+
+#[tokio::test]
+async fn a_detail_reads_the_card_the_description_the_files_and_the_conversation() {
+    let Some(fake) = Fake::new(true, &[]).await else { return };
+    fake.signed_in();
+    fake.answer("pr-view", &fixture("pr-detail.json"), 0);
+    let detail = fake.detail(false).await.unwrap();
+    let view = fake.calls_of("pr", "view");
+    assert_eq!(view.len(), 1);
+    let mut want = words(&["pr", "view", "212", "--repo", "fictional/repo", "--json"]);
+    want.push(DETAIL_FIELDS.to_owned());
+    assert_eq!(fake.argv(view[0]), want);
+    assert_eq!(fake.cwd_of(view[0]), fake.spot.folder());
+
+    let pr = &detail.pr;
+    assert_eq!((pr.number, pr.state, pr.draft, pr.blocked), (212, PrState::Open, false, true));
+    assert_eq!((pr.review, pr.mergeable), (Some(ReviewState::ChangesRequested), Some(Mergeable::Yes)));
+    assert_eq!((pr.head_oid.as_str(), pr.pass, pr.checks[0].name.as_str()), (HEAD, 1, "CI / test"));
+    assert_eq!((detail.repo.as_str(), detail.author.as_str()), ("fictional/repo", "fictional-author"));
+    assert_eq!(
+        detail.body, "Reads `config.toml` once.\n\n- [x] tests\n\n<img src=\"https://example.test/x.png\">\n",
+        "carriage returns dropped, raw HTML left as text"
+    );
+    assert!(!detail.body_cut);
+    assert_eq!((detail.adds, detail.dels, detail.changed), (120, 30, 3));
+    let files: Vec<(&str, &str, u32, u32)> =
+        detail.files.iter().map(|f| (f.path.as_str(), f.change.as_str(), f.adds, f.dels)).collect();
+    assert_eq!(
+        files,
+        [
+            ("src/config.rs", "modified", 100, 20),
+            ("docs/config.md", "added", 20, 0),
+            ("src/old.rs", "deleted", 0, 10)
+        ]
+    );
+    assert!(!detail.files_more);
+
+    let said: Vec<(&str, &str, Option<&str>)> =
+        detail.comments.iter().map(|c| (c.author.as_str(), c.body.as_str(), c.review.as_deref())).collect();
+    assert_eq!(
+        said,
+        [
+            ("fictional-third", "Superseded.", Some("dismissed")),
+            ("fictional-reviewer", "Looks close.", None),
+            ("fictional-reviewer", "Please split the parser.", Some("changes_requested")),
+            ("fictional-author", "Fixed in the next push.", None),
+            ("fictional-second", "", Some("approved")),
+            ("fictional-fourth", "One note inline.", Some("commented")),
+            ("fictional-fifth", "Not sent yet.", None),
+        ],
+        "oldest first; a review that is only a comment with nothing written is left out"
+    );
+    assert!(detail.comments.windows(2).all(|w| w[0].at_ms <= w[1].at_ms));
+    assert_eq!(
+        detail.comments[1].url.as_deref(),
+        Some("https://github.com/fictional/repo/pull/212#issuecomment-1")
+    );
+    assert_eq!(detail.comments[3].url, None, "a link off the signed-in hosts is dropped");
+    assert!(detail.comments.iter().all(|c| !c.cut));
+    assert_eq!(
+        (detail.comments_older, detail.thread_id.as_deref(), detail.folder_id.as_deref()),
+        (0, None, None)
+    );
+    assert!(detail.read_ms > 0);
+
+    let n = fake.count();
+    assert_eq!(fake.detail(false).await.unwrap(), detail);
+    assert_eq!(fake.count(), n, "kept a minute");
+    fake.detail(true).await.unwrap();
+    assert_eq!(fake.count(), n + 1, "refresh reads it again");
+    assert!(fake.scm.cached_pr_detail("fictional/repo", 212).is_some());
+    assert!(fake.scm.cached_pr_detail("github.com/fictional/repo", 212).is_some());
+    assert!(fake.scm.cached_pr_detail("fictional/repo", 213).is_none());
+
+    let gone = fake.root.join("no-such-folder");
+    fake.scm.pr_detail(&gone, "fictional/repo", 212, true).await.unwrap();
+    assert_eq!(fake.cwd_of(fake.count()), fake.root.join("home"), "no folder: the home folder");
+}
+
+#[tokio::test]
+async fn a_detail_keeps_its_bounds() {
+    let Some(fake) = Fake::new(true, &[]).await else { return };
+    fake.signed_in();
+    let base: serde_json::Value = serde_json::from_str(&fixture("pr-detail.json")).unwrap();
+
+    let mut quiet = base.clone();
+    quiet["comments"] = serde_json::json!([]);
+    quiet["reviews"] = serde_json::json!([]);
+    quiet["body"] = serde_json::json!("");
+    fake.answer("pr-view", &quiet.to_string(), 0);
+    let d = fake.detail(true).await.unwrap();
+    assert!(d.comments.is_empty() && d.comments_older == 0 && d.body.is_empty() && !d.body_cut);
+
+    let mut busy = base.clone();
+    busy["comments"] = (0..150)
+        .map(|i| {
+            let at = format!("2026-11-20T{:02}:{:02}:00Z", 10 + i / 60, i % 60);
+            serde_json::json!({"author": {"login": format!("p{i}")}, "body": format!("comment {i}"), "createdAt": at})
+        })
+        .collect();
+    busy["reviews"] = serde_json::json!([]);
+    busy["body"] = serde_json::json!("\u{e9}".repeat(20 * 1024));
+    busy["files"] = (0..400)
+        .map(|i| serde_json::json!({"path": format!("src/f{i}.rs"), "additions": 1, "deletions": 0, "changeType": "RENAMED"}))
+        .collect();
+    busy["changedFiles"] = serde_json::json!(400);
+    fake.answer("pr-view", &busy.to_string(), 0);
+    let d = fake.detail(true).await.unwrap();
+    assert_eq!((d.comments.len(), d.comments_older), (100, 50));
+    assert_eq!((d.comments[0].body.as_str(), d.comments[99].body.as_str()), ("comment 50", "comment 149"));
+    assert!(d.body_cut && d.body.len() <= 32_768 && d.body.len() >= 32_767, "{}", d.body.len());
+    assert!(d.body.chars().all(|c| c == '\u{e9}'), "cut at a character");
+    assert_eq!((d.files.len(), d.files_more, d.files[0].change.as_str()), (300, true, "renamed"));
+
+    let mut few = base.clone();
+    few["changedFiles"] = serde_json::json!(1000);
+    fake.answer("pr-view", &few.to_string(), 0);
+    let d = fake.detail(true).await.unwrap();
+    assert_eq!((d.files.len(), d.files_more, d.changed), (3, true, 1000), "gh listed fewer than changed");
+
+    let mut odd = base;
+    odd["comments"] = serde_json::json!([
+        {"author": {"login": "long"}, "body": "b".repeat(5000), "createdAt": "2026-11-20T10:00:00Z"},
+        {"author": null, "body": "no author", "createdAt": "2026-11-20T10:00:00Z"},
+        {"author": {"login": "no-body"}, "createdAt": "2026-11-20T10:00:00Z"},
+        {"author": {"login": "blank"}, "body": " \n ", "createdAt": "2026-11-20T10:00:00Z"}
+    ]);
+    odd["reviews"] = serde_json::json!(null);
+    odd["files"] = serde_json::json!([
+        {"path": "../escape", "changeType": "MODIFIED"},
+        {"path": "a\u{1}b", "changeType": "MODIFIED"},
+        {"path": "ok.rs", "changeType": "SOMETHING_NEW"},
+        {"path": null}
+    ]);
+    fake.answer("pr-view", &odd.to_string(), 0);
+    let d = fake.detail(true).await.unwrap();
+    assert_eq!(d.comments.len(), 1, "{:?}", d.comments);
+    assert!(d.comments[0].cut && d.comments[0].body.len() == 4096);
+    let files: Vec<(&str, &str)> = d.files.iter().map(|f| (f.path.as_str(), f.change.as_str())).collect();
+    assert_eq!(files, [("ok.rs", "changed")], "a path G7 can't offer is left out");
+    assert!(d.files_more, "three changed files aren't listed");
+}
+
+#[tokio::test]
+async fn control_and_bidi_characters_never_reach_a_client() {
+    let Some(fake) = Fake::new(true, &[]).await else { return };
+    fake.signed_in();
+    let mut hostile: serde_json::Value = serde_json::from_str(&fixture("pr-detail.json")).unwrap();
+    hostile["author"] = serde_json::json!({"login": "fict\u{202e}ional\u{1b}[31m-author\u{7}"});
+    hostile["title"] = serde_json::json!("Title\u{1b}[1m\u{202e} here");
+    hostile["body"] =
+        serde_json::json!("line\u{1b}]8;;https://evil.test\u{7}one\u{0}\r\n\u{2066}two\u{2069}\u{9b}");
+    hostile["comments"] = serde_json::json!([
+        {"author": {"login": "re\u{200f}viewer"}, "body": "bad\u{1b}\u{202a}text\u{85}", "createdAt": "2026-11-20T10:00:00Z"}
+    ]);
+    hostile["reviews"] = serde_json::json!([
+        {"author": {"login": "app\u{2067}rover"}, "body": "ok\u{1b}[2J\u{8}", "state": "APPROVED", "submittedAt": "2026-11-20T11:00:00Z"}
+    ]);
+    fake.answer("pr-view", &hostile.to_string(), 0);
+    let d = fake.detail(true).await.unwrap();
+    let mut texts = vec![d.author.clone(), d.body.clone(), d.pr.title.clone()];
+    texts.extend(d.comments.iter().flat_map(|c| [c.author.clone(), c.body.clone()]));
+    for text in &texts {
+        assert!(!text.chars().any(is_stripped_char), "{text:?}");
+    }
+    let authors: Vec<&str> = d.comments.iter().map(|c| c.author.as_str()).collect();
+    assert_eq!((d.author.as_str(), authors), ("fictional-author", vec!["reviewer", "approver"]));
+    assert!(d.body.contains("one\ntwo"), "{:?}", d.body);
+}
+
+#[tokio::test]
+async fn a_token_or_an_unknown_key_in_a_detail_is_never_kept_or_logged() {
+    let Some(fake) = Fake::new(true, &[("GH_TOKEN", "the-users-own-value")]).await else { return };
+    let log = Captured::default();
+    let writer = log.clone();
+    let subscriber = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::DEBUG)
+        .with_writer(move || writer.clone())
+        .with_ansi(false)
+        .finish();
+    let _guard = tracing::subscriber::set_default(subscriber);
+    fake.signed_in();
+    fake.answer("pr-view", &fixture("pr-detail.json"), 0);
+    fake.answer("pr-diff", std::str::from_utf8(&diff_fixture("pr-212.diff")).unwrap(), 0);
+    let detail = fake.detail(true).await.unwrap();
+    fake.scm.pr_diff(fake.spot.folder(), "fictional/repo", 212, HEAD, "src/config.rs", 0).await.unwrap();
+    let shown = format!("{detail:?} {} {:?}", serde_json::to_string(&detail).unwrap(), fake.scm);
+    let logged = String::from_utf8_lossy(&log.0.lock().unwrap()).into_owned();
+    for secret in
+        ["gho_FICTIONAL", "fictional-unknown-value", "unknownKey", "authorAssociation", "the-users-own"]
+    {
+        assert!(!shown.contains(secret), "{secret} in {shown}");
+        assert!(!logged.contains(secret), "{secret} in the log: {logged}");
+    }
+    assert!(!logged.contains("fictional-author"), "an author is never logged: {logged}");
+    let reads: Vec<usize> =
+        fake.calls_of("pr", "view").into_iter().chain(fake.calls_of("pr", "diff")).collect();
+    assert_eq!(reads.len(), 2);
+    for n in reads {
+        let env = fake.env_of(n);
+        let tokens: Vec<&String> =
+            env.iter().filter(|l| TOKEN_VARIABLES.iter().any(|t| l.starts_with(t))).collect();
+        assert_eq!(tokens, ["GH_TOKEN=the-users-own-value"], "the user's own passes as it is; none is added");
+        assert!(!env.iter().any(|l| l.starts_with("GH_REPO=")), "GH_REPO stays unset");
+    }
+}
+
+#[tokio::test]
+async fn bad_or_slow_detail_answers_are_errors_never_panics() {
+    let Some(fake) = Fake::new(true, &[]).await else { return };
+    fake.signed_in();
+    let mut another: serde_json::Value = serde_json::from_str(&fixture("pr-detail.json")).unwrap();
+    another["number"] = serde_json::json!(213);
+    let mut wrong_type: serde_json::Value = serde_json::from_str(&fixture("pr-detail.json")).unwrap();
+    wrong_type["additions"] = serde_json::json!("many");
+    let huge = format!("{{\"number\": 212, \"state\": \"OPEN\", \"body\": \"{}\"}}", "x".repeat(2 << 20));
+    let cases = [
+        ("{ not json".to_owned(), 0, Reason::Failed),
+        ("null".to_owned(), 0, Reason::Failed),
+        ("[]".to_owned(), 0, Reason::Failed),
+        (another.to_string(), 0, Reason::Failed),
+        (wrong_type.to_string(), 0, Reason::Failed),
+        (huge, 0, Reason::Failed),
+        (String::new(), 1, Reason::Network),
+    ];
+    for (out, code, want) in cases {
+        fake.answer("pr-view", &out, code);
+        assert_eq!(fake.detail(true).await.unwrap_err(), want, "{}", &out[..out.len().min(40)]);
+    }
+
+    fake.answer("pr-view", "", 4);
+    assert_eq!(fake.detail(true).await.unwrap_err(), Reason::SignedOut);
+    let auths = fake.calls_of("auth", "status").len();
+    fake.answer("auth", "", 1);
+    assert_eq!(fake.detail(true).await.unwrap_err(), Reason::SignedOut, "exit 4 flips the state");
+    assert_eq!(fake.calls_of("auth", "status").len(), auths + 1, "and it is read again");
+
+    fake.signed_in();
+    fake.answer("pr-view", &fixture("pr-detail.json"), 0);
+    fake.answer_sleep("pr-view", 60);
+    let started = std::time::Instant::now();
+    assert_eq!(fake.detail(true).await.unwrap_err(), Reason::Network);
+    assert!(started.elapsed() < Duration::from_secs(40));
+}
+
+#[tokio::test]
+async fn a_repository_number_head_or_path_is_checked_before_gh_runs() {
+    let Some(fake) = Fake::new(true, &[]).await else { return };
+    fake.signed_in();
+    let folder = fake.spot.folder().to_owned();
+    for repo in ["-x/y", "a/b/c/d", "../x", "x/--web", "o/r --web", "", "o"] {
+        let err = fake.scm.pr_detail(&folder, repo, 212, true).await.unwrap_err();
+        assert_eq!(err.reason, Reason::BadRequest, "{repo}");
+        let err = fake.scm.pr_diff(&folder, repo, 212, HEAD, "src/config.rs", 0).await.unwrap_err();
+        assert_eq!(err.reason, Reason::BadRequest, "{repo}");
+    }
+    let zero = fake.scm.pr_detail(&folder, "fictional/repo", 0, true).await.unwrap_err();
+    assert_eq!(zero.reason, Reason::BadRequest);
+    for (head, path) in
+        [("abc", "src/config.rs"), (HEAD, "../x"), (HEAD, "/etc/x"), (HEAD, ""), (HEAD, "a//b")]
+    {
+        let err = fake.scm.pr_diff(&folder, "fictional/repo", 212, head, path, 0).await.unwrap_err();
+        assert_eq!(err.reason, Reason::BadRequest, "{head} {path}");
+    }
+    let zero = fake.scm.pr_diff(&folder, "fictional/repo", 0, HEAD, "src/config.rs", 0).await.unwrap_err();
+    assert_eq!(zero.reason, Reason::BadRequest);
+    assert_eq!(fake.count(), 0, "nothing ran, not even gh's state");
+
+    let off = "ghe.example.test/fictional/repo";
+    assert_eq!(fake.scm.pr_detail(&folder, off, 212, true).await.unwrap_err().reason, Reason::NotGithub);
+    let err = fake.scm.pr_diff(&folder, off, 212, HEAD, "src/config.rs", 0).await.unwrap_err();
+    assert_eq!(err.reason, Reason::NotGithub);
+    assert!(fake.count() > 0, "gh's state was read");
+    assert!(fake.calls_of("pr", "view").is_empty() && fake.calls_of("pr", "diff").is_empty());
+
+    fake.answer("pr-view", &fixture("pr-detail.json"), 0);
+    let d = fake.scm.pr_detail(&folder, "GitHub.com/fictional/repo", 212, true).await.unwrap();
+    assert_eq!(d.repo, "fictional/repo");
+    assert_eq!(fake.argv(fake.count())[4], "fictional/repo");
+}
+
+#[tokio::test]
+async fn a_diff_is_read_once_per_head_and_served_by_file() {
+    let Some(fake) = Fake::new(true, &[]).await else { return };
+    fake.signed_in();
+    fake.answer_file("pr-diff", &diff_fixture("pr-212.diff"), 0);
+    let folder = fake.spot.folder().to_owned();
+    let diff = |path: &'static str, head: &'static str| {
+        let (scm, folder) = (&fake.scm, folder.clone());
+        async move { scm.pr_diff(&folder, "fictional/repo", 212, head, path, 0).await }
+    };
+
+    let config = diff("src/config.rs", HEAD).await.unwrap();
+    assert!(config.text.starts_with("diff --git a/src/config.rs b/src/config.rs\n"), "{}", config.text);
+    assert!(config.text.ends_with(" fn main() {}\n") && config.text.contains("+fn read()"));
+    assert!(!config.truncated && !config.binary && config.next.is_none());
+    let calls = fake.calls_of("pr", "diff");
+    assert_eq!(calls.len(), 1);
+    assert_eq!(
+        fake.argv(calls[0]),
+        words(&["pr", "diff", "212", "--repo", "fictional/repo", "--color", "never"])
+    );
+    assert_eq!(fake.cwd_of(calls[0]), folder);
+
+    assert!(diff("docs/config.md", HEAD).await.unwrap().text.contains("+# Config\n"));
+    let old = diff("src/old.rs", HEAD).await.unwrap();
+    assert!(old.text.starts_with("diff --git a/src/old.rs") && old.text.ends_with("-// old\n"));
+    let logo = diff("img/logo.png", HEAD).await.unwrap();
+    assert!(logo.binary && logo.text.is_empty());
+    assert_eq!(fake.calls_of("pr", "diff").len(), 1, "read once, served by file");
+    assert_eq!(diff("src/missing.rs", HEAD).await.unwrap_err().reason, Reason::NotFound);
+    let far = fake.scm.pr_diff(&folder, "fictional/repo", 212, HEAD, "src/config.rs", 1 << 20).await;
+    assert_eq!(far.unwrap_err().reason, Reason::BadRequest, "an offset no page gave");
+
+    diff("src/config.rs", OTHER_HEAD).await.unwrap();
+    assert_eq!(fake.calls_of("pr", "diff").len(), 2, "another head is another diff");
+    diff("src/config.rs", HEAD).await.unwrap();
+    assert_eq!(fake.calls_of("pr", "diff").len(), 2, "two are kept");
+
+    fake.answer("pr-view", &fixture("pr-detail.json"), 0);
+    fake.detail(true).await.unwrap();
+    diff("src/config.rs", HEAD).await.unwrap();
+    assert_eq!(fake.calls_of("pr", "diff").len(), 3, "a refreshed detail drops its kept diffs");
+}
+
+#[tokio::test]
+async fn a_diff_pages_like_a_patch_and_stops_at_a_megabyte_a_file() {
+    let Some(fake) = Fake::new(true, &[]).await else { return };
+    fake.signed_in();
+    let mut whole = added_part("mid.txt", 3_000);
+    let mid_len = whole.len();
+    whole.extend(added_part("big.txt", 15_000));
+    fake.answer_file("pr-diff", &whole, 0);
+    let page = |path: &'static str, offset: u64| {
+        let (scm, folder) = (&fake.scm, fake.spot.folder().to_owned());
+        async move { scm.pr_diff(&folder, "fictional/repo", 212, HEAD, path, offset).await.unwrap() }
+    };
+
+    let first = page("mid.txt", 0).await;
+    assert!(first.text.len() <= 196_608 && first.text.ends_with('\n') && !first.truncated);
+    let next = first.next.expect("a second page");
+    let second = page("mid.txt", next).await;
+    assert_eq!(second.next, None);
+    assert_eq!(format!("{}{}", first.text, second.text).as_bytes(), &whole[..mid_len]);
+
+    let mut offset = Some(0);
+    let mut served = 0;
+    while let Some(at) = offset {
+        let p = page("big.txt", at).await;
+        assert!(p.truncated, "the file passes 1 MiB");
+        served += p.text.len();
+        offset = p.next;
+    }
+    assert!(served <= 1 << 20 && served > (1 << 20) - 200, "{served}");
+}
+
+#[tokio::test]
+async fn a_diff_past_4_mib_is_cut_and_the_files_it_reaches_are_flagged() {
+    let Some(fake) = Fake::new(true, &[]).await else { return };
+    fake.signed_in();
+    let mut whole = added_part("small.rs", 10);
+    whole.extend(added_part("a.rs", 39_400));
+    let b_start = whole.len();
+    whole.extend(added_part("b.rs", 5_000));
+    whole.extend(added_part("c.rs", 10));
+    assert!(b_start < 4 << 20 && whole.len() > (4 << 20) + 200_000);
+    fake.answer_file("pr-diff", &whole, 0);
+    let page = |path: &'static str| {
+        let (scm, folder) = (&fake.scm, fake.spot.folder().to_owned());
+        async move { scm.pr_diff(&folder, "fictional/repo", 212, HEAD, path, 0).await.unwrap() }
+    };
+
+    let small = page("small.rs").await;
+    assert!(!small.truncated && small.text.ends_with(&format!("+{:099}\n", 9)));
+    let b = page("b.rs").await;
+    assert!(b.truncated, "its part runs into the cut");
+    assert!(b.text.ends_with('\n') && b.text.len() < (4 << 20) - b_start + 1, "cut at a line end");
+    let c = page("c.rs").await;
+    assert!(c.truncated && c.text.is_empty(), "past the cut: nothing, flagged");
+    assert_eq!(fake.calls_of("pr", "diff").len(), 1);
+}
+
+#[tokio::test]
+async fn a_diff_github_refuses_as_too_large_or_cant_send_is_not_kept() {
+    let Some(fake) = Fake::new(true, &[]).await else { return };
+    fake.signed_in();
+    let folder = fake.spot.folder().to_owned();
+    let read = || fake.scm.pr_diff(&folder, "fictional/repo", 212, HEAD, "src/config.rs", 0);
+    fake.answer("pr-diff", "", 1);
+    for err in [
+        "could not find pull request diff: HTTP 406: Sorry, the diff is too large to show (https://example.test)\n",
+        "HTTP 406: Sorry, the diff exceeded the maximum number of files (300).\nPullRequest.diff too_large\n",
+    ] {
+        fake.answer_err("pr-diff", err);
+        assert_eq!(read().await.unwrap_err().reason, Reason::Large, "{err}");
+    }
+    fake.answer_err("pr-diff", "error connecting to the server\n");
+    assert_eq!(read().await.unwrap_err().reason, Reason::Network);
+    fake.answer("pr-diff", "", 4);
+    assert_eq!(read().await.unwrap_err().reason, Reason::SignedOut);
+    fake.signed_in();
+    fake.answer_err("pr-diff", "");
+    fake.answer_file("pr-diff", &diff_fixture("pr-212.diff"), 0);
+    let before = fake.calls_of("pr", "diff").len();
+    assert!(read().await.unwrap().text.contains("+fn read()"));
+    assert_eq!(fake.calls_of("pr", "diff").len(), before + 1, "a failure kept nothing");
+}
+
+// ---- A diff, by file ----
+
+#[test]
+fn split_diff_names_each_file_by_its_own_lines() {
+    let diff = diff_fixture("parts.diff");
+    let parts = split_diff(&diff);
+    let paths: Vec<&str> = parts.iter().map(|(p, _)| p.as_str()).collect();
+    assert_eq!(
+        paths,
+        [
+            "src/added.rs",
+            "src/gone.rs",
+            "docs/new name.md",
+            "img/logo.png",
+            "run.sh",
+            "caf\u{e9} \"q\".txt",
+            "x b/y.txt",
+            "x b/mode only",
+            "tail.txt",
+        ]
+    );
+    for (path, range) in &parts {
+        assert!(diff[range.clone()].starts_with(b"diff --git "), "{path}");
+    }
+    for pair in parts.windows(2) {
+        assert!(pair[0].1.end <= pair[1].1.start);
+    }
+    assert_eq!(parts[0].1.start, 0);
+    assert_eq!(parts.last().unwrap().1.end, diff.len(), "the last part runs to the end, newline or not");
+    assert!(
+        diff[parts[1].1.clone()].ends_with(b"-++ b/evil\n"),
+        "a hunk line like a header stays in its part"
+    );
+
+    let outside = diff.windows(22).position(|w| w == b"diff --git a/../outsid").unwrap();
+    assert!(parts.iter().all(|(_, r)| !r.contains(&outside)), "a path with `..` is not offered");
+    assert_eq!(parts[7].1.end, outside);
+
+    assert!(split_diff(b"").is_empty() && split_diff(b"not a diff\n").is_empty());
+    assert_eq!(split_diff(b"preamble\ndiff --git a/x b/x\n"), [("x".to_owned(), 9..28)]);
+    assert!(split_diff(b"diff --git a/x b/y\n").is_empty(), "two names and no other line: no path");
 }

@@ -27,6 +27,7 @@ pub mod ports;
 pub mod presence;
 pub mod questions;
 pub mod scm;
+pub mod scripts;
 pub mod sessions;
 pub mod source;
 pub mod store;
@@ -297,6 +298,8 @@ struct ClientSlot {
     photo: bool,
     /// G7 Link that said `beside`: it gets the `ui.beside` event.
     beside: bool,
+    /// It said `scripts`: it gets the `script.progress` event.
+    scripts: bool,
     /// The one session whose items this connection gets.
     watching: Option<String>,
     /// It called `sessions.scan`: it gets `sessions.scanned`.
@@ -319,6 +322,7 @@ impl ClientSlot {
             handoff: false,
             photo: false,
             beside: false,
+            scripts: false,
             watching: None,
             scans: false,
         }
@@ -395,10 +399,11 @@ impl Hub {
         // once each, when they differ.
         let mut forms: HashMap<Caps, Option<String>> = HashMap::new();
         let delta = matches!(event, Event::ThreadDelta(_));
+        let script = matches!(event, Event::ScriptProgress(_));
         let thread = event.thread_id();
         for slot in self.lock().values() {
             let Some(sub) = &slot.subscription else { continue };
-            if delta && !sub.deltas {
+            if (delta && !sub.deltas) || (script && !slot.scripts) {
                 continue;
             }
             if items2_only && !slot.items2 {
@@ -731,6 +736,8 @@ pub struct Host {
     /// Source control (phase 4), with the same `git`; `None` without one.
     pub scm: Option<Arc<scm::Scm>>,
     pub source: source::Source,
+    /// Project scripts' runs (phase 6).
+    pub scripts: scripts::Scripts,
     clients: AtomicUsize,
     next_client: AtomicU64,
     idle_since: Mutex<Instant>,
@@ -858,6 +865,7 @@ pub async fn serve(config: Config, stop: impl std::future::Future<Output = ()>) 
         scm: git.clone().map(|git| Arc::new(scm::Scm::new(git, &config.env))),
         git,
         source: source::Source::load(&config.data_dir),
+        scripts: scripts::Scripts::default(),
         clients: AtomicUsize::new(0),
         next_client: AtomicU64::new(1),
         idle_since: Mutex::new(Instant::now()),
@@ -946,6 +954,7 @@ pub async fn serve(config: Config, stop: impl std::future::Future<Output = ()>) 
                 host.ring_limit_alarms(store::now_ms());
                 host.expire_undos();
                 host.git_tick();
+                host.scripts_tick();
                 host.files.sweep();
                 host.drop_stale_uploads();
                 ticks += 1;
@@ -957,7 +966,8 @@ pub async fn serve(config: Config, stop: impl std::future::Future<Output = ()>) 
                 }
                 let busy = host.clients.load(Ordering::SeqCst) > 0
                     || host.any_running()
-                    || host.source.running_jobs() > 0;
+                    || host.source.running_jobs() > 0
+                    || host.scripts.running() > 0;
                 if busy {
                     host.touch();
                     continue;
@@ -988,6 +998,7 @@ pub async fn serve(config: Config, stop: impl std::future::Future<Output = ()>) 
     ports_poll.abort();
     let _ = std::fs::remove_file(&host.config.socket);
     host.sessions.stop();
+    host.stop_runs().await;
     host.stop_jobs().await;
     host.shutdown_threads().await;
     host.files.shutdown().await;
@@ -1252,6 +1263,7 @@ impl Host {
         slot.handoff = kind == ClientKind::Link && params.has(cap::HANDOFF);
         slot.photo = kind == ClientKind::Link && params.has(cap::PHOTO);
         slot.beside = kind == ClientKind::Link && params.has(cap::BESIDE);
+        slot.scripts = params.has(cap::SCRIPTS);
         let presence = slot.presence && slot.shows_threads();
         self.hub.lock().insert(client_id, slot);
         let result = HelloResult {
@@ -1329,6 +1341,7 @@ impl Host {
             }
             method::THREAD_START => {
                 let p: ThreadStartParams = parse(params)?;
+                let p = self.review_start(kind, p).await?;
                 if p.worktree.is_some() {
                     let mut result = self.thread_start_worktree(kind, p, owner).await?;
                     result.thread = result.thread.for_client(caps.items3);
@@ -1339,7 +1352,7 @@ impl Host {
             }
             method::THREAD_SEND => {
                 let p: ThreadSendParams = parse(params)?;
-                let p = self.ask_params(p)?;
+                let p = self.ask_params(p).await?;
                 to_value(&self.thread_send(p, owner).await?)
             }
             method::THREAD_INTERRUPT => {
@@ -1510,6 +1523,10 @@ impl Host {
                 if p.follow_remote.is_some() {
                     source::check_may(kind, None, source::Ask::FollowRemote)?;
                 }
+                // A folder's scripts are typed in G7 Link on this PC, nowhere else.
+                if (p.scripts.is_some() || p.phone_scripts.is_some()) && kind != ClientKind::Link {
+                    return Err(RpcError::new(ErrorCode::Denied, source::DONE_ON_LINK));
+                }
                 to_value(&FolderResult { folder: self.folders_set(&p).await? })
             }
             method::SETTINGS_SET => {
@@ -1628,6 +1645,7 @@ impl Host {
                 Ok(json!({}))
             }
             m if source::METHODS.contains(&m) => self.git_call(kind, m, params).await,
+            m if scripts::METHODS.contains(&m) => self.script_call(kind, m, params).await,
             method::HELLO => Err(RpcError::new(ErrorCode::BadRequest, "already said hello")),
             _ => Err(RpcError::new(ErrorCode::BadRequest, UNKNOWN_METHOD)),
         }
@@ -1953,6 +1971,7 @@ fn brought_in_info(id: &str, b: &sessions::import::BroughtIn) -> ThreadInfo {
         changed: None,
         wrote: None,
         ports: Vec::new(),
+        runs: Vec::new(),
     }
 }
 
@@ -2112,6 +2131,7 @@ fn test_host_with(
         git: git::Git::new(&config.env),
         scm: None,
         source: source::Source::load(&config.data_dir),
+        scripts: scripts::Scripts::default(),
         clients: AtomicUsize::new(0),
         next_client: AtomicU64::new(1),
         idle_since: Mutex::new(Instant::now()),

@@ -4,21 +4,30 @@
 //! and never asks it for a credential, never reads its files, never sets or
 //! reads the token variables (they pass through as the user has them), and
 //! never calls GitHub itself. One `gh` process at a time.
+//!
+//! A pull request's detail and diff (phase 6 §X6.1) are two more reads. G7
+//! posts nothing from them: GitHub's write commands are not on the list.
 
 use std::collections::{BTreeMap, HashMap};
 use std::ffi::OsString;
+use std::ops::Range;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 use serde_json::Value;
 
+use super::patch::{Patch, shape};
 use super::run::{Program, Ran, run_program};
 use super::{
     Check, CheckCounts, CheckState, GhState, GhUse, GitHub, GitStatus, Lines, Mergeable, PrInfo, PrRow,
     PrState, Reason, ReviewState, Scm, ScmError, Spot, clean, now_ms, remote_of, url_host_path,
+};
+use crate::api::{
+    MAX_DIFF_PATH, MAX_PR_AUTHOR, MAX_PR_COMMENT, MAX_PR_COMMENTS, MAX_PR_DIFF, MAX_PR_FILES, PrComment,
+    PrDetail, PrFile, clean_cut, is_stripped_char,
 };
 use crate::host::git::run::LineSink;
 
@@ -50,9 +59,13 @@ const SEARCH_FIELDS: &str = "number,title,repository,state,isDraft,updatedAt,url
 const LIST_FIELDS: &str = "number,title,state,isDraft,updatedAt,url,headRefName,statusCheckRollup";
 const REPO_FIELDS: &str =
     "nameWithOwner,mergeCommitAllowed,squashMergeAllowed,rebaseMergeAllowed,defaultBranchRef";
+/// Fields read of one pull request's detail (§X6.1): [`PR_FIELDS`] and the
+/// description, files and conversation.
+const DETAIL_FIELDS: &str = "number,title,state,isDraft,url,reviewDecision,mergeable,mergeStateStatus,baseRefName,headRefName,headRefOid,updatedAt,statusCheckRollup,author,body,additions,deletions,changedFiles,files,comments,reviews";
 
 const CALL_LIMIT: Duration = Duration::from_secs(20);
 const WRITE_LIMIT: Duration = Duration::from_secs(60);
+const DIFF_LIMIT: Duration = Duration::from_secs(30);
 const MAX_GH_OUT: usize = 1 << 20;
 const STATE_FOR: Duration = Duration::from_secs(300);
 const PR_FOR: Duration = Duration::from_secs(60);
@@ -64,6 +77,14 @@ const MAX_PR_TITLE: usize = 256;
 const MAX_PR_BODY: usize = 32_768;
 const MAX_URL: usize = 512;
 const KEPT: usize = 256;
+/// A pull request's detail is kept a minute, for at most 8 pull requests.
+const DETAIL_FOR: Duration = Duration::from_secs(60);
+const DETAILS_KEPT: usize = 8;
+/// A pull request's diff is kept whole 10 minutes, for at most 2.
+const DIFF_FOR: Duration = Duration::from_secs(600);
+const DIFFS_KEPT: usize = 2;
+/// One part of a repository's name: `owner`, `name` or the host.
+const MAX_REPO_PART: usize = 100;
 
 /// How a pull request is merged.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -137,6 +158,17 @@ pub(crate) enum Ask {
         method: Method,
         head: String,
     },
+    /// One pull request with its description, files and conversation; `repo`
+    /// is [`repo_ok`].
+    View {
+        repo: String,
+        number: u32,
+    },
+    /// One pull request's unified diff, without colour.
+    Diff {
+        repo: String,
+        number: u32,
+    },
 }
 
 /// The arguments after the binary.
@@ -207,6 +239,22 @@ pub(crate) fn gh_argv(ask: &Ask) -> Vec<OsString> {
             v.push(head.into());
             v
         }
+        Ask::View { repo, number } => {
+            let mut v = words(&["pr", "view"]);
+            v.push(number.to_string().into());
+            v.push("--repo".into());
+            v.push(repo.into());
+            v.extend(words(&["--json", DETAIL_FIELDS]));
+            v
+        }
+        Ask::Diff { repo, number } => {
+            let mut v = words(&["pr", "diff"]);
+            v.push(number.to_string().into());
+            v.push("--repo".into());
+            v.push(repo.into());
+            v.extend(words(&["--color", "never"]));
+            v
+        }
     }
 }
 
@@ -214,7 +262,16 @@ impl Ask {
     fn limit(&self) -> Duration {
         match self {
             Ask::Create { .. } | Ask::Merge { .. } => WRITE_LIMIT,
+            Ask::Diff { .. } => DIFF_LIMIT,
             _ => CALL_LIMIT,
+        }
+    }
+
+    /// Bytes of standard output kept; past them the process group is killed.
+    fn cap(&self) -> usize {
+        match self {
+            Ask::Diff { .. } => MAX_PR_DIFF,
+            _ => MAX_GH_OUT,
         }
     }
 
@@ -228,6 +285,7 @@ impl Ask {
             }
             Ask::Ready { number } => *number > 0,
             Ask::Merge { number, head, .. } => *number > 0 && crate::host::git::oid_ok(head),
+            Ask::View { repo, number } | Ask::Diff { repo, number } => *number > 0 && repo_ok(repo),
             _ => true,
         }
     }
@@ -237,6 +295,19 @@ impl Ask {
 type PrCache = HashMap<(PathBuf, String), (Instant, Option<PrInfo>)>;
 /// A Pull Requests list per (list, the folder's common git directory), and when it was read.
 type ListCache = HashMap<(Show, Option<PathBuf>), (Instant, Vec<PrRow>)>;
+
+/// One pull request's diff as `gh` printed it, kept whole.
+#[derive(Debug)]
+struct KeptDiff {
+    repo: String,
+    number: u32,
+    head: String,
+    at: Instant,
+    bytes: Vec<u8>,
+    /// Standard output passed [`MAX_PR_DIFF`]: `bytes` is its start.
+    cut: bool,
+    sections: Vec<(String, Range<usize>)>,
+}
 
 #[derive(Debug, Default)]
 struct Cached {
@@ -252,6 +323,9 @@ pub(crate) struct Gh {
     cached: Mutex<Cached>,
     prs: Mutex<PrCache>,
     lists: Mutex<ListCache>,
+    /// Details read, oldest first; past a minute still the last good one.
+    details: Mutex<Vec<(Instant, PrDetail)>>,
+    diffs: Mutex<Vec<Arc<KeptDiff>>>,
     one: tokio::sync::Mutex<()>,
 }
 
@@ -283,6 +357,8 @@ impl Gh {
             cached: Mutex::default(),
             prs: Mutex::default(),
             lists: Mutex::default(),
+            details: Mutex::default(),
+            diffs: Mutex::default(),
             one: tokio::sync::Mutex::new(()),
         }
     }
@@ -320,6 +396,46 @@ impl Gh {
         self.lists.lock().unwrap_or_else(PoisonError::into_inner).clear();
     }
 
+    /// Where a call that names its repository runs: `cwd` when it is a
+    /// folder, else the home folder.
+    fn cwd_or_home(&self, cwd: &Path) -> PathBuf {
+        if cwd.is_absolute() && cwd.is_dir() { cwd.to_owned() } else { self.home.clone() }
+    }
+
+    fn kept_detail(&self, repo: &str, number: u32) -> Option<(Instant, PrDetail)> {
+        let details = self.details.lock().unwrap_or_else(PoisonError::into_inner);
+        details.iter().find(|(_, d)| d.repo == repo && d.pr.number == number).cloned()
+    }
+
+    fn keep_detail(&self, detail: PrDetail) {
+        let mut details = self.details.lock().unwrap_or_else(PoisonError::into_inner);
+        details.retain(|(_, d)| !(d.repo == detail.repo && d.pr.number == detail.pr.number));
+        if details.len() >= DETAILS_KEPT {
+            details.remove(0);
+        }
+        details.push((Instant::now(), detail));
+    }
+
+    fn kept_diff(&self, repo: &str, number: u32, head: &str) -> Option<Arc<KeptDiff>> {
+        let mut diffs = self.diffs.lock().unwrap_or_else(PoisonError::into_inner);
+        diffs.retain(|d| d.at.elapsed() < DIFF_FOR);
+        diffs.iter().find(|d| d.repo == repo && d.number == number && d.head == head).cloned()
+    }
+
+    fn keep_diff(&self, diff: Arc<KeptDiff>) {
+        let mut diffs = self.diffs.lock().unwrap_or_else(PoisonError::into_inner);
+        diffs.retain(|d| !(d.repo == diff.repo && d.number == diff.number && d.head == diff.head));
+        if diffs.len() >= DIFFS_KEPT {
+            diffs.remove(0);
+        }
+        diffs.push(diff);
+    }
+
+    fn forget_diffs(&self, repo: &str, number: u32) {
+        let mut diffs = self.diffs.lock().unwrap_or_else(PoisonError::into_inner);
+        diffs.retain(|d| !(d.repo == repo && d.number == number));
+    }
+
     fn set_use(&self, gh: GhUse) {
         let mut cached = self.cached.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some((_, state)) = cached.state.as_mut() {
@@ -336,6 +452,10 @@ impl Gh {
 struct Said {
     code: Option<i32>,
     stdout: Vec<u8>,
+    /// A diff passed its cap: `stdout` is its start (other calls fail instead).
+    over: bool,
+    /// Its error output says GitHub found the diff too large to send.
+    too_large: bool,
 }
 
 impl Scm {
@@ -644,7 +764,7 @@ impl Scm {
             cwd: cwd.to_owned(),
             input,
             limit: ask.limit(),
-            cap: MAX_GH_OUT,
+            cap: ask.cap(),
         };
         let sink: LineSink<'_> = &mut on_line;
         let ran = run_program(program, out.is_some().then_some(sink))
@@ -670,10 +790,165 @@ impl Scm {
             self.gh.set_use(GhUse::Old);
             return Err(ScmError::new(Reason::OldGh));
         }
-        if over {
+        let diff = matches!(ask, Ask::Diff { .. });
+        if over && !diff {
             return Err(ScmError::new(Reason::Failed));
         }
-        Ok(Said { code, stdout })
+        let too_large = diff && code != Some(0) && says_too_large(&stderr);
+        Ok(Said { code, stdout, over, too_large })
+    }
+
+    // ---- One pull request, read-only (§X6.1) ----
+
+    /// Pull request `number` of `repo` (`owner/name`, or `host/owner/name` off
+    /// `github.com`) with its description, changed files and conversation.
+    /// `cwd`: the thread's folder, else the home folder is used. Kept a
+    /// minute; `refresh` reads it again and drops its kept diff. The host
+    /// checks first that the pair is the thread's own or one it listed.
+    pub async fn pr_detail(
+        &self,
+        cwd: &Path,
+        repo: &str,
+        number: u32,
+        refresh: bool,
+    ) -> Result<PrDetail, ScmError> {
+        let repo = self.named_repo(repo, number).await?;
+        if refresh {
+            self.gh.forget_diffs(&repo, number);
+        } else if let Some((at, detail)) = self.gh.kept_detail(&repo, number)
+            && at.elapsed() < DETAIL_FOR
+        {
+            return Ok(detail);
+        }
+        let ask = Ask::View { repo: repo.clone(), number };
+        let said = self.gh_call(&ask, &self.gh.cwd_or_home(cwd), None, None).await?;
+        let pr: GhPr = serde_json::from_slice(&said.stdout).map_err(|_| ScmError::new(Reason::Failed))?;
+        let more: GhDetail =
+            serde_json::from_slice(&said.stdout).map_err(|_| ScmError::new(Reason::Failed))?;
+        let detail =
+            detail_of(pr, more, &repo, number, &self.gh.hosts()).ok_or(ScmError::new(Reason::Failed))?;
+        self.gh.keep_detail(detail.clone());
+        Ok(detail)
+    }
+
+    /// The last detail read of the pull request, however old (shown with
+    /// `why: "network"` when GitHub can't be reached).
+    pub fn cached_pr_detail(&self, repo: &str, number: u32) -> Option<PrDetail> {
+        let repo = canonical_repo(repo)?;
+        self.gh.kept_detail(&repo, number).map(|(_, detail)| detail)
+    }
+
+    /// The page at `offset` of `path`'s part of pull request `number`'s diff,
+    /// with the paging and caps of `git.patch`. The diff is read once per
+    /// head commit (`head_oid`, from the detail) and kept 10 minutes. A diff
+    /// past [`MAX_PR_DIFF`] is cut there: a file past the cut is `truncated`.
+    /// GitHub refusing a diff as too large is [`Reason::Large`]. The host
+    /// checks first that `path` is one of the detail's files.
+    pub async fn pr_diff(
+        &self,
+        cwd: &Path,
+        repo: &str,
+        number: u32,
+        head_oid: &str,
+        path: &str,
+        offset: u64,
+    ) -> Result<Patch, ScmError> {
+        if !crate::host::git::oid_ok(head_oid) || !offered(path.as_bytes()) {
+            return Err(ScmError::new(Reason::BadRequest));
+        }
+        let repo = canonical_repo(repo).ok_or(ScmError::new(Reason::BadRequest))?;
+        let kept = match self.gh.kept_diff(&repo, number, head_oid) {
+            Some(kept) => kept,
+            None => {
+                let repo = self.named_repo(&repo, number).await?;
+                let ask = Ask::Diff { repo: repo.clone(), number };
+                let said = self.gh_raw(&ask, &self.gh.cwd_or_home(cwd), None, None).await?;
+                if !said.over && said.code != Some(0) {
+                    return Err(ScmError::new(if said.too_large { Reason::Large } else { Reason::Network }));
+                }
+                let sections = split_diff(&said.stdout);
+                let kept = Arc::new(KeptDiff {
+                    repo,
+                    number,
+                    head: head_oid.to_owned(),
+                    at: Instant::now(),
+                    bytes: said.stdout,
+                    cut: said.over,
+                    sections,
+                });
+                self.gh.keep_diff(kept.clone());
+                kept
+            }
+        };
+        let Some((_, range)) = kept.sections.iter().find(|(p, _)| p == path) else {
+            return if kept.cut {
+                Ok(Patch { truncated: true, ..Patch::default() })
+            } else {
+                Err(ScmError::new(Reason::NotFound))
+            };
+        };
+        let at_cut = kept.cut && range.end == kept.bytes.len();
+        let whole = shape(&kept.bytes[range.clone()], at_cut);
+        let (text, next) = whole.page(offset).ok_or(ScmError::new(Reason::BadRequest))?;
+        Ok(Patch {
+            text: text.to_owned(),
+            next,
+            truncated: whole.truncated,
+            binary: whole.binary,
+            ..Patch::default()
+        })
+    }
+
+    /// `repo` as `gh` is given it, refused unless it is [`repo_ok`], `number`
+    /// is not 0, `gh` is signed in, and the repository's host is one of its.
+    async fn named_repo(&self, repo: &str, number: u32) -> Result<String, ScmError> {
+        let repo = canonical_repo(repo).filter(|_| number > 0).ok_or(ScmError::new(Reason::BadRequest))?;
+        let state = self.usable().await?;
+        if !state.hosts.iter().any(|h| *h == repo_host(&repo)) {
+            return Err(ScmError::new(Reason::NotGithub));
+        }
+        Ok(repo)
+    }
+}
+
+/// GitHub's refusal to send a diff, by the words its error carries.
+fn says_too_large(stderr: &str) -> bool {
+    let lower = stderr.to_ascii_lowercase();
+    ["too large", "too_large", "exceeded the maximum"].iter().any(|w| lower.contains(w))
+}
+
+/// `owner/name`, or `host/owner/name`: each part 1 to 100 of
+/// `[A-Za-z0-9._-]`, not starting with `-` or `.`.
+pub(crate) fn repo_ok(repo: &str) -> bool {
+    let part = |p: &str| {
+        (1..=MAX_REPO_PART).contains(&p.len())
+            && !p.starts_with(['-', '.'])
+            && p.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+    };
+    let parts = repo.split('/').count();
+    (2..=3).contains(&parts) && repo.split('/').all(part)
+}
+
+/// A [`repo_ok`] repository as it is kept and passed: the host lower case,
+/// and `github.com/` left out.
+fn canonical_repo(repo: &str) -> Option<String> {
+    if !repo_ok(repo) {
+        return None;
+    }
+    match repo.split_once('/') {
+        Some((host, rest)) if rest.contains('/') => {
+            let host = host.to_ascii_lowercase();
+            Some(if host == "github.com" { rest.to_owned() } else { format!("{host}/{rest}") })
+        }
+        _ => Some(repo.to_owned()),
+    }
+}
+
+/// The host of a [`canonical_repo`].
+fn repo_host(repo: &str) -> &str {
+    match repo.split_once('/') {
+        Some((host, rest)) if rest.contains('/') => host,
+        _ => "github.com",
     }
 }
 
@@ -734,6 +1009,55 @@ struct GhRepo {
     merge_commit_allowed: bool,
     squash_merge_allowed: bool,
     rebase_merge_allowed: bool,
+}
+
+/// What a detail adds to [`GhPr`], read from the same answer. Every field
+/// may be missing or null; anything else in the answer is never parsed.
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+struct GhDetail {
+    author: Option<GhAuthor>,
+    body: Option<String>,
+    additions: Option<u64>,
+    deletions: Option<u64>,
+    changed_files: Option<u64>,
+    files: Option<Vec<GhFile>>,
+    comments: Option<Vec<GhComment>>,
+    reviews: Option<Vec<GhReview>>,
+}
+
+/// Only the login of an author.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct GhAuthor {
+    login: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+struct GhFile {
+    path: Option<String>,
+    additions: Option<u64>,
+    deletions: Option<u64>,
+    change_type: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+struct GhComment {
+    author: Option<GhAuthor>,
+    body: Option<String>,
+    created_at: Option<String>,
+    url: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+struct GhReview {
+    author: Option<GhAuthor>,
+    body: Option<String>,
+    state: Option<String>,
+    submitted_at: Option<String>,
 }
 
 fn version(stdout: &[u8]) -> Option<String> {
@@ -926,6 +1250,251 @@ fn check(entry: &Value, hosts: &[String]) -> Check {
     Check { name, state, url: https_on(url, hosts).then(|| url.to_owned()) }
 }
 
+/// A pull request's detail (§X6.1): `None` when `gh` answered with no pull
+/// request or another one.
+fn detail_of(pr: GhPr, more: GhDetail, repo: &str, number: u32, hosts: &[String]) -> Option<PrDetail> {
+    let info = pr_info(pr, hosts).filter(|p| p.number == number)?;
+    let count = |n: Option<u64>| n.map_or(0, |n| u32::try_from(n).unwrap_or(u32::MAX));
+    let changed = count(more.changed_files);
+    let raw_files = more.files.unwrap_or_default();
+    let listed = raw_files.len();
+    let files: Vec<PrFile> = raw_files.into_iter().filter_map(pr_file).take(MAX_PR_FILES).collect();
+    let files_more = listed > MAX_PR_FILES || usize::try_from(changed).is_ok_and(|c| c > files.len());
+    let (body, body_cut) = clean_cut(more.body.as_deref().unwrap_or(""), MAX_PR_BODY);
+    let mut comments: Vec<PrComment> = more
+        .comments
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|c| comment(c, hosts))
+        .chain(more.reviews.unwrap_or_default().into_iter().filter_map(review))
+        .collect();
+    comments.sort_by_key(|c| c.at_ms);
+    let older = comments.len().saturating_sub(MAX_PR_COMMENTS);
+    let comments = comments.split_off(older);
+    Some(PrDetail {
+        pr: info,
+        repo: repo.to_owned(),
+        author: login(more.author).unwrap_or_default(),
+        body,
+        body_cut,
+        adds: count(more.additions),
+        dels: count(more.deletions),
+        changed,
+        files,
+        files_more,
+        comments,
+        comments_older: u32::try_from(older).unwrap_or(u32::MAX),
+        thread_id: None,
+        folder_id: None,
+        read_ms: now_ms(),
+    })
+}
+
+/// An author's login, cleaned and cut; `None` when there is none.
+fn login(author: Option<GhAuthor>) -> Option<String> {
+    let login = clean::text(&author?.login?, MAX_PR_AUTHOR);
+    (!login.is_empty()).then_some(login)
+}
+
+fn pr_file(file: GhFile) -> Option<PrFile> {
+    let path = file.path.filter(|p| offered(p.as_bytes()))?;
+    let change = match file.change_type.as_deref() {
+        Some("ADDED") => "added",
+        Some("DELETED") => "deleted",
+        Some("RENAMED") => "renamed",
+        Some("COPIED") => "copied",
+        Some("MODIFIED") => "modified",
+        _ => "changed",
+    };
+    let count = |n: Option<u64>| n.map_or(0, |n| u32::try_from(n).unwrap_or(u32::MAX));
+    Some(PrFile { path, change: change.to_owned(), adds: count(file.additions), dels: count(file.deletions) })
+}
+
+/// A conversation comment: left out without an author or a body.
+fn comment(c: GhComment, hosts: &[String]) -> Option<PrComment> {
+    let (body, cut) = clean_cut(c.body?.trim_end(), MAX_PR_COMMENT);
+    if body.trim().is_empty() {
+        return None;
+    }
+    Some(PrComment {
+        author: login(c.author)?,
+        at_ms: c.created_at.as_deref().and_then(iso_ms).unwrap_or(0),
+        body,
+        cut,
+        review: None,
+        url: c.url.filter(|u| https_on(u, hosts)),
+    })
+}
+
+/// A review's summary: left out without an author or a body, and when it
+/// is only a comment with nothing written (its line comments aren't read).
+fn review(r: GhReview) -> Option<PrComment> {
+    let (body, cut) = clean_cut(r.body?.trim_end(), MAX_PR_COMMENT);
+    let word = match r.state.as_deref() {
+        Some("APPROVED") => Some("approved"),
+        Some("CHANGES_REQUESTED") => Some("changes_requested"),
+        Some("COMMENTED") => Some("commented"),
+        Some("DISMISSED") => Some("dismissed"),
+        _ => None,
+    };
+    if body.trim().is_empty() && matches!(word, Some("commented") | None) {
+        return None;
+    }
+    Some(PrComment {
+        author: login(r.author)?,
+        at_ms: r.submitted_at.as_deref().and_then(iso_ms).unwrap_or(0),
+        body,
+        cut,
+        review: word.map(str::to_owned),
+        url: None,
+    })
+}
+
+// ---- A pull request's diff, by file ----
+
+/// The files of a unified diff, in order, with the byte range of each one's
+/// part (from its `diff --git ` line to the next). A part's path is its
+/// `+++ b/` line's, else (deleted) its `--- a/` line's, else (binary, pure
+/// rename or copy, mode change) its `rename to` or `copy to` line's, else
+/// the header's when both halves name the same path. Quoted paths are
+/// unquoted. A path that isn't relative, has an empty, `.` or `..` part, a
+/// control character, or passes 512 bytes is not offered.
+pub fn split_diff(diff: &[u8]) -> Vec<(String, Range<usize>)> {
+    let mut starts = Vec::new();
+    let mut at = 0;
+    while at < diff.len() {
+        let end = diff[at..].iter().position(|&b| b == b'\n').map_or(diff.len(), |n| at + n + 1);
+        if diff[at..end].starts_with(b"diff --git ") {
+            starts.push(at);
+        }
+        at = end;
+    }
+    starts
+        .iter()
+        .enumerate()
+        .filter_map(|(i, &start)| {
+            let end = starts.get(i + 1).copied().unwrap_or(diff.len());
+            let path = part_path(&diff[start..end])?;
+            Some((path, start..end))
+        })
+        .collect()
+}
+
+/// The path of one part of a diff (see [`split_diff`]).
+fn part_path(part: &[u8]) -> Option<String> {
+    let mut lines = part.split(|&b| b == b'\n');
+    let header = lines.next()?.strip_prefix(b"diff --git ")?;
+    let (mut minus, mut plus, mut moved) = (None, None, None);
+    for line in lines {
+        if line.starts_with(b"@@") {
+            break;
+        }
+        if let Some(rest) = line.strip_prefix(b"--- ") {
+            minus = side(rest, b"a/");
+        } else if let Some(rest) = line.strip_prefix(b"+++ ") {
+            plus = side(rest, b"b/");
+        } else if let Some(rest) = line.strip_prefix(b"rename to ").or_else(|| line.strip_prefix(b"copy to "))
+        {
+            moved = side(rest, b"");
+        }
+    }
+    let raw = plus.or(minus).or(moved).or_else(|| same_halves(header))?;
+    String::from_utf8(raw).ok().filter(|p| offered(p.as_bytes()))
+}
+
+/// A path of a `---`, `+++`, `rename to` or `copy to` line, without
+/// `prefix`: the tab git writes after a name holding a space dropped, a
+/// quoted name unquoted. `/dev/null` and a name without `prefix` are `None`.
+fn side(raw: &[u8], prefix: &[u8]) -> Option<Vec<u8>> {
+    let raw = raw.strip_suffix(b"\t").unwrap_or(raw);
+    let name = if raw.starts_with(b"\"") {
+        let (name, rest) = unquote(raw)?;
+        if !rest.is_empty() {
+            return None;
+        }
+        name
+    } else {
+        raw.to_vec()
+    };
+    let path = name.strip_prefix(prefix)?;
+    (!path.is_empty()).then(|| path.to_vec())
+}
+
+/// The path of a `diff --git a/<p> b/<p>` header whose halves are equal;
+/// a path may itself hold ` b/`.
+fn same_halves(header: &[u8]) -> Option<Vec<u8>> {
+    if header.starts_with(b"\"") {
+        let (a, rest) = unquote(header)?;
+        let rest = rest.strip_prefix(b" ")?;
+        let b = if rest.starts_with(b"\"") {
+            let (b, tail) = unquote(rest)?;
+            if !tail.is_empty() {
+                return None;
+            }
+            b
+        } else {
+            rest.to_vec()
+        };
+        let (a, b) = (a.strip_prefix(b"a/")?, b.strip_prefix(b"b/")?);
+        return (a == b).then(|| a.to_vec());
+    }
+    let len = header.len().checked_sub(5)?;
+    if len == 0 || !len.is_multiple_of(2) {
+        return None;
+    }
+    let half = len / 2;
+    let (a, b) = (&header[2..2 + half], &header[5 + half..]);
+    (header.starts_with(b"a/") && &header[2 + half..5 + half] == b" b/" && a == b).then(|| a.to_vec())
+}
+
+/// A C-quoted name at the start of `raw` (git's quoting: `\\`, `\"`,
+/// `\a \b \t \n \v \f \r` and three octal digits), and what follows its
+/// closing quote.
+fn unquote(raw: &[u8]) -> Option<(Vec<u8>, &[u8])> {
+    let mut rest = raw.strip_prefix(b"\"")?;
+    let mut out = Vec::new();
+    loop {
+        let (&b, tail) = rest.split_first()?;
+        rest = tail;
+        match b {
+            b'"' => return Some((out, rest)),
+            b'\\' => {
+                let (&e, tail) = rest.split_first()?;
+                rest = tail;
+                let byte = match e {
+                    b'a' => 7,
+                    b'b' => 8,
+                    b't' => b'\t',
+                    b'n' => b'\n',
+                    b'v' => 11,
+                    b'f' => 12,
+                    b'r' => b'\r',
+                    b'"' | b'\\' => e,
+                    b'0'..=b'3' => {
+                        let [d1, d2] = [*rest.first()?, *rest.get(1)?];
+                        if !(b'0'..=b'7').contains(&d1) || !(b'0'..=b'7').contains(&d2) {
+                            return None;
+                        }
+                        rest = &rest[2..];
+                        (e - b'0') * 64 + (d1 - b'0') * 8 + (d2 - b'0')
+                    }
+                    _ => return None,
+                };
+                out.push(byte);
+            }
+            _ => out.push(b),
+        }
+    }
+}
+
+/// A path G7 offers from a pull request: relative, without empty, `.` or
+/// `..` parts, no control character, at most 512 bytes.
+fn offered(path: &[u8]) -> bool {
+    path.len() <= MAX_DIFF_PATH
+        && crate::host::git::path_parts_ok(path)
+        && std::str::from_utf8(path).is_ok_and(|p| !p.chars().any(is_stripped_char))
+}
+
 /// `YYYY-MM-DDTHH:MM:SS[.fff]Z` as milliseconds since the epoch.
 fn iso_ms(s: &str) -> Option<u64> {
     let b = s.as_bytes();
@@ -1079,6 +1648,8 @@ mod tests {
             Ask::RepoView,
             Ask::Ready { number: 3 },
             Ask::Merge { number: 3, method: Method::Rebase, head: "a".repeat(40) },
+            Ask::View { repo: "o/r".into(), number: 7 },
+            Ask::Diff { repo: "ghe.example.test/o/r".into(), number: 7 },
         ];
         for ask in &asks {
             assert!(ask.sound());
@@ -1112,5 +1683,110 @@ mod tests {
         let merge: Vec<String> = gh_argv(&asks[9]).iter().map(|a| a.to_string_lossy().into_owned()).collect();
         let head = "a".repeat(40);
         assert_eq!(merge, ["pr", "merge", "3", "--rebase", "--match-head-commit", head.as_str()]);
+        let view: Vec<String> = gh_argv(&asks[10]).iter().map(|a| a.to_string_lossy().into_owned()).collect();
+        assert_eq!(view, ["pr", "view", "7", "--repo", "o/r", "--json", DETAIL_FIELDS]);
+        let diff: Vec<String> = gh_argv(&asks[11]).iter().map(|a| a.to_string_lossy().into_owned()).collect();
+        assert_eq!(diff, ["pr", "diff", "7", "--repo", "ghe.example.test/o/r", "--color", "never"]);
+        assert_eq!((asks[10].limit(), asks[10].cap()), (CALL_LIMIT, MAX_GH_OUT));
+        assert_eq!((asks[11].limit(), asks[11].cap()), (Duration::from_secs(30), 4 << 20));
+    }
+
+    /// `SCM_NEVER` as `tests/forbidden_strings.rs` lists it, unquoted.
+    fn scm_never() -> Vec<String> {
+        const HEAD: &str = "const SCM_NEVER: [&str; ";
+        let text = include_str!("../../../tests/forbidden_strings.rs");
+        let block = &text[text.find(HEAD).unwrap()..];
+        let declared: usize = block[HEAD.len()..].split(']').next().unwrap().parse().unwrap();
+        let block = &block[..block.find("];").unwrap()];
+        let words: Vec<String> = block
+            .lines()
+            .skip(1)
+            .filter_map(|l| l.trim().strip_prefix("\"\\\"")?.strip_suffix("\\\"\",").map(str::to_owned))
+            .collect();
+        assert_eq!(words.len(), declared, "every word of SCM_NEVER was read");
+        words
+    }
+
+    #[test]
+    fn a_read_names_its_repository() {
+        let never = scm_never();
+        assert!(never.len() >= 83 && never.iter().any(|w| w == "-R") && never.iter().any(|w| w == "api"));
+        for (ask, verb) in [
+            (Ask::View { repo: "fictional/repo".into(), number: 212 }, "view"),
+            (Ask::Diff { repo: "fictional/repo".into(), number: 212 }, "diff"),
+        ] {
+            assert!(ask.sound());
+            let args: Vec<String> = gh_argv(&ask).iter().map(|a| a.to_string_lossy().into_owned()).collect();
+            assert_eq!(args[..3], ["pr", verb, "212"]);
+            assert_eq!(args[3..5], ["--repo", "fictional/repo"]);
+            for word in &never {
+                assert!(!args.iter().any(|a| a == word), "{word} in {args:?}");
+            }
+        }
+        assert!(DETAIL_FIELDS.starts_with(PR_FIELDS), "the card's fields, then the detail's");
+        for repo in ["-x/y", "a/b/c/d", "../x", "x/..", ".x/y", "o/", "/r", "o//r", "o", "", "o/r b", "o/r\0"]
+        {
+            assert!(!repo_ok(repo), "{repo}");
+            assert!(!Ask::View { repo: repo.into(), number: 1 }.sound(), "{repo}");
+            assert!(!Ask::Diff { repo: repo.into(), number: 1 }.sound(), "{repo}");
+        }
+        assert!(!repo_ok(&format!("o/{}", "r".repeat(101))));
+        assert!(repo_ok(&format!("o/{}", "r".repeat(100))));
+        assert!(!Ask::View { repo: "o/r".into(), number: 0 }.sound());
+        assert!(!Ask::Diff { repo: "o/r".into(), number: 0 }.sound());
+        assert_eq!(canonical_repo("GitHub.com/o/r").as_deref(), Some("o/r"));
+        assert_eq!(canonical_repo("GHE.Example.test/o/r").as_deref(), Some("ghe.example.test/o/r"));
+        assert_eq!(canonical_repo("o.x/r_y-z").as_deref(), Some("o.x/r_y-z"));
+        assert_eq!((repo_host("o/r"), repo_host("ghe.test/o/r")), ("github.com", "ghe.test"));
+    }
+
+    #[test]
+    fn quoted_names_unquote_and_bad_ones_are_refused() {
+        assert_eq!(
+            unquote(br#""a\tb\"c\\d\303\251" rest"#),
+            Some((b"a\tb\"c\\d\xc3\xa9".to_vec(), &b" rest"[..]))
+        );
+        assert_eq!(unquote(br#""no end"#), None);
+        assert_eq!(unquote(br#""bad \q""#), None);
+        assert_eq!(unquote(br#""bad \39x""#), None);
+        assert_eq!(unquote(b"plain"), None);
+        assert_eq!(side(b"b/x y\t", b"b/"), Some(b"x y".to_vec()));
+        assert_eq!(side(b"/dev/null", b"b/"), None);
+        assert_eq!(side(b"b/", b"b/"), None);
+        assert_eq!(same_halves(b"a/x b/y b/x b/y"), Some(b"x b/y".to_vec()));
+        assert_eq!(same_halves(b"a/x b/z"), None);
+        assert_eq!(same_halves(br#""a/\001" "b/\001""#), Some(vec![1]));
+        assert!(!offered("\u{1}".as_bytes()) && !offered(b"a/../b") && !offered(b"/abs") && !offered(b""));
+        assert!(!offered("x".repeat(513).as_bytes()) && offered("x".repeat(512).as_bytes()));
+        assert!(offered("dir/caf\u{e9} b/x.rs".as_bytes()));
+    }
+
+    #[test]
+    fn what_a_comment_or_a_review_keeps() {
+        let author = || Some(GhAuthor { login: Some("someone".into()) });
+        let review = |state: &str, body: &str, at: &str| GhReview {
+            author: author(),
+            body: Some(body.into()),
+            state: Some(state.into()),
+            submitted_at: Some(at.into()),
+        };
+        assert!(super::review(review("COMMENTED", "  ", "2026-11-21T10:00:00Z")).is_none());
+        assert!(super::review(review("PENDING", "", "2026-11-21T10:00:00Z")).is_none());
+        let approved = super::review(review("APPROVED", "", "2026-11-21T10:00:00Z")).unwrap();
+        assert_eq!((approved.review.as_deref(), approved.body.as_str()), (Some("approved"), ""));
+        let other = super::review(review("SOMETHING_NEW", "text", "2026-11-21T10:00:00Z")).unwrap();
+        assert_eq!(other.review, None);
+        let nobody = GhReview { author: None, ..review("APPROVED", "ok", "2026-11-21T10:00:00Z") };
+        assert!(super::review(nobody).is_none());
+        let no_body = GhReview { body: None, ..review("APPROVED", "", "2026-11-21T10:00:00Z") };
+        assert!(super::review(no_body).is_none());
+        let c = GhComment {
+            author: author(),
+            body: Some("hi".into()),
+            created_at: Some("bad date".into()),
+            url: Some("https://elsewhere.test/x".into()),
+        };
+        let c = comment(c, &hosts()).unwrap();
+        assert_eq!((c.at_ms, c.url, c.review), (0, None, None));
     }
 }

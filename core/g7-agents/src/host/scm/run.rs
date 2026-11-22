@@ -42,19 +42,39 @@ struct Kept {
     next: u64,
 }
 
-/// A job's output: at most [`MAX_JOB_LINES`] lines and [`MAX_JOB_BYTES`],
-/// each at most 512 characters, the oldest dropped and counted. Lines are
-/// numbered from 0 in the order they arrived, so a reader can ask for what
-/// is new since the last line it saw. Cheap to clone; clones share.
-#[derive(Debug, Clone, Default)]
+/// A job's output: at most [`MAX_JOB_LINES`] lines and [`MAX_JOB_BYTES`]
+/// (or the caps given to [`Lines::with_caps`]), each at most 512
+/// characters, the oldest dropped and counted. Lines are numbered from 0 in
+/// the order they arrived, so a reader can ask for what is new since the
+/// last line it saw. Cheap to clone; clones share.
+#[derive(Debug, Clone)]
 pub struct Lines {
     kept: Arc<Mutex<Kept>>,
     notify: Arc<Notify>,
+    max_lines: usize,
+    max_bytes: usize,
+}
+
+impl Default for Lines {
+    fn default() -> Self {
+        Lines::with_caps(MAX_JOB_LINES, MAX_JOB_BYTES)
+    }
 }
 
 impl Lines {
     pub fn new() -> Lines {
         Lines::default()
+    }
+
+    /// Output kept to `max_lines` lines and `max_bytes` bytes of lines (a
+    /// script's run keeps more than a job). Each is at least 1.
+    pub fn with_caps(max_lines: usize, max_bytes: usize) -> Lines {
+        Lines {
+            kept: Arc::default(),
+            notify: Arc::default(),
+            max_lines: max_lines.max(1),
+            max_bytes: max_bytes.max(1),
+        }
     }
 
     /// Adds one line (already cleaned; cut again to 512 characters).
@@ -68,13 +88,20 @@ impl Lines {
             kept.bytes += line.len();
             kept.lines.push_back(line.to_owned());
             kept.next += 1;
-            while kept.lines.len() > MAX_JOB_LINES || kept.bytes > MAX_JOB_BYTES {
+            while kept.lines.len() > self.max_lines || kept.bytes > self.max_bytes {
                 let Some(old) = kept.lines.pop_front() else { break };
                 kept.bytes -= old.len();
                 kept.dropped = kept.dropped.saturating_add(1);
             }
         }
         self.notify.notify_waiters();
+    }
+
+    /// Counts `n` lines that were never pushed (a flood the reader skipped):
+    /// they add to [`Lines::dropped`] and take no number.
+    pub fn count_dropped(&self, n: u32) {
+        let mut kept = self.kept.lock().unwrap_or_else(PoisonError::into_inner);
+        kept.dropped = kept.dropped.saturating_add(n);
     }
 
     /// The lines kept, oldest first.
@@ -420,6 +447,50 @@ mod tests {
         assert_eq!((new.len(), next), (2, 10_000));
         let (all, _) = lines.since(0);
         assert_eq!(all.len(), kept.len());
+    }
+
+    #[test]
+    fn caps_given_are_kept_and_new_keeps_the_job_caps() {
+        let lines = Lines::with_caps(2_000, 262_144);
+        for i in 0..10_000 {
+            lines.push(&format!("{i} {}", "y".repeat(200)));
+        }
+        let kept = lines.lines();
+        assert_eq!(kept.len(), 262_144 / 205, "the byte cap binds first: 205 bytes a line");
+        assert!(kept.iter().map(String::len).sum::<usize>() <= 262_144);
+        assert_eq!(lines.dropped() as usize + kept.len(), 10_000);
+        assert_eq!(lines.next(), 10_000);
+        assert!(kept.last().unwrap().starts_with("9999 "));
+
+        let short = Lines::with_caps(2_000, 262_144);
+        for i in 0..5_000 {
+            short.push(&i.to_string());
+        }
+        assert_eq!((short.lines().len(), short.dropped()), (2_000, 3_000));
+        assert_eq!(short.since(4_998).0, ["4998", "4999"]);
+
+        short.count_dropped(7);
+        assert_eq!(
+            (short.dropped(), short.next()),
+            (3_007, 5_000),
+            "a flood adds to dropped, not to numbers"
+        );
+        assert_eq!(short.since(4_999).0, ["4999"]);
+
+        let one = Lines::with_caps(0, 0);
+        one.push("a");
+        one.push("b");
+        assert_eq!(one.lines(), ["b"]);
+
+        let job = Lines::new();
+        for i in 0..1000 {
+            job.push(&i.to_string());
+        }
+        assert_eq!(job.lines().len(), MAX_JOB_LINES);
+        let clone = job.clone();
+        clone.push("shared");
+        assert_eq!(job.lines().len(), MAX_JOB_LINES);
+        assert_eq!(job.lines().last().map(String::as_str), Some("shared"));
     }
 
     #[test]

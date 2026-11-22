@@ -55,8 +55,12 @@ const RECORDS_FILE: &str = "worktrees.json";
 const RECORDS_VERSION: u32 = 1;
 const SWEPT_FILE: &str = ".swept";
 
-/// The methods of §SC7.2 that are this module's.
-pub const METHODS: [&str; 19] = [
+/// Pull requests `pr.list` returned, kept [`PR_LISTED_MS`] (§X6.1).
+const MAX_LISTED: usize = 256;
+const LISTED_FOR: Duration = Duration::from_millis(PR_LISTED_MS);
+
+/// The methods of §SC7.2 and §X6.3 that are this module's.
+pub const METHODS: [&str; 21] = [
     method::GIT_STATUS,
     method::GIT_PATCH,
     method::GIT_REVIEW,
@@ -76,6 +80,8 @@ pub const METHODS: [&str; 19] = [
     method::PR_READY,
     method::PR_METHODS,
     method::PR_LIST,
+    method::PR_DETAIL,
+    method::PR_DIFF,
 ];
 
 // ---- Who may ask (§SC5.1) ----
@@ -218,6 +224,10 @@ pub fn words(reason: &str) -> &'static str {
         "pr_exists" => "This branch already has a pull request.",
         "not_allowed" => "This repository doesn't allow that way of merging.",
         "unavailable" => "Source control isn't available right now.",
+        "not_listed" => "That pull request isn't one G7 has listed. Open it from the list again.",
+        "too_large" => "This pull request is too large to show here.",
+        "no_pr" => "This branch has no pull request.",
+        "wrong_repo" => "That folder isn't a checkout of that repository.",
         "bad_request" => "That request isn't valid.",
         _ => "It didn't go through.",
     }
@@ -264,12 +274,57 @@ pub fn base_ref(base: &str, push_remote: &str, remotes: &[&str]) -> String {
     if named || push_remote.is_empty() { base.to_owned() } else { format!("{push_remote}/{base}") }
 }
 
-/// The message "Ask <agent> to write it" sends (§SC5.4).
-pub fn ask_text(purpose: Purpose, branch: &str, base: Option<&str>) -> String {
+/// The message "Ask <agent> to write it" sends (§SC5.4); `None` for a
+/// review, whose message is [`review_text`].
+pub fn ask_text(purpose: Purpose, branch: &str, base: Option<&str>) -> Option<String> {
     match purpose {
-        Purpose::Commit => ASK_COMMIT_TEXT.to_owned(),
-        Purpose::Pr => ASK_PR_TEXT.replace("%1", branch).replace("%2", base.unwrap_or(ASK_PR_DEFAULT_BASE)),
+        Purpose::Commit => Some(ASK_COMMIT_TEXT.to_owned()),
+        Purpose::Pr => {
+            Some(ASK_PR_TEXT.replace("%1", branch).replace("%2", base.unwrap_or(ASK_PR_DEFAULT_BASE)))
+        }
+        Purpose::Review => None,
     }
+}
+
+/// The message "Ask <agent> to review it" sends (§X6.4): the number, and
+/// the link the host built from the repository's parts. Nothing else of the
+/// pull request.
+pub fn review_text(number: u32, link: &str) -> String {
+    ASK_REVIEW_TEXT.replace("%1", &number.to_string()).replace("%2", link)
+}
+
+/// A repository as G7 compares it: `owner/name`, or `host/owner/name` off
+/// `github.com`, in lower case (GitHub's names aren't case-sensitive).
+pub fn repo_key(repo: &str) -> String {
+    let lower = repo.to_ascii_lowercase();
+    match lower.strip_prefix("github.com/") {
+        Some(rest) if rest.contains('/') => rest.to_owned(),
+        _ => lower,
+    }
+}
+
+/// A folder's repository as `pr.list` and `pr.detail` name it.
+pub fn repo_of(github: &GitHub) -> String {
+    if github.host.eq_ignore_ascii_case("github.com") {
+        github.repo.clone()
+    } else {
+        format!("{}/{}", github.host.to_ascii_lowercase(), github.repo)
+    }
+}
+
+/// A pull request's page, built from its repository's parts and its
+/// number: never a link a client or GitHub gave.
+pub fn pr_link(repo: &str, number: u32) -> Option<String> {
+    if number == 0 || !scm::gh::repo_ok(repo) {
+        return None;
+    }
+    let parts: Vec<&str> = repo.split('/').collect();
+    let (host, owner, name) = match parts.as_slice() {
+        [owner, name] => ("github.com".to_owned(), *owner, *name),
+        [host, owner, name] => (host.to_ascii_lowercase(), *owner, *name),
+        _ => return None,
+    };
+    Some(format!("https://{host}/{owner}/{name}/pull/{number}"))
 }
 
 /// The notice a job that went through leaves in its thread (§SC5.3).
@@ -445,6 +500,8 @@ pub struct Source {
     /// The poll runs one at a time.
     polling: tokio::sync::Mutex<()>,
     sweeping: std::sync::atomic::AtomicBool,
+    /// The pull requests `pr.list` returned, newest last, and when (§X6.1).
+    listed: Mutex<std::collections::VecDeque<(String, u32, Instant)>>,
 }
 
 impl std::fmt::Debug for Source {
@@ -525,6 +582,29 @@ impl Source {
 
     pub(crate) fn running_jobs(&self) -> usize {
         self.lock_jobs().values().filter(|s| s.running()).count()
+    }
+
+    /// `pr.list` returned these pull requests at `now`: each may be read
+    /// for [`PR_LISTED_MS`]; the newest [`MAX_LISTED`] are kept.
+    pub(crate) fn list(&self, rows: impl IntoIterator<Item = (String, u32)>, now: Instant) {
+        let mut listed = self.listed.lock().unwrap_or_else(PoisonError::into_inner);
+        for (repo, number) in rows {
+            let key = repo_key(&repo);
+            listed.retain(|(r, n, _)| !(*n == number && *r == key));
+            listed.push_back((key, number, now));
+        }
+        let excess = listed.len().saturating_sub(MAX_LISTED);
+        listed.drain(..excess);
+    }
+
+    /// Whether `pr.list` returned `(repo, number)` less than [`PR_LISTED_MS`] before `now`.
+    pub(crate) fn listed(&self, repo: &str, number: u32, now: Instant) -> bool {
+        let key = repo_key(repo);
+        self.listed
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .any(|(r, n, at)| *n == number && *r == key && now.saturating_duration_since(*at) < LISTED_FOR)
     }
 }
 
@@ -1140,6 +1220,14 @@ impl Host {
                 check_may(kind, None, Ask::Read)?;
                 to_value(&self.pr_list(parse(params)?).await?)
             }
+            method::PR_DETAIL => {
+                check_may(kind, None, Ask::Read)?;
+                to_value(&self.pr_detail(parse(params)?).await?)
+            }
+            method::PR_DIFF => {
+                check_may(kind, None, Ask::Read)?;
+                to_value(&self.pr_diff(parse(params)?).await?)
+            }
             _ => Err(err(ErrorCode::BadRequest, UNKNOWN_METHOD)),
         }
     }
@@ -1573,6 +1661,7 @@ impl Host {
             })
             .collect();
         let more = rows.len() >= MAX_PR_ROWS;
+        self.source.list(rows.iter().take(MAX_PR_ROWS).map(|r| (r.repo.clone(), r.number)), Instant::now());
         let prs = rows
             .into_iter()
             .take(MAX_PR_ROWS)
@@ -1845,11 +1934,26 @@ impl Host {
     // ---- "Ask <agent> to write it" (§SC5.4) ----
 
     /// `thread.send { purpose }` made into the message it sends: refused
-    /// unless the thread is idle with nothing queued. The last answer goes.
-    pub(crate) fn ask_params(&self, mut p: ThreadSendParams) -> Result<ThreadSendParams, RpcError> {
-        let Some(purpose) = p.purpose else { return Ok(p) };
+    /// unless the thread is idle with nothing queued. The last answer goes,
+    /// except for a review, which leaves it.
+    pub(crate) async fn ask_params(
+        self: &Arc<Self>,
+        mut p: ThreadSendParams,
+    ) -> Result<ThreadSendParams, RpcError> {
+        let Some(purpose) = p.purpose else {
+            if p.pr.is_some() {
+                return Err(refusal(ErrorCode::BadRequest, "bad_request"));
+            }
+            return Ok(p);
+        };
         if !p.text.is_empty() || !p.images.is_empty() {
             return Err(err(ErrorCode::BadRequest, "Ask without text: G7 sends its own."));
+        }
+        if purpose == Purpose::Review {
+            return self.review_params(p).await;
+        }
+        if p.pr.is_some() {
+            return Err(refusal(ErrorCode::BadRequest, "bad_request"));
         }
         if p.base.as_deref().is_some_and(|b| !name_ok(b, MAX_BRANCH_NAME)) {
             return Err(refusal(ErrorCode::BadRequest, "not_found"));
@@ -1876,13 +1980,264 @@ impl Host {
                 .filter(|rest| !rest.is_empty())
                 .unwrap_or(b)
         });
-        p.text = ask_text(purpose, &branch, base);
+        let Some(text) = ask_text(purpose, &branch, base) else {
+            return Err(refusal(ErrorCode::BadRequest, "bad_request"));
+        };
+        p.text = text;
         let mut reg = self.lock_reg();
         if let Some(entry) = reg.threads.get_mut(&p.thread_id)
             && entry.info.wrote.take().is_some()
         {
             emit_state(self, entry);
         }
+        Ok(p)
+    }
+
+    // ---- Pull request detail and "Ask <agent> to review it" (§X6) ----
+
+    /// Whether `(repo, number)` may be read or named (§X6.1): `thread`'s own
+    /// pull request (any thread's when none is named), as the host last read
+    /// it, or one `pr.list` returned in the last [`PR_LISTED_MS`]. Never a
+    /// client's word alone.
+    fn pr_known(&self, repo: &str, number: u32, thread: Option<&str>) -> bool {
+        let key = repo_key(repo);
+        let own = |k: &Known| {
+            k.pr.is_some_and(|p| p.number == number)
+                && k.status.github.as_ref().is_some_and(|g| repo_key(&repo_of(g)) == key)
+        };
+        let known = self.source.lock_known();
+        let own_pr = match thread {
+            Some(thread) => known.get(thread).is_some_and(own),
+            None => known.values().any(own),
+        };
+        drop(known);
+        own_pr || self.source.listed(repo, number, Instant::now())
+    }
+
+    /// Threads the host has read on `repo`: `(thread, its branch)`.
+    fn threads_on(&self, repo: &str) -> Vec<(String, Option<String>)> {
+        let key = repo_key(repo);
+        self.source
+            .lock_known()
+            .iter()
+            .filter(|(_, k)| k.status.github.as_ref().is_some_and(|g| repo_key(&repo_of(g)) == key))
+            .map(|(id, k)| (id.clone(), k.status.branch.clone()))
+            .collect()
+    }
+
+    /// Where `gh` reads a pull request: `thread`'s folder, else the folder of
+    /// a thread on the repository, else (empty) the home folder.
+    fn pr_cwd(&self, repo: &str, thread: Option<&str>) -> PathBuf {
+        let on = self.threads_on(repo);
+        let reg = self.lock_reg();
+        let folder_of = |id: &str| {
+            let entry = reg.threads.get(id)?;
+            let folder = reg.folders.iter().find(|f| f.id == entry.info.folder_id)?;
+            Some(PathBuf::from(&folder.path))
+        };
+        thread.and_then(folder_of).or_else(|| on.iter().find_map(|(id, _)| folder_of(id))).unwrap_or_default()
+    }
+
+    /// The detail with what the host knows of it: a thread on its repository
+    /// and head branch, and a folder of a thread on its repository.
+    fn place_detail(&self, detail: &mut PrDetail) {
+        let on = self.threads_on(&detail.repo);
+        let reg = self.lock_reg();
+        let listed = |id: &String| reg.threads.contains_key(id);
+        detail.thread_id = on
+            .iter()
+            .filter(|(id, _)| listed(id))
+            .find(|(_, branch)| branch.as_deref() == Some(detail.pr.head.as_str()))
+            .map(|(id, _)| id.clone());
+        detail.folder_id =
+            on.iter().find_map(|(id, _)| reg.threads.get(id).map(|e| e.info.folder_id.clone()));
+    }
+
+    /// `pr.detail` (§X6.3): the thread's branch's pull request, or a listed
+    /// one. GitHub out of reach is `why: network` with the last detail read.
+    async fn pr_detail(self: &Arc<Self>, p: PrDetailParams) -> Result<PrDetailResult, RpcError> {
+        if p.thread_id.as_deref().is_some_and(|t| !is_valid_thread_id(t)) {
+            return Err(no_thread());
+        }
+        let gh = self.gh_status(false).await;
+        let none = |gh: GhState, why: Option<PrWhy>| PrDetailResult { detail: None, gh, why };
+        let (repo, number) = match (p.repo.clone(), p.number, p.thread_id.as_deref()) {
+            (Some(repo), Some(number), thread) => {
+                if number == 0 || !scm::gh::repo_ok(&repo) {
+                    return Err(refusal(ErrorCode::BadRequest, "bad_request"));
+                }
+                if !self.pr_known(&repo, number, thread) {
+                    return Err(refusal(ErrorCode::BadRequest, "not_listed"));
+                }
+                (repo, number)
+            }
+            (None, None, Some(thread)) => {
+                let (spot, status) = self.git_refresh(thread).await?;
+                let why = if status.repo != RepoState::Ok {
+                    Some(PrWhy::NotRepo)
+                } else if status.detached.is_some() || status.branch.is_none() {
+                    Some(PrWhy::Detached)
+                } else if status.github.is_none() {
+                    Some(PrWhy::NotGithub)
+                } else if status.upstream.is_none() {
+                    Some(PrWhy::NoUpstream)
+                } else {
+                    None
+                };
+                let (Some(spot), Some(github), None) = (spot, status.github.clone(), why) else {
+                    return Ok(none(gh, why));
+                };
+                if gh.gh != GhUse::Ok {
+                    return Ok(none(gh, None));
+                }
+                let scm = self.scm()?;
+                let repo = repo_of(&github);
+                match scm.pr_for_branch(&spot, &status, p.refresh).await {
+                    Ok(Some(pr)) => {
+                        self.git_set_pr(thread, Some(&pr));
+                        (repo, pr.number)
+                    }
+                    Ok(None) => {
+                        self.git_set_pr(thread, None);
+                        return Ok(none(gh, Some(PrWhy::NoPr)));
+                    }
+                    Err(e) if matches!(e.reason, Reason::NoGh | Reason::SignedOut | Reason::OldGh) => {
+                        return Ok(none(self.gh_status(false).await, None));
+                    }
+                    Err(_) => {
+                        let cached = status.branch.as_deref().and_then(|b| scm.cached_pr(&spot, b));
+                        let mut detail = cached.and_then(|pr| scm.cached_pr_detail(&repo, pr.number));
+                        if let Some(detail) = detail.as_mut() {
+                            self.place_detail(detail);
+                        }
+                        return Ok(PrDetailResult { detail, gh, why: Some(PrWhy::Network) });
+                    }
+                }
+            }
+            _ => return Err(err(ErrorCode::BadRequest, "Name a thread or a pull request.")),
+        };
+        if gh.gh != GhUse::Ok {
+            return Ok(none(gh, None));
+        }
+        let scm = self.scm()?.clone();
+        let cwd = self.pr_cwd(&repo, p.thread_id.as_deref());
+        match scm.pr_detail(&cwd, &repo, number, p.refresh).await {
+            Ok(mut detail) => {
+                self.place_detail(&mut detail);
+                Ok(PrDetailResult { detail: Some(detail), gh, why: None })
+            }
+            Err(e) if matches!(e.reason, Reason::NoGh | Reason::SignedOut | Reason::OldGh) => {
+                Ok(none(self.gh_status(false).await, None))
+            }
+            Err(e) if e.reason == Reason::NotGithub => Ok(none(gh, Some(PrWhy::NotGithub))),
+            Err(e) if e.reason == Reason::BadRequest => Err(scm_refusal(e)),
+            Err(_) => {
+                let mut detail = scm.cached_pr_detail(&repo, number);
+                if let Some(detail) = detail.as_mut() {
+                    self.place_detail(detail);
+                }
+                Ok(PrDetailResult { detail, gh, why: Some(PrWhy::Network) })
+            }
+        }
+    }
+
+    /// `pr.diff` (§X6.3): a page of one of the detail's files, as the host
+    /// last read the detail.
+    async fn pr_diff(self: &Arc<Self>, p: PrDiffParams) -> Result<GitPatchResult, RpcError> {
+        if p.number == 0 || !scm::gh::repo_ok(&p.repo) || p.path.is_empty() || p.path.len() > MAX_DIFF_PATH {
+            return Err(refusal(ErrorCode::BadRequest, "bad_request"));
+        }
+        if p.thread_id.as_deref().is_some_and(|t| !is_valid_thread_id(t)) {
+            return Err(no_thread());
+        }
+        if !self.pr_known(&p.repo, p.number, p.thread_id.as_deref()) {
+            return Err(refusal(ErrorCode::BadRequest, "not_listed"));
+        }
+        let scm = self.scm()?.clone();
+        let detail = scm
+            .cached_pr_detail(&p.repo, p.number)
+            .filter(|d| d.files.iter().any(|f| f.path == p.path))
+            .ok_or_else(|| refusal(ErrorCode::BadRequest, "not_found"))?;
+        let cwd = self.pr_cwd(&p.repo, p.thread_id.as_deref());
+        let offset = p.offset.unwrap_or(0);
+        match scm.pr_diff(&cwd, &p.repo, p.number, &detail.pr.head_oid, &p.path, offset).await {
+            Ok(patch) => Ok(GitPatchResult {
+                patch: patch.text,
+                next: patch.next,
+                truncated: patch.truncated,
+                binary: patch.binary,
+                names: Vec::new(),
+                more_names: 0,
+            }),
+            Err(e) if e.reason == Reason::Large => Err(refusal(ErrorCode::Unavailable, "too_large")),
+            Err(e) => Err(scm_refusal(e)),
+        }
+    }
+
+    /// `thread.send { purpose: review, pr }` (§X6.4): the thread idle, not
+    /// read-only, its folder on a repository whose pull request `pr` the host
+    /// knows. The message is [`ASK_REVIEW_TEXT`] with the number and a link
+    /// the host builds; `wrote` is left as it is.
+    async fn review_params(self: &Arc<Self>, mut p: ThreadSendParams) -> Result<ThreadSendParams, RpcError> {
+        let number = p.pr.filter(|n| *n > 0).ok_or_else(|| refusal(ErrorCode::BadRequest, "bad_request"))?;
+        if p.base.is_some() {
+            return Err(refusal(ErrorCode::BadRequest, "bad_request"));
+        }
+        let w = self.git_where(&p.thread_id)?;
+        if w.readonly {
+            return Err(read_only());
+        }
+        if w.running || w.queued {
+            return Err(refusal(ErrorCode::Busy, THREAD_BUSY));
+        }
+        let (_, status) = self.git_known(&p.thread_id).await?;
+        let github = status.github.as_ref().ok_or_else(|| refusal(ErrorCode::BadRequest, "not_github"))?;
+        let repo = repo_of(github);
+        if !self.pr_known(&repo, number, Some(&p.thread_id)) {
+            return Err(refusal(ErrorCode::BadRequest, "not_listed"));
+        }
+        let link = pr_link(&repo, number).ok_or_else(|| refusal(ErrorCode::BadRequest, "bad_request"))?;
+        p.text = review_text(number, &link);
+        Ok(p)
+    }
+
+    /// `thread.start { purpose: review, pr, repo }` (§X6.4; G7 Link and the
+    /// launcher, never for a phone): a listed pull request, a folder that is
+    /// a checkout of its repository, no worktree; the prompt is
+    /// [`ASK_REVIEW_TEXT`]. A start without `purpose` is as it came.
+    pub(crate) async fn review_start(
+        self: &Arc<Self>,
+        kind: ClientKind,
+        mut p: ThreadStartParams,
+    ) -> Result<ThreadStartParams, RpcError> {
+        let Some(purpose) = p.purpose else {
+            if p.pr.is_some() || p.repo.is_some() {
+                return Err(refusal(ErrorCode::BadRequest, "bad_request"));
+            }
+            return Ok(p);
+        };
+        if p.origin.kind == OriginKind::Phone || !matches!(kind, ClientKind::Link | ClientKind::Launcher) {
+            return Err(err(ErrorCode::Denied, DONE_ON_LINK));
+        }
+        if purpose != Purpose::Review || p.worktree.is_some() || !p.prompt.is_empty() || !p.images.is_empty()
+        {
+            return Err(refusal(ErrorCode::BadRequest, "bad_request"));
+        }
+        let (Some(number), Some(repo)) = (p.pr.filter(|n| *n > 0), p.repo.clone()) else {
+            return Err(refusal(ErrorCode::BadRequest, "bad_request"));
+        };
+        let link = pr_link(&repo, number).ok_or_else(|| refusal(ErrorCode::BadRequest, "bad_request"))?;
+        if !self.pr_known(&repo, number, None) {
+            return Err(refusal(ErrorCode::BadRequest, "not_listed"));
+        }
+        let status = self.folder_status(&p.folder_id).await?;
+        if !status.github.as_ref().is_some_and(|g| repo_key(&repo_of(g)) == repo_key(&repo)) {
+            let mut wrong = refusal(ErrorCode::BadRequest, "wrong_repo");
+            wrong.message =
+                clean_cut(&format!("That folder isn't a checkout of {repo}."), MAX_RPC_ERROR_MESSAGE).0;
+            return Err(wrong);
+        }
+        p.prompt = review_text(number, &link);
         Ok(p)
     }
 
@@ -2109,15 +2464,61 @@ mod tests {
     }
 
     #[test]
-    fn the_ask_is_one_of_two_fixed_texts() {
-        assert_eq!(ask_text(Purpose::Commit, "x", None), ASK_COMMIT_TEXT);
+    fn the_ask_is_one_of_three_fixed_texts() {
+        assert_eq!(ask_text(Purpose::Commit, "x", None).as_deref(), Some(ASK_COMMIT_TEXT));
         assert_eq!(
-            ask_text(Purpose::Pr, "feat/sync", None),
-            "Write a title and description for a pull request from feat/sync into the default branch. \
-             Reply with only that: the title on the first line, a blank line, then the description in \
-             Markdown. Don't open the pull request."
+            ask_text(Purpose::Pr, "feat/sync", None).as_deref(),
+            Some(
+                "Write a title and description for a pull request from feat/sync into the default branch. \
+                 Reply with only that: the title on the first line, a blank line, then the description in \
+                 Markdown. Don't open the pull request."
+            )
         );
-        assert!(ask_text(Purpose::Pr, "a", Some("main")).contains("from a into main."));
+        assert!(ask_text(Purpose::Pr, "a", Some("main")).unwrap().contains("from a into main."));
+        assert_eq!(ask_text(Purpose::Review, "a", None), None, "a review names its pull request");
+        let review = review_text(212, "https://github.com/o/n/pull/212");
+        assert!(review.starts_with("Review pull request #212 (https://github.com/o/n/pull/212). Read it with `gh pr view 212` and `gh pr diff 212`"));
+        assert!(!review.contains('%'));
+    }
+
+    #[test]
+    fn a_listed_pull_request_may_be_read_for_ten_minutes_and_256_are_kept() {
+        let source = Source::default();
+        let t0 = Instant::now();
+        source.list([("Fictional/Repo".to_owned(), 212), ("o/n".to_owned(), 1)], t0);
+        assert!(source.listed("fictional/repo", 212, t0), "names aren't case-sensitive");
+        assert!(source.listed("github.com/fictional/repo", 212, t0));
+        assert!(!source.listed("fictional/repo", 213, t0) && !source.listed("fictional/other", 212, t0));
+        assert!(source.listed("o/n", 1, t0 + Duration::from_secs(9 * 60)));
+        assert!(!source.listed("o/n", 1, t0 + Duration::from_secs(11 * 60)), "listed 11 minutes ago");
+        // Listed again: its time starts over.
+        source.list([("o/n".to_owned(), 1)], t0 + Duration::from_secs(10 * 60));
+        assert!(source.listed("o/n", 1, t0 + Duration::from_secs(11 * 60)));
+        source.list((0..MAX_LISTED as u32).map(|n| ("a/b".to_owned(), n + 1000)), t0);
+        assert!(!source.listed("fictional/repo", 212, t0), "the oldest went");
+        assert!(source.listed("a/b", 1000, t0));
+    }
+
+    #[test]
+    fn the_review_link_is_built_from_the_repositorys_parts() {
+        assert_eq!(
+            pr_link("fictional/repo", 212).as_deref(),
+            Some("https://github.com/fictional/repo/pull/212")
+        );
+        assert_eq!(
+            pr_link("GHE.example.test/o/r", 7).as_deref(),
+            Some("https://ghe.example.test/o/r/pull/7")
+        );
+        for bad in ["-x/y", "a/b/c/d", "../x", "a", "a/b c", "a/b?x=1", "a/b#c"] {
+            assert_eq!(pr_link(bad, 1), None, "{bad}");
+        }
+        assert_eq!(pr_link("o/r", 0), None);
+        assert_eq!(repo_key("github.com/O/R"), "o/r");
+        assert_eq!(repo_key("Ghe.Example.test/O/R"), "ghe.example.test/o/r");
+        let gh = GitHub { repo: "o/r".into(), host: "github.com".into() };
+        assert_eq!(repo_of(&gh), "o/r");
+        let ghe = GitHub { repo: "o/r".into(), host: "GHE.example.test".into() };
+        assert_eq!(repo_of(&ghe), "ghe.example.test/o/r");
     }
 
     fn done(kind: JobKind, by: Origin, result: JobResult) -> Job {

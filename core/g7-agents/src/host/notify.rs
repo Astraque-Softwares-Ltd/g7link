@@ -71,6 +71,13 @@ pub enum Note {
         device: String,
         did: GitDid,
     },
+    /// A phone ran one of the folder's scripts in a thread (phase 6, §X3.4).
+    PhoneScript {
+        thread: ThreadInfo,
+        device: String,
+        /// The script's name.
+        script: String,
+    },
 }
 
 /// What a phone did in a thread's folder.
@@ -95,6 +102,7 @@ impl Note {
             Note::ApprovalGone { thread_id, .. } | Note::Removed { thread_id } => thread_id.clone(),
             Note::LimitReset { agent, .. } => format!("limit:{}", agent.as_str()),
             Note::PhoneGit { thread, .. } => format!("git:{}", thread.id),
+            Note::PhoneScript { thread, .. } => format!("script:{}", thread.id),
         }
     }
 
@@ -102,7 +110,7 @@ impl Note {
     fn opens(&self) -> Option<String> {
         match self {
             Note::LimitReset { thread, .. } => thread.as_ref().map(|t| t.id.clone()),
-            Note::PhoneGit { thread, .. } => Some(thread.id.clone()),
+            Note::PhoneGit { thread, .. } | Note::PhoneScript { thread, .. } => Some(thread.id.clone()),
             _ => Some(self.key()),
         }
     }
@@ -261,6 +269,18 @@ pub fn render(note: &Note) -> Option<Rendered> {
                 token: None,
             })
         }
+        Note::PhoneScript { thread, device, script } => Some(Rendered {
+            summary: format!(
+                "{} ran \u{201c}{}\u{201d} in {}",
+                first_line(device, MAX_BODY_LINE),
+                first_line(script, MAX_BODY_LINE),
+                thread.folder_label
+            ),
+            body: first_line(&thread.title, MAX_BODY_LINE),
+            actions: vec![("default", "Open")],
+            critical: false,
+            token: None,
+        }),
         Note::ApprovalGone { .. } | Note::Removed { .. } => None,
     }
 }
@@ -504,6 +524,7 @@ mod tests {
             changed: None,
             wrote: None,
             ports: Vec::new(),
+            runs: Vec::new(),
         }
     }
 
@@ -577,6 +598,22 @@ mod tests {
         let r = render(&Note::PhoneStarted { thread: thread(Origin::phone("p", "Pixel")), continued: true })
             .unwrap();
         assert_eq!(r.body, "continued a session in g7linux\nFix the build");
+    }
+
+    #[test]
+    fn a_phones_script_is_told_on_the_pc() {
+        let note = Note::PhoneScript {
+            thread: thread(Origin::launcher()),
+            device: "Pixel 8 Pro".into(),
+            script: "dev".into(),
+        };
+        let r = render(&note).unwrap();
+        assert_eq!(r.summary, "Pixel 8 Pro ran \u{201c}dev\u{201d} in g7linux");
+        assert_eq!((r.body.as_str(), r.critical), ("Fix the build", false));
+        assert_eq!(r.actions, [("default", "Open")]);
+        let id = thread(Origin::launcher()).id;
+        assert_eq!(note.opens(), Some(id.clone()), "Open shows the thread");
+        assert_eq!(note.key(), format!("script:{id}"));
     }
 
     #[test]

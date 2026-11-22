@@ -1,0 +1,124 @@
+{
+  "number": 212,
+  "title": "Read the config once",
+  "state": "OPEN",
+  "isDraft": false,
+  "url": "https://github.com/fictional/repo/pull/212",
+  "reviewDecision": "CHANGES_REQUESTED",
+  "mergeable": "MERGEABLE",
+  "mergeStateStatus": "BLOCKED",
+  "baseRefName": "main",
+  "headRefName": "feat/config",
+  "headRefOid": "0123456789abcdef0123456789abcdef01234567",
+  "updatedAt": "2026-11-20T09:30:00Z",
+  "statusCheckRollup": [
+    {
+      "__typename": "CheckRun",
+      "name": "test",
+      "status": "COMPLETED",
+      "conclusion": "SUCCESS",
+      "workflowName": "CI",
+      "detailsUrl": "https://github.com/fictional/repo/actions/runs/1"
+    }
+  ],
+  "author": {
+    "is_bot": false,
+    "login": "fictional-author"
+  },
+  "body": "Reads `config.toml` once.\r\n\r\n- [x] tests\r\n\r\n<img src=\"https://example.test/x.png\">\r\n",
+  "additions": 120,
+  "deletions": 30,
+  "changedFiles": 3,
+  "files": [
+    {
+      "path": "src/config.rs",
+      "additions": 100,
+      "deletions": 20,
+      "changeType": "MODIFIED"
+    },
+    {
+      "path": "docs/config.md",
+      "additions": 20,
+      "deletions": 0,
+      "changeType": "ADDED"
+    },
+    {
+      "path": "src/old.rs",
+      "additions": 0,
+      "deletions": 10,
+      "changeType": "DELETED"
+    }
+  ],
+  "comments": [
+    {
+      "author": {
+        "login": "fictional-reviewer"
+      },
+      "authorAssociation": "MEMBER",
+      "body": "Looks close.",
+      "createdAt": "2026-11-20T10:00:00Z",
+      "url": "https://github.com/fictional/repo/pull/212#issuecomment-1",
+      "token": "gho_FICTIONAL_IN_A_COMMENT"
+    },
+    {
+      "author": {
+        "login": "fictional-author"
+      },
+      "body": "Fixed in the next push.",
+      "createdAt": "2026-11-20T12:00:00Z",
+      "url": "https://phish.example.test/fictional/repo/pull/212"
+    }
+  ],
+  "reviews": [
+    {
+      "author": {
+        "login": "fictional-reviewer"
+      },
+      "body": "Please split the parser.",
+      "state": "CHANGES_REQUESTED",
+      "submittedAt": "2026-11-20T11:00:00Z"
+    },
+    {
+      "author": {
+        "login": "fictional-bot"
+      },
+      "body": "",
+      "state": "COMMENTED",
+      "submittedAt": "2026-11-20T11:30:00Z"
+    },
+    {
+      "author": {
+        "login": "fictional-second"
+      },
+      "body": "",
+      "state": "APPROVED",
+      "submittedAt": "2026-11-20T13:00:00Z"
+    },
+    {
+      "author": {
+        "login": "fictional-third"
+      },
+      "body": "Superseded.",
+      "state": "DISMISSED",
+      "submittedAt": "2026-11-20T09:45:00Z"
+    },
+    {
+      "author": {
+        "login": "fictional-fourth"
+      },
+      "body": "One note inline.",
+      "state": "COMMENTED",
+      "submittedAt": "2026-11-20T14:00:00Z"
+    },
+    {
+      "author": {
+        "login": "fictional-fifth"
+      },
+      "body": "Not sent yet.",
+      "state": "PENDING",
+      "submittedAt": "2026-11-20T15:00:00Z"
+    }
+  ],
+  "token": "gho_FICTIONAL_TOP_LEVEL",
+  "unknownKey": "fictional-unknown-value"
+}

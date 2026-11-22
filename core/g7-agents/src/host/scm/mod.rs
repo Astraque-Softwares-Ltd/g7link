@@ -35,7 +35,7 @@ use crate::host::git::Git;
 
 pub use branch::{Branches, SwitchTo, new_name_ok, worktree_branch_name};
 pub use commit::{Committed, Picks, Review, ReviewFile};
-pub use gh::{Method, Methods, NewPr, Show};
+pub use gh::{Method, Methods, NewPr, Show, split_diff};
 pub use patch::Patch;
 pub use push::Pushed;
 pub use run::{Lines, MAX_JOB_BYTES, MAX_JOB_LINES, Stop};

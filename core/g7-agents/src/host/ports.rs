@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: MPL-2.0
 //! Dev servers on the phone (phase 5, §V9.2): the TCP ports a thread's agent,
-//! and the processes it started, listen on. While the agent's process runs
-//! the host looks every 5 s for a minute after a command starts, else every
-//! 30 s; what it finds rides `thread.state` as `ThreadInfo.ports`, oldest
-//! first, at most [`MAX_PORTS`].
+//! and the processes it started, listen on; and from phase 6 (§X3.5) its
+//! script runs' shells and theirs. While one of those runs the host looks
+//! every 5 s for a minute after a command or run starts, else every 30 s;
+//! what it finds rides `thread.state` as `ThreadInfo.ports`, oldest first,
+//! at most [`MAX_PORTS`], until the thread has no root left.
 //!
 //! Only `/proc` is read: each of this user's processes' `stat` (its parent
 //! and start time), the `fd` links of at most 64 processes in the agent's
@@ -311,14 +312,47 @@ pub fn merge(old: &[Port], found: &Found, now_ms: u64) -> Vec<Port> {
     ports
 }
 
-/// One thread whose agent's process runs.
-#[derive(Debug, Clone, Copy)]
+/// Whose process a root is: the thread's agent (its generation), or one of
+/// its script runs' shells (phase 6, §X3.5).
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Owner {
+    Agent(u64),
+    Run(String),
+}
+
+/// One thread whose agent's process, or a run's shell, runs.
+#[derive(Debug, Clone)]
 struct Track {
-    generation: u64,
-    root: Root,
+    roots: BTreeMap<Owner, Root>,
+    /// What each root's last look found.
+    found: BTreeMap<Owner, Found>,
     /// Looks are [`FAST_EVERY`] until then.
     fast_until: Option<Instant>,
     next: Instant,
+}
+
+impl Track {
+    fn new(now: Instant) -> Track {
+        Track { roots: BTreeMap::new(), found: BTreeMap::new(), fast_until: None, next: now + SLOW_EVERY }
+    }
+
+    /// The ports every root's last look found: a port two roots listen on
+    /// is the LAN's when either's is.
+    fn union(&self) -> Found {
+        let mut all = Found::new();
+        for (&port, &reach) in self.found.values().flatten() {
+            let kept = all.entry(port).or_insert(reach);
+            if reach == Reach::Lan {
+                *kept = Reach::Lan;
+            }
+        }
+        all
+    }
+
+    fn fast(&mut self, now: Instant) {
+        self.fast_until = Some(now + FAST_FOR);
+        self.next = self.next.min(now);
+    }
 }
 
 /// The threads looked at, and when each is next.
@@ -329,38 +363,67 @@ pub struct Watch {
 
 impl Watch {
     /// `thread`'s agent process `generation` started as `root`: looked at
-    /// every [`SLOW_EVERY`] from now.
+    /// every [`SLOW_EVERY`] from now, unless the thread is looked at already.
+    /// An older process of the agent is replaced; what it found stands until
+    /// this one's first look.
     pub fn started(&mut self, thread: &str, generation: u64, root: Root, now: Instant) {
-        let track = Track { generation, root, fast_until: None, next: now + SLOW_EVERY };
-        self.tracks.insert(thread.to_owned(), track);
+        let track = self.tracks.entry(thread.to_owned()).or_insert_with(|| Track::new(now));
+        let older: Vec<Owner> =
+            track.roots.keys().filter(|o| matches!(o, Owner::Agent(_))).cloned().collect();
+        let mut kept = None;
+        for owner in older {
+            track.roots.remove(&owner);
+            kept = track.found.remove(&owner).or(kept);
+        }
+        track.roots.insert(Owner::Agent(generation), root);
+        if let Some(found) = kept {
+            track.found.insert(Owner::Agent(generation), found);
+        }
+    }
+
+    /// A run's shell started as `root` in `thread`: as a command starting,
+    /// looked at on the next tick, then every [`FAST_EVERY`] for [`FAST_FOR`].
+    pub fn run_started(&mut self, thread: &str, run: &str, root: Root, now: Instant) {
+        let track = self.tracks.entry(thread.to_owned()).or_insert_with(|| Track::new(now));
+        track.roots.insert(Owner::Run(run.to_owned()), root);
+        track.fast(now);
     }
 
     /// A command started in `thread`: looked at on the next tick, then every
     /// [`FAST_EVERY`] for [`FAST_FOR`].
     pub fn command(&mut self, thread: &str, now: Instant) {
         if let Some(track) = self.tracks.get_mut(thread) {
-            track.fast_until = Some(now + FAST_FOR);
-            track.next = track.next.min(now);
+            track.fast(now);
         }
     }
 
-    /// `thread`'s process `generation` is gone: no more looks. Whether it was looked at.
-    pub fn ended(&mut self, thread: &str, generation: u64) -> bool {
-        let ours = self.tracks.get(thread).is_some_and(|t| t.generation == generation);
-        if ours {
+    /// `owner`'s root in `thread` is gone: no more looks at it, and what it
+    /// found goes. Whether it was looked at.
+    pub fn gone(&mut self, thread: &str, owner: &Owner) -> bool {
+        let Some(track) = self.tracks.get_mut(thread) else { return false };
+        let ours = track.roots.remove(owner).is_some();
+        track.found.remove(owner);
+        if track.roots.is_empty() {
             self.tracks.remove(thread);
         }
         ours
     }
 
-    /// A process of `thread` newer than `generation` is looked at.
-    pub fn newer(&self, thread: &str, generation: u64) -> bool {
-        self.tracks.get(thread).is_some_and(|t| t.generation > generation)
+    /// `thread`'s agent process `generation` is gone. Whether it was looked at.
+    pub fn ended(&mut self, thread: &str, generation: u64) -> bool {
+        self.gone(thread, &Owner::Agent(generation))
     }
 
-    /// The threads due a look at `now`, each with its process; the next look
+    /// A process of `thread`'s agent newer than `generation` is looked at.
+    pub fn newer(&self, thread: &str, generation: u64) -> bool {
+        self.tracks
+            .get(thread)
+            .is_some_and(|t| t.roots.keys().any(|o| matches!(o, Owner::Agent(g) if *g > generation)))
+    }
+
+    /// The threads due a look at `now`, each with its roots; the next look
     /// of each is set.
-    pub fn due(&mut self, now: Instant) -> Vec<(String, u64, Root)> {
+    pub fn due(&mut self, now: Instant) -> Vec<(String, Vec<(Owner, Root)>)> {
         let mut out = Vec::new();
         for (thread, track) in &mut self.tracks {
             if now < track.next {
@@ -368,9 +431,34 @@ impl Watch {
             }
             let fast = track.fast_until.is_some_and(|until| now < until);
             track.next = now + if fast { FAST_EVERY } else { SLOW_EVERY };
-            out.push((thread.clone(), track.generation, track.root));
+            out.push((thread.clone(), track.roots.iter().map(|(o, r)| (o.clone(), *r)).collect()));
         }
         out
+    }
+
+    /// What a look at `thread`'s roots found: kept per root, a root found
+    /// gone (`None`) dropped. The ports of every root left; `None` when the
+    /// thread has none left.
+    pub fn found(&mut self, thread: &str, looks: Vec<(Owner, Option<Found>)>) -> Option<Found> {
+        for (owner, found) in looks {
+            match found {
+                Some(found) => {
+                    if let Some(track) = self.tracks.get_mut(thread).filter(|t| t.roots.contains_key(&owner))
+                    {
+                        track.found.insert(owner, found);
+                    }
+                }
+                None => {
+                    self.gone(thread, &owner);
+                }
+            }
+        }
+        self.ports(thread)
+    }
+
+    /// The ports of `thread`'s roots as last looked at; `None` when it has none.
+    pub fn ports(&self, thread: &str) -> Option<Found> {
+        self.tracks.get(thread).map(Track::union)
     }
 
     /// Whether `thread` is looked at (tests).
@@ -392,6 +480,25 @@ impl Host {
         self.lock_ports().started(thread_id, generation, root, Instant::now());
     }
 
+    /// A run's shell started as `pid` in `thread_id`: its ports join the
+    /// thread's while it runs. Call before the shell can be reaped.
+    pub(crate) fn ports_run_started(&self, thread_id: &str, run: &str, pid: u32) {
+        let Some(root) = Root::read(&self.config.proc_root, pid) else { return };
+        self.lock_ports().run_started(thread_id, run, root, Instant::now());
+    }
+
+    /// A run ended: its shell's ports leave the thread's.
+    pub(crate) fn ports_run_ended(&self, thread_id: &str, run: &str) {
+        let mut reg = self.lock_reg();
+        let Some(entry) = reg.threads.get_mut(thread_id) else {
+            self.lock_ports().gone(thread_id, &Owner::Run(run.to_owned()));
+            return;
+        };
+        if self.ports_drop(entry, &Owner::Run(run.to_owned())) {
+            self.hub.broadcast(&Event::ThreadState(ThreadResult { thread: entry.info.clone() }));
+        }
+    }
+
     /// The ports' tick: looks at the threads due, in one blocking pass.
     pub(crate) async fn ports_tick(self: &Arc<Self>) {
         let due = self.lock_ports().due(Instant::now());
@@ -399,48 +506,80 @@ impl Host {
             return;
         }
         let look = Look::new(self.config.proc_root.clone());
-        let roots: Vec<Root> = due.iter().map(|(_, _, root)| *root).collect();
+        let roots: Vec<Root> =
+            due.iter().flat_map(|(_, roots)| roots.iter().map(|(_, root)| *root)).collect();
         let Ok(found) = tokio::task::spawn_blocking(move || scan(&look, &roots)).await else { return };
-        for ((thread_id, generation, _), found) in due.into_iter().zip(found) {
-            self.ports_found(&thread_id, generation, found);
+        let mut found = found.into_iter();
+        for (thread_id, roots) in due {
+            let looks = roots.into_iter().map(|(owner, _)| (owner, found.next().flatten())).collect();
+            self.ports_found(&thread_id, looks);
         }
     }
 
-    /// What a look at `thread_id`'s process `generation` found: its ports
-    /// change, and `thread.state` says so. `None`: the process is gone.
-    pub(crate) fn ports_found(&self, thread_id: &str, generation: u64, found: Option<Found>) {
+    /// What a look at `thread_id`'s roots found: its ports change, and
+    /// `thread.state` says so. `None` for a root: its process is gone. A
+    /// look at an agent's process that isn't the thread's current one counts
+    /// as gone.
+    pub(crate) fn ports_found(&self, thread_id: &str, looks: Vec<(Owner, Option<Found>)>) {
         let mut reg = self.lock_reg();
         let Some(entry) = reg.threads.get_mut(thread_id) else {
-            self.lock_ports().ended(thread_id, generation);
+            let mut watch = self.lock_ports();
+            for (owner, _) in looks {
+                watch.gone(thread_id, &owner);
+            }
             return;
         };
-        let current = entry.session.as_ref().is_some_and(|s| s.generation == generation);
-        match found {
-            Some(found) if current => {
-                let ports = merge(&entry.info.ports, &found, now_ms());
-                if entry.info.ports != ports {
-                    entry.info.ports = ports;
-                    self.hub.broadcast(&Event::ThreadState(ThreadResult { thread: entry.info.clone() }));
-                }
-            }
-            // Gone, let go (the thread's session closed) or replaced.
-            _ => self.ports_ended(entry, generation),
+        let current = entry.session.as_ref().map(|s| s.generation);
+        let looks = looks
+            .into_iter()
+            .map(|(owner, found)| match owner {
+                Owner::Agent(g) if current != Some(g) => (owner, None),
+                _ => (owner, found),
+            })
+            .collect();
+        let union = self.lock_ports().found(thread_id, looks);
+        let ports = match union {
+            Some(union) => merge(&entry.info.ports, &union, now_ms()),
+            None => Vec::new(),
+        };
+        if entry.info.ports != ports {
+            entry.info.ports = ports;
+            self.hub.broadcast(&Event::ThreadState(ThreadResult { thread: entry.info.clone() }));
         }
     }
 
     /// `entry`'s agent process `generation` is gone or was let go: no more
     /// looks at it, and its ports go, unless a newer process of the thread
-    /// is looked at (its own looks keep them).
+    /// is looked at (its own looks keep them). A run's ports stay.
     pub(crate) fn ports_ended(&self, entry: &mut Entry, generation: u64) {
-        let newer = {
-            let mut watch = self.lock_ports();
-            watch.ended(&entry.info.id, generation);
-            watch.newer(&entry.info.id, generation)
-        };
-        if !newer && !entry.info.ports.is_empty() {
-            entry.info.ports.clear();
+        if self.ports_drop(entry, &Owner::Agent(generation)) {
             self.hub.broadcast(&Event::ThreadState(ThreadResult { thread: entry.info.clone() }));
         }
+    }
+
+    /// `owner`'s root of `entry` is gone: its ports leave the thread's,
+    /// which empty when no root is left. Whether they changed. Nothing
+    /// changes while a newer process of the agent is looked at.
+    pub(crate) fn ports_drop(&self, entry: &mut Entry, owner: &Owner) -> bool {
+        let ports = {
+            let mut watch = self.lock_ports();
+            watch.gone(&entry.info.id, owner);
+            if let Owner::Agent(generation) = owner
+                && watch.newer(&entry.info.id, *generation)
+            {
+                return false;
+            }
+            watch.ports(&entry.info.id)
+        };
+        let ports = match ports {
+            Some(left) => merge(&entry.info.ports, &left, now_ms()),
+            None => Vec::new(),
+        };
+        if entry.info.ports == ports {
+            return false;
+        }
+        entry.info.ports = ports;
+        true
     }
 }
 
@@ -758,7 +897,7 @@ pub(crate) mod tests {
         assert!(watch.due(s(100)).is_empty(), "nothing started");
         watch.started(&thread, 7, agent(), t0);
         assert!(watch.due(s(29)).is_empty());
-        assert_eq!(watch.due(s(30)), [(thread.clone(), 7, agent())]);
+        assert_eq!(watch.due(s(30)), [(thread.clone(), vec![(Owner::Agent(7), agent())])]);
         assert!(watch.due(s(31)).is_empty());
         watch.command(&thread, s(31));
         assert_eq!(watch.due(s(31)).len(), 1, "at once");
@@ -774,6 +913,45 @@ pub(crate) mod tests {
         assert!(watch.ended(&thread, 7));
         assert!(watch.due(s(1000)).is_empty());
         assert!(!watch.ended(&thread, 7));
+    }
+
+    #[test]
+    fn a_runs_shell_is_a_second_root_looked_at_fast() {
+        let t0 = Instant::now();
+        let s = |n: u64| t0 + Duration::from_secs(n);
+        let mut watch = Watch::default();
+        let thread = "a".repeat(32);
+        let shell = Root { pid: 200, start_ticks: START };
+        watch.started(&thread, 7, agent(), t0);
+        watch.run_started(&thread, "r1", shell, s(1));
+        let due = watch.due(s(1));
+        assert_eq!(
+            due,
+            [(thread.clone(), vec![(Owner::Agent(7), agent()), (Owner::Run("r1".into()), shell)])]
+        );
+        assert_eq!(watch.due(s(6)).len(), 1, "fast for a minute");
+        // Each root keeps what it found; the thread's ports are both's, the LAN winning.
+        let union = watch.found(
+            &thread,
+            vec![
+                (Owner::Agent(7), Some(Found::from([(3000, Reach::Pc), (8080, Reach::Pc)]))),
+                (Owner::Run("r1".into()), Some(Found::from([(3000, Reach::Lan), (5173, Reach::Pc)]))),
+            ],
+        );
+        assert_eq!(union, Some(Found::from([(3000, Reach::Lan), (5173, Reach::Pc), (8080, Reach::Pc)])));
+        // The agent's process ends: the run's ports stay, and so do the looks.
+        assert!(watch.ended(&thread, 7));
+        assert_eq!(watch.ports(&thread), Some(Found::from([(3000, Reach::Lan), (5173, Reach::Pc)])));
+        assert!(watch.watches(&thread));
+        // A look that finds the shell gone drops it; then nothing is left.
+        assert_eq!(watch.found(&thread, vec![(Owner::Run("r1".into()), None)]), None);
+        assert!(!watch.watches(&thread));
+        // A newer agent takes over what the older one found until its own look.
+        watch.started(&thread, 8, agent(), s(2));
+        watch.found(&thread, vec![(Owner::Agent(8), Some(Found::from([(4000, Reach::Pc)])))]);
+        watch.started(&thread, 9, agent(), s(3));
+        assert_eq!(watch.ports(&thread), Some(Found::from([(4000, Reach::Pc)])));
+        assert!(!watch.ended(&thread, 8) && watch.newer(&thread, 8));
     }
 
     #[test]
@@ -836,17 +1014,26 @@ pub(crate) mod tests {
         assert_eq!(&host.test_state(&thread_id).ports, ports);
 
         // Nothing changed: no state. The socket closed: the port goes.
-        host.ports_found(&thread_id, generation, Some(Found::from([(5173, Reach::Lan)])));
+        host.ports_found(
+            &thread_id,
+            vec![(Owner::Agent(generation), Some(Found::from([(5173, Reach::Lan)])))],
+        );
         assert!(port_states(host.hub.test_lines(client), &thread_id).is_empty());
-        host.ports_found(&thread_id, generation, Some(Found::new()));
+        host.ports_found(&thread_id, vec![(Owner::Agent(generation), Some(Found::new()))]);
         assert_eq!(port_states(host.hub.test_lines(client), &thread_id), [Vec::<Port>::new()]);
 
         // A look from an earlier process changes nothing and stops.
-        host.ports_found(&thread_id, generation - 1, Some(Found::from([(4000, Reach::Pc)])));
+        host.ports_found(
+            &thread_id,
+            vec![(Owner::Agent(generation - 1), Some(Found::from([(4000, Reach::Pc)])))],
+        );
         assert!(host.test_state(&thread_id).ports.is_empty());
 
         // The process ends: the ports go with it, and so do the looks.
-        host.ports_found(&thread_id, generation, Some(Found::from([(8080, Reach::Pc)])));
+        host.ports_found(
+            &thread_id,
+            vec![(Owner::Agent(generation), Some(Found::from([(8080, Reach::Pc)])))],
+        );
         assert_eq!(port_states(host.hub.test_lines(client), &thread_id).len(), 1);
         host.on_agent_event(
             &thread_id,
@@ -861,7 +1048,10 @@ pub(crate) mod tests {
         // at its next look, whichever is first.
         let (idle, idle_generation, _cmds) = host.test_thread(AgentId::Claude);
         host.ports_started(&idle, idle_generation, Some(100));
-        host.ports_found(&idle, idle_generation, Some(Found::from([(3000, Reach::Lan)])));
+        host.ports_found(
+            &idle,
+            vec![(Owner::Agent(idle_generation), Some(Found::from([(3000, Reach::Lan)])))],
+        );
         assert_eq!(port_states(host.hub.test_lines(client), &idle).len(), 1);
         host.test_entry(&idle, |entry| entry.close_session(&mut std::collections::HashMap::new()));
         host.on_agent_event(
@@ -873,10 +1063,54 @@ pub(crate) mod tests {
         assert!(!host.lock_ports().watches(&idle));
         let (idle, idle_generation, _cmds) = host.test_thread(AgentId::Codex);
         host.ports_started(&idle, idle_generation, Some(100));
-        host.ports_found(&idle, idle_generation, Some(Found::from([(3000, Reach::Lan)])));
+        host.ports_found(
+            &idle,
+            vec![(Owner::Agent(idle_generation), Some(Found::from([(3000, Reach::Lan)])))],
+        );
         host.test_entry(&idle, |entry| entry.close_session(&mut std::collections::HashMap::new()));
-        host.ports_found(&idle, idle_generation, Some(Found::from([(3000, Reach::Lan)])));
+        host.ports_found(
+            &idle,
+            vec![(Owner::Agent(idle_generation), Some(Found::from([(3000, Reach::Lan)])))],
+        );
         assert_eq!(port_states(host.hub.test_lines(client), &idle).last(), Some(&Vec::new()));
         assert!(!host.lock_ports().watches(&idle));
+    }
+
+    #[tokio::test]
+    async fn a_runs_port_joins_the_threads_outlives_the_agent_and_goes_with_the_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = crate::host::test_host(dir.path(), APPROVAL_LIFETIME_MS);
+        let client = host.hub.test_subscriber(crate::host::Caps::default());
+        let (thread_id, generation, _cmds) = host.test_thread(AgentId::Claude);
+        let fake = FakeProc::at(&host.config.proc_root, crate::client::euid());
+        fake.process(100, 1, START);
+        fake.socket(100, 3, 10);
+        fake.listen("127.0.0.1", 8080, 10);
+        // The run's shell, and the dev server it started.
+        fake.process(200, 1, START);
+        fake.process(201, 200, START + 1);
+        fake.socket(201, 4, 20);
+        fake.listen("0.0.0.0", 5173, 20);
+
+        host.ports_started(&thread_id, generation, Some(100));
+        host.ports_run_started(&thread_id, "0123456789abcdef", 200);
+        host.ports_tick().await;
+        let states = port_states(host.hub.test_lines(client), &thread_id);
+        let ports: Vec<(u16, Reach)> = states.last().unwrap().iter().map(|p| (p.port, p.reach)).collect();
+        assert_eq!(ports, [(5173, Reach::Lan), (8080, Reach::Pc)]);
+
+        // The agent's process ends: the run's port stays.
+        host.on_agent_event(
+            &thread_id,
+            generation,
+            crate::host::agents::AgentEvent::Exited { code: Some(0) },
+        );
+        assert_eq!(host.test_state(&thread_id).ports.iter().map(|p| p.port).collect::<Vec<_>>(), [5173]);
+        assert!(host.lock_ports().watches(&thread_id));
+        // The run ends: the port goes, and so do the looks.
+        host.ports_run_ended(&thread_id, "0123456789abcdef");
+        assert!(host.test_state(&thread_id).ports.is_empty());
+        assert_eq!(port_states(host.hub.test_lines(client), &thread_id).last(), Some(&Vec::new()));
+        assert!(!host.lock_ports().watches(&thread_id));
     }
 }
