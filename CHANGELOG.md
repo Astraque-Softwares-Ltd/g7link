@@ -4,7 +4,7 @@ All notable changes to G7 Link. Versions follow
 [semantic versioning](https://semver.org); before 1.0, a minor version may
 change things that need a step from you, and its notes say so.
 
-## 0.1.25 (unreleased)
+## 0.1.25 (2026-11-22)
 
 Run your own commands from a thread, read a pull request with its
 changes and comments, and see when the phone reaches the PC over
