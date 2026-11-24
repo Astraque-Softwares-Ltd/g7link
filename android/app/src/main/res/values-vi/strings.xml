@@ -193,11 +193,17 @@
 <string name="settings_clipboard_passwords_hint">Cũng gửi những gì trình quản lý mật khẩu đánh dấu là riêng tư. Nó rời bảng nhớ tạm của PC sau một phút, và không bao giờ được lưu trong lịch sử.</string>
 <string name="settings_clipboard_suggestions">Gợi ý hành động cho văn bản đã sao chép</string>
 <string name="clip_received_from">Đã sao chép từ %1$s</string>
+<string name="clip_copied_link_from">Đã sao chép liên kết từ %1$s</string>
+<string name="clip_copied_email_from">Đã sao chép địa chỉ email từ %1$s</string>
+<string name="clip_copied_phone_from">Đã sao chép số điện thoại từ %1$s</string>
+<string name="clip_copied_address_from">Đã sao chép địa chỉ từ %1$s</string>
+<string name="clip_copied_tracking_from">Đã sao chép mã vận đơn từ %1$s</string>
 <string name="clip_action_open">Mở</string>
+<string name="clip_action_open_link">Mở liên kết</string>
 <string name="clip_action_maps">Mở trong Bản đồ</string>
 <string name="clip_action_call">Gọi</string>
 <string name="clip_action_track">Theo dõi</string>
-<string name="clip_action_email">Email</string>
+<string name="clip_action_write_email">Soạn email</string>
 <string name="background_title">Luôn truy cập được trong nền</string>
 <string name="settings_run_in_background">Chạy trong nền</string>
 <string name="home_background_off_title">Kết nối nền đang tắt</string>
@@ -1924,6 +1930,21 @@
     <string name="agents_pc_reply_cant_setup">Cần G7 Linux Companion 1.4 trên %1$s để trả lời.</string>
     <string name="agents_pc_reply_cant_off">Trả lời đang tắt cho điện thoại này trên %1$s.</string>
     <string name="agents_pc_reply_cant_off_tip">Hãy bật ở đó, trong cài đặt G7 Link cho điện thoại này.</string>
+    <!-- Move to G7 and why replies can't be typed (plans/move-and-focus.md §10) -->
+    <string name="agents_move">Chuyển sang G7</string>
+    <string name="agents_move_body">Phiên đang mở trong terminal trên %1$s. G7 có thể đóng %2$s ở đó và tiếp tục tại đây.</string>
+    <string name="agents_move_confirm_title">Chuyển phiên này sang G7?</string>
+    <string name="agents_move_confirm_body">G7 đóng %2$s trong terminal của nó trên %1$s và tiếp tục phiên tại đây dưới dạng một luồng. Terminal và thẻ của nó vẫn mở.</string>
+    <string name="agents_move_closing">Đang đóng %1$s trên %2$s…</string>
+    <string name="agents_move_closed">Đã đóng trên %1$s. Đang tiếp tục tại đây…</string>
+    <string name="agents_move_busy">%1$s vẫn đang làm việc. Hãy chuyển khi xong.</string>
+    <string name="agents_move_rate">Quá nhiều yêu cầu cùng lúc. Hãy thử lại sau giây lát.</string>
+    <string name="agents_move_cant">G7 không thể đóng nó ở nơi nó đang chạy. Hãy đóng ở đó để tiếp tục tại đây.</string>
+    <string name="agents_move_open">%1$s chưa đóng trên %2$s. Hãy đóng ở đó để tiếp tục tại đây.</string>
+    <string name="agents_move_not_known">Không rõ đã chuyển hay chưa. Hãy kiểm tra phiên.</string>
+    <string name="agents_move_failed">Không chuyển được.</string>
+    <string name="agents_pc_reply_cant_desktop">Hiện tại, trả lời chỉ hoạt động trên môi trường GNOME. %1$s đang dùng môi trường khác.</string>
+    <string name="agents_pc_reply_cant_keyboard">G7 Link không thể nhấn phím trên %1$s. Hãy chạy trình cài đặt của nó ở đó để thiết lập.</string>
     <!-- Agents phase 4 (0.1.20): source control on the phone -->
     <string name="agents_git_source_control">Quản lý mã nguồn</string>
     <string name="agents_git_worktree">Worktree</string>

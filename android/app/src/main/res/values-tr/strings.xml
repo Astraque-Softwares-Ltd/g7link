@@ -194,11 +194,17 @@
     <string name="settings_clipboard_passwords_hint">Parola yöneticilerinin özel olarak işaretlediklerini de gönderir. Bir dakika sonra PC\'nin panosundan silinir ve geçmişte hiç tutulmaz.</string>
     <string name="settings_clipboard_suggestions">Kopyalanan metin için eylem öner</string>
     <string name="clip_received_from">%1$s cihazından kopyalandı</string>
+    <string name="clip_copied_link_from">Bağlantı %1$s cihazından kopyalandı</string>
+    <string name="clip_copied_email_from">E-posta adresi %1$s cihazından kopyalandı</string>
+    <string name="clip_copied_phone_from">Telefon numarası %1$s cihazından kopyalandı</string>
+    <string name="clip_copied_address_from">Adres %1$s cihazından kopyalandı</string>
+    <string name="clip_copied_tracking_from">Takip numarası %1$s cihazından kopyalandı</string>
     <string name="clip_action_open">Aç</string>
+    <string name="clip_action_open_link">Bağlantıyı aç</string>
     <string name="clip_action_maps">Haritalar\'da aç</string>
     <string name="clip_action_call">Ara</string>
     <string name="clip_action_track">Takip et</string>
-    <string name="clip_action_email">E-posta gönder</string>
+    <string name="clip_action_write_email">E-posta yaz</string>
     <string name="background_title">Arka planda ulaşılabilir kalın</string>
     <string name="settings_run_in_background">Arka planda çalıştır</string>
     <string name="home_background_off_title">Arka plan bağlantısı kapalı</string>
@@ -2015,6 +2021,21 @@
     <string name="agents_pc_reply_cant_setup">Yanıtlamak için %1$s üzerinde G7 Linux Companion 1.4 gerekir.</string>
     <string name="agents_pc_reply_cant_off">%1$s üzerinde bu telefon için yanıtlar kapalı.</string>
     <string name="agents_pc_reply_cant_off_tip">Orada, G7 Link ayarlarından bu telefon için açın.</string>
+    <!-- Move to G7 and why replies can't be typed (plans/move-and-focus.md §10) -->
+    <string name="agents_move">G7\'ye taşı</string>
+    <string name="agents_move_body">%1$s üzerinde bir terminalde açık. G7, %2$s oturumunu orada kapatıp burada sürdürebilir.</string>
+    <string name="agents_move_confirm_title">Bu oturum G7\'ye taşınsın mı?</string>
+    <string name="agents_move_confirm_body">G7, %1$s üzerindeki terminalde %2$s oturumunu kapatır ve oturuma burada bir konuşma olarak devam eder. Terminal ve sekmesi açık kalır.</string>
+    <string name="agents_move_closing">%2$s üzerinde %1$s kapatılıyor…</string>
+    <string name="agents_move_closed">%1$s üzerinde kapatıldı. Burada devam ediliyor…</string>
+    <string name="agents_move_busy">%1$s hâlâ çalışıyor. Bitince taşıyın.</string>
+    <string name="agents_move_rate">Aynı anda çok fazla istek. Biraz sonra tekrar deneyin.</string>
+    <string name="agents_move_cant">G7 onu çalıştığı yerde kapatamıyor. Burada devam etmek için orada kapatın.</string>
+    <string name="agents_move_open">%1$s, %2$s üzerinde kapanmadı. Burada devam etmek için orada kapatın.</string>
+    <string name="agents_move_not_known">Taşınıp taşınmadığı bilinmiyor. Oturumu kontrol edin.</string>
+    <string name="agents_move_failed">Taşınamadı.</string>
+    <string name="agents_pc_reply_cant_desktop">Yanıtlama şimdilik GNOME masaüstünde çalışıyor. %1$s başka bir masaüstü kullanıyor.</string>
+    <string name="agents_pc_reply_cant_keyboard">G7 Link, %1$s üzerinde tuşlara basamıyor. Bunu ayarlamak için orada yükleyicisini çalıştırın.</string>
     <!-- Agents phase 4 (0.1.20): source control on the phone -->
     <string name="agents_git_source_control">Sürüm denetimi</string>
     <string name="agents_git_worktree">Çalışma ağacı</string>

@@ -1149,7 +1149,7 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
         val suggestion = runCatching { node?.lastClipSuggestion() }.getOrNull() ?: return
         val pcName = _state.value.nameOf(pcId).orEmpty()
         val from = pcName.ifEmpty { context.getString(R.string.your_pc) }
-        val message = context.getString(R.string.clip_received_from, from)
+        val message = LinkNotifications.clipTitle(context, suggestion.kind, from)
         val actionLabel = LinkNotifications.actionLabel(context, suggestion.kind)
         _clipSuggestions.tryEmit(ClipSuggestionNotice(message, actionLabel, suggestion))
         LinkNotifications.showClipSuggestion(context, pcName, suggestion)
@@ -4187,6 +4187,38 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
     ): AgentCall<app.g7link.android.ui.agents.ReplyAnswer> {
         if (!AgentsModel.fits(text)) return AgentCall.Failed(AgentFailure.OTHER)
         return agentCall { app.g7link.android.ui.agents.AgentReplyFfi.of(it.agentSessionReply(pcId, sessionId, text, confirm)) }
+    }
+
+    // ---- Move to G7 (docs/protocol/agents.md §9, plans/move-and-focus.md) ----
+
+    /** Whether PC [pcId] offers to move a followed session here now (`agent.move`). */
+    fun agentMoveOffered(pcId: String): Boolean = node?.agentMoveOffered(pcId) ?: false
+
+    /** Why PC [pcId] says it can't type replies (`agent.reply.needs.*`); null when it can, or doesn't say. */
+    fun agentReplyNeeds(pcId: String): app.g7link.android.ui.agents.CantReply? =
+        node?.agentReplyNeeds(pcId)?.let(app.g7link.android.ui.agents.AgentMoveFfi::needsOf)
+
+    /**
+     * Has the PC end the agent that has [sessionId] open in a terminal and
+     * continue the session as a thread started by this phone; [confirm] is
+     * the nonce of its earlier "confirm" answer, once the user said Move.
+     * Sent once, only when the user asked. A `moved` answer's thread replaces
+     * the session here, as Continue here does.
+     */
+    suspend fun agentSessionMove(pcId: String, sessionId: String, confirm: String?): AgentCall<app.g7link.android.ui.agents.MoveAnswer> {
+        val answer = when (val result = agentCall { it.agentSessionMove(pcId, sessionId, confirm) }) {
+            is AgentCall.Ok -> result.value
+            is AgentCall.Failed -> return result
+        }
+        val thread = answer.thread?.takeIf { answer.result == app.g7link.core.AgentMoveResult.MOVED }
+        if (thread != null) {
+            agentFollowed += "$pcId/${thread.id}"
+            agentSessionKeep(pcId, sessionId, false)
+            updateAgents(pcId) { state ->
+                AgentsModel.withThread(state, thread).let { it.copy(sessions = it.sessions.filterNot { s -> s.id == sessionId }) }
+            }
+        }
+        return AgentCall.Ok(app.g7link.android.ui.agents.AgentMoveFfi.of(answer))
     }
 
     /**

@@ -30,6 +30,7 @@ object LinkNotifications {
     private const val TAG = "link"
     private const val CLIP_TAG = "clip_suggestion"
     private const val CLIP_NOTIFICATION_ID = 0x434C4950 // "CLIP"
+    private val WHITESPACE = Regex("\\s+")
 
     fun createChannel(context: Context) {
         context.getSystemService(NotificationManager::class.java).createNotificationChannel(
@@ -71,7 +72,7 @@ object LinkNotifications {
             app.g7link.core.HandoffKind.VIDEO_LINK -> context.getString(R.string.handoff_video_from, from)
             else -> context.getString(R.string.link_from, from)
         }
-        val shown = handoff?.label ?: url.substringAfter("://").removeSuffix("/")
+        val shown = handoff?.label ?: withoutScheme(url)
         val actionLabel = when (handoff?.kind) {
             app.g7link.core.HandoffKind.MAP_LOCATION -> context.getString(R.string.clip_action_maps)
             app.g7link.core.HandoffKind.VIDEO_LINK -> context.getString(R.string.handoff_action_continue_video)
@@ -91,14 +92,37 @@ object LinkNotifications {
         return runCatching { NotificationManagerCompat.from(context).notify(TAG, url.hashCode(), notification) }.isSuccess
     }
 
-    /** Short action chip label for a [ClipKind]. */
-    fun actionLabel(context: Context, kind: ClipKind): String = when (kind) {
-        ClipKind.WEB_LINK -> context.getString(R.string.clip_action_open)
-        ClipKind.STREET_ADDRESS -> context.getString(R.string.clip_action_maps)
-        ClipKind.PHONE_NUMBER -> context.getString(R.string.clip_action_call)
-        ClipKind.TRACKING_NUMBER -> context.getString(R.string.clip_action_track)
-        ClipKind.EMAIL -> context.getString(R.string.clip_action_email)
+    /** A link as the app shows it: no scheme, no trailing slash. */
+    internal fun withoutScheme(url: String): String = url.substringAfter("://").removeSuffix("/")
+
+    /** "<What> copied from %1$s" for a [ClipKind]. */
+    internal fun clipTitleRes(kind: ClipKind): Int = when (kind) {
+        ClipKind.WEB_LINK -> R.string.clip_copied_link_from
+        ClipKind.STREET_ADDRESS -> R.string.clip_copied_address_from
+        ClipKind.PHONE_NUMBER -> R.string.clip_copied_phone_from
+        ClipKind.TRACKING_NUMBER -> R.string.clip_copied_tracking_from
+        ClipKind.EMAIL -> R.string.clip_copied_email_from
     }
+
+    /** What the button does for a [ClipKind], matching [intentForSuggestion]. */
+    internal fun clipActionRes(kind: ClipKind): Int = when (kind) {
+        ClipKind.WEB_LINK -> R.string.clip_action_open_link
+        ClipKind.STREET_ADDRESS -> R.string.clip_action_maps
+        ClipKind.PHONE_NUMBER -> R.string.clip_action_call
+        ClipKind.TRACKING_NUMBER -> R.string.clip_action_track
+        ClipKind.EMAIL -> R.string.clip_action_write_email
+    }
+
+    /** The copied target on one line; a link without its scheme. */
+    internal fun clipShownTarget(kind: ClipKind, target: String): String {
+        val line = target.replace(WHITESPACE, " ").trim()
+        return if (kind == ClipKind.WEB_LINK) withoutScheme(line) else line
+    }
+
+    fun clipTitle(context: Context, kind: ClipKind, from: String): String =
+        context.getString(clipTitleRes(kind), from)
+
+    fun actionLabel(context: Context, kind: ClipKind): String = context.getString(clipActionRes(kind))
 
     /** Builds the Android [Intent] for a [ClipSuggestion]. */
     fun intentForSuggestion(context: Context, suggestion: ClipSuggestion): Intent = when (suggestion.kind) {
@@ -163,12 +187,19 @@ object LinkNotifications {
         )
         val label = actionLabel(context, suggestion.kind)
         val from = pcName.ifEmpty { context.getString(R.string.your_pc) }
-        val notification = NotificationCompat.Builder(context, CHANNEL)
+        val lockScreen = NotificationCompat.Builder(context, CHANNEL)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(context.getString(R.string.clip_received_from, from))
-            .setContentText(label)
+            .setCategory(NotificationCompat.CATEGORY_RECOMMENDATION)
+            .build()
+        val notification = NotificationCompat.Builder(context, CHANNEL)
+            .setSmallIcon(R.drawable.ic_notification)
+            .setContentTitle(clipTitle(context, suggestion.kind, from))
+            .setContentText(clipShownTarget(suggestion.kind, suggestion.target))
             .setContentIntent(pending)
             .addAction(0, label, pending)
+            .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+            .setPublicVersion(lockScreen)
             .setSilent(true)
             .setAutoCancel(true)
             .setCategory(NotificationCompat.CATEGORY_RECOMMENDATION)

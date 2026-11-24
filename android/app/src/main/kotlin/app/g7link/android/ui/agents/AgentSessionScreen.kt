@@ -85,8 +85,10 @@ private enum class SessionLoad { LOADING, READY, NOT_ALLOWED, UNAVAILABLE, UNREA
  * status bar. Where the PC offers it, a reply typed here goes into the
  * session's own window on the PC (plans/reply-on-pc.md); the PC decides each
  * time, and nothing is sent unless the user sends it. Once it's no longer open
- * anywhere it can be continued here as a thread. Nothing is written to disk;
- * leaving drops the transcript and the draft.
+ * anywhere it can be continued here as a thread; while it is idle in a
+ * terminal, "Move to G7" has the PC close the agent there and continue it here
+ * in one tap (plans/move-and-focus.md). Nothing is written to disk; leaving
+ * drops the transcript and the draft.
  *
  * Its header is two rows (owner's feedback, 2026-11-21): Back, the title and
  * its actions (Keep in status bar as a toggle, More), then one line with its
@@ -270,10 +272,56 @@ fun AgentSessionScreen(
             }
         }
     }
-    val replyFooter = AgentReplyModel.footer(reply, session)
+    // What the PC's capabilities say, read again when they change: why it can't type replies, and whether it moves sessions.
+    val replyNeeds = remember(device.id, device.features) { core.agentReplyNeeds(device.id) }
+    val pcMoves = remember(device.id, device.features) { core.agentMoveOffered(device.id) }
+    val replyFooter = AgentReplyModel.footer(reply, session, replyNeeds)
     reply.confirm?.let { confirm ->
         ReplyConfirmSheet(confirm = confirm, pcName = device.name, onSend = sendReply, onCancel = { reply = AgentReplyModel.confirmCancelled(reply) })
     }
+
+    // Move to G7 (plans/move-and-focus.md §10): the PC ends the agent where it runs and continues the session here as a thread.
+    var move by remember(sessionId) { mutableStateOf(MoveState()) }
+    val moveOffered = AgentMoveModel.offered(pcMoves, session)
+    val moveHere: (String?) -> Unit = { confirm ->
+        if (!move.asking && (confirm != null || moveOffered)) {
+            move = AgentMoveModel.started(move)
+            val epoch = move.epoch
+            scope.launch {
+                // One act of the user's: sent once, never again by itself.
+                val answer = core.agentSessionMove(device.id, sessionId, confirm)
+                move = AgentMoveModel.answered(move, epoch, answer, System.currentTimeMillis())
+                AgentMoveModel.opens(answer)?.let(onOpenThread)
+            }
+        }
+    }
+    // Closed on the PC but not continued yet (a Codex that wrote recently): continued here once its list allows it, for two minutes.
+    LaunchedEffect(move.closedAtMs, session?.canContinue) {
+        val at = move.closedAtMs ?: return@LaunchedEffect
+        if (AgentMoveModel.shouldContinue(move, currentSession, System.currentTimeMillis())) {
+            move = AgentMoveModel.continued(move)
+            continueHere()
+            return@LaunchedEffect
+        }
+        delay((at + AgentMoveModel.CLOSED_WAIT_MS - System.currentTimeMillis()).coerceAtLeast(0L))
+        move = AgentMoveModel.expired(move, System.currentTimeMillis())
+    }
+    LaunchedEffect(session?.state) { move = AgentMoveModel.sessionChanged(move) }
+    move.confirm?.let { confirm ->
+        MoveConfirmSheet(
+            confirm = confirm,
+            agentName = agentName,
+            pcName = device.name,
+            onMove = { moveHere(confirm.nonce) },
+            onCancel = { move = AgentMoveModel.confirmCancelled(move) },
+        )
+    }
+    val moveUi = MoveUi(
+        show = AgentMoveModel.shown(move, moveOffered),
+        note = move.note,
+        move = { moveHere(null) },
+        dismiss = { move = AgentMoveModel.dismissed(move) },
+    )
     val cantReply = replyFooter as? ReplyFooter.Cant
     LaunchedEffect(cantReply == null) { if (cantReply == null) why = false }
     if (why && cantReply != null) {
@@ -437,6 +485,7 @@ fun AgentSessionScreen(
                             why = { why = true },
                             cancelWait = { reply = AgentReplyModel.waitCancelled(reply) },
                         ),
+                        move = moveUi,
                     )
                 }
             }
@@ -544,6 +593,9 @@ private class ReplyActions(
     val cancelWait: () -> Unit,
 )
 
+/** "Move to G7" in the footer: where it stands, the PC's last line about it, and what its action and the line's close do. */
+private class MoveUi(val show: MoveShow, val note: MoveNote?, val move: () -> Unit, val dismiss: () -> Unit)
+
 /**
  * Under the transcript, by state: where it waits for you (answered on the PC),
  * what it does now, or how to continue it here (and why not yet). One
@@ -565,6 +617,7 @@ private fun SessionFooter(
     reply: ReplyFooter,
     draft: String,
     onReply: ReplyActions,
+    move: MoveUi,
 ) {
     val scheme = MaterialTheme.colorScheme
     val tints = g7Tints()
@@ -632,7 +685,7 @@ private fun SessionFooter(
                 }
                 RunningCommand(running = running, folder = session.folder)
             }
-            // Idle and open where it runs: the box is how to answer it, so no card says it can't be continued yet.
+            // Idle and open where it runs: the box is how to answer it (and Move to G7 sits beside its target), so no card.
             box != null -> Unit
             else -> ContinueCard(
                 session = session,
@@ -642,13 +695,24 @@ private fun SessionFooter(
                 now = now,
                 continuing = continuing,
                 onContinue = onContinue,
+                move = move,
                 modifier = card,
+            )
+        }
+        move.note?.let { note ->
+            MoveNoteLine(
+                note = note,
+                session = session,
+                agentName = agentName,
+                pcName = pcName,
+                onDismiss = if (note.sticky) move.dismiss else null,
+                modifier = Modifier.padding(start = 14.dp, end = 12.dp, bottom = 4.dp),
             )
         }
         when (reply) {
             ReplyFooter.None -> Unit
             is ReplyFooter.Cant -> CantReplyLine(reply, agentName = agentName, pcName = pcName, onWhy = onReply.why, onDismiss = onReply.dismiss)
-            is ReplyFooter.Box -> ReplyBox(reply, draft = draft, agentName = agentName, pcName = pcName, actions = onReply)
+            is ReplyFooter.Box -> ReplyBox(reply, draft = draft, agentName = agentName, pcName = pcName, actions = onReply, move = move)
         }
     }
 }
@@ -658,12 +722,20 @@ private fun SessionFooter(
  * g7linux", a tap tells what happens), "Typing on guchu…" while it goes, or
  * the lock while the PC is locked; then the thread's text field and send
  * button, without the model, mode, image, `@` or `/` controls; under it the
- * PC's line for the last answer.
+ * PC's line for the last answer. "Move to G7" ends the target row while the
+ * PC can move the session, also while it is locked (it ends the agent with a
+ * signal, nothing is typed); while a move goes the field is read only.
  */
 @Composable
-private fun ReplyBox(box: ReplyFooter.Box, draft: String, agentName: String, pcName: String, actions: ReplyActions) {
+private fun ReplyBox(box: ReplyFooter.Box, draft: String, agentName: String, pcName: String, actions: ReplyActions, move: MoveUi) {
     val scheme = MaterialTheme.colorScheme
     var whole by remember { mutableStateOf(false) }
+    val moving = move.show == MoveShow.CLOSING || move.show == MoveShow.CLOSED
+    val moveAction: (@Composable () -> Unit)? = if (move.show == MoveShow.OFFER && !box.sending) {
+        { G7RowAction(label = stringResource(R.string.agents_move), onClick = move.move) }
+    } else {
+        null
+    }
     Column(Modifier.fillMaxWidth().padding(start = 10.dp, end = 10.dp, top = 6.dp, bottom = 8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
         val muted = scheme.onSurfaceVariant
         when {
@@ -672,17 +744,23 @@ private fun ReplyBox(box: ReplyFooter.Box, draft: String, agentName: String, pcN
                 G7RowAction(label = stringResource(R.string.action_cancel), onClick = actions.cancelWait)
             }
             box.sending -> ReplyTargetRow(G7Icons.keyboard, stringResource(R.string.agents_pc_reply_typing, pcName), muted)
-            box.locked -> ReplyTargetRow(G7Icons.lock, stringResource(R.string.agents_pc_reply_unlock, pcName), scheme.onSurface)
-            else -> box.target?.let { target ->
-                val details = stringResource(R.string.agents_pc_reply_where, pcName)
-                Column(
-                    Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(6.dp))
-                        .clickable(role = Role.Button, onClickLabel = details) { whole = !whole },
-                ) {
-                    ReplyTargetRow(if (target.inApp) G7Icons.window else G7Icons.terminal, target.line, muted)
-                    if (whole) Text(details, style = MaterialTheme.typography.bodySmall, color = muted, modifier = Modifier.padding(start = 4.dp, bottom = 2.dp))
+            moving -> MoveProgressRow(moveProgressText(move.show, agentName, pcName))
+            box.locked -> ReplyTargetRow(G7Icons.lock, stringResource(R.string.agents_pc_reply_unlock, pcName), scheme.onSurface, moveAction)
+            else -> {
+                val target = box.target
+                if (target != null) {
+                    val details = stringResource(R.string.agents_pc_reply_where, pcName)
+                    Column(
+                        Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(6.dp))
+                            .clickable(role = Role.Button, onClickLabel = details) { whole = !whole },
+                    ) {
+                        ReplyTargetRow(if (target.inApp) G7Icons.window else G7Icons.terminal, target.line, muted, moveAction)
+                        if (whole) Text(details, style = MaterialTheme.typography.bodySmall, color = muted, modifier = Modifier.padding(start = 4.dp, bottom = 2.dp))
+                    }
+                } else if (moveAction != null) {
+                    ReplyTargetRow(G7Icons.terminal, stringResource(R.string.agents_session_started_terminal, pcName), muted, moveAction)
                 }
             }
         }
@@ -695,14 +773,14 @@ private fun ReplyBox(box: ReplyFooter.Box, draft: String, agentName: String, pcN
                 .clip(RoundedCornerShape(12.dp))
                 .background(scheme.surfaceContainer)
                 .padding(end = 8.dp)
-                .dimmed(box.locked),
+                .dimmed(box.locked || moving),
             verticalAlignment = Alignment.Bottom,
         ) {
             AgentTextField(
                 value = draft,
                 onValueChange = actions.text,
                 hint = stringResource(R.string.agents_pc_reply_hint, pcName),
-                enabled = !box.locked && !box.sending,
+                enabled = !box.locked && !box.sending && !moving,
                 maxLines = 5,
                 background = Color.Transparent,
                 onFocus = actions.focus,
@@ -714,13 +792,14 @@ private fun ReplyBox(box: ReplyFooter.Box, draft: String, agentName: String, pcN
                         CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
                     }
                 } else {
+                    val canSend = box.canSend && !moving
                     G7IconButton(
                         icon = G7Icons.send,
                         contentDescription = stringResource(R.string.agents_send),
                         onClick = actions.send,
-                        enabled = box.canSend,
+                        enabled = canSend,
                         filled = true,
-                        tint = if (box.canSend) scheme.primary else scheme.onSurfaceVariant,
+                        tint = if (canSend) scheme.primary else scheme.onSurfaceVariant,
                     )
                 }
             }
@@ -730,11 +809,69 @@ private fun ReplyBox(box: ReplyFooter.Box, draft: String, agentName: String, pcN
                 note = note,
                 agentName = agentName,
                 pcName = pcName,
-                onRetry = if (box.canRetry) actions.send else null,
+                onRetry = if (box.canRetry && !moving) actions.send else null,
                 onDismiss = if (box.canDismiss) actions.dismiss else null,
             )
         }
     }
+}
+
+/** "Closing Claude on guchu…" or "Closed on guchu. Continuing here…", with a small spinner, where the target line was. */
+@Composable
+private fun MoveProgressRow(text: String) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 1.5.dp)
+        Text(text, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+    }
+}
+
+@Composable
+private fun moveProgressText(show: MoveShow, agentName: String, pcName: String): String =
+    if (show == MoveShow.CLOSED) stringResource(R.string.agents_move_closed, pcName) else stringResource(R.string.agents_move_closing, agentName, pcName)
+
+/** The PC's line for the last move: neutral for "try later", amber for what to do on the PC; a close for a sticky one. */
+@Composable
+private fun MoveNoteLine(note: MoveNote, session: AgentSession, agentName: String, pcName: String, onDismiss: (() -> Unit)?, modifier: Modifier = Modifier) {
+    val scheme = MaterialTheme.colorScheme
+    Row(
+        modifier = modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Icon(
+            if (note.amber) AgentGlyphs.warning else G7Icons.info,
+            contentDescription = null,
+            tint = if (note.amber) g7Tints().amber else scheme.onSurfaceVariant,
+            modifier = Modifier.size(15.dp),
+        )
+        Text(
+            moveNoteText(note, session, agentName, pcName),
+            style = MaterialTheme.typography.bodySmall,
+            color = if (note.amber) scheme.onSurface else scheme.onSurfaceVariant,
+            modifier = Modifier.weight(1f),
+        )
+        if (onDismiss != null) {
+            G7IconButton(icon = G7Icons.close, contentDescription = stringResource(R.string.action_dismiss), onClick = onDismiss, tint = scheme.onSurfaceVariant)
+        }
+    }
+}
+
+@Composable
+private fun moveNoteText(note: MoveNote, session: AgentSession, agentName: String, pcName: String): String = when (note) {
+    MoveNote.BUSY -> stringResource(R.string.agents_move_busy, agentName)
+    MoveNote.NEEDS_YOU -> stringResource(R.string.agents_pc_reply_needs_you, pcName)
+    MoveNote.RATE -> stringResource(R.string.agents_move_rate)
+    MoveNote.FOLDER -> stringResource(R.string.agents_session_add_folder, session.folder, pcName)
+    MoveNote.AGENT -> stringResource(R.string.agents_session_agent_unavailable, agentName, pcName)
+    MoveNote.CANT -> stringResource(R.string.agents_move_cant)
+    MoveNote.OPEN -> stringResource(R.string.agents_move_open, agentName, pcName)
+    MoveNote.NOT_KNOWN -> stringResource(R.string.agents_move_not_known)
+    MoveNote.FAILED -> stringResource(R.string.agents_move_failed)
+    MoveNote.UNREACHABLE -> stringResource(R.string.agents_unreachable_title, pcName)
 }
 
 /** The line above the box; [action] at its end ("Cancel" while a reply waits). */
@@ -849,6 +986,8 @@ private fun ReplyWhySheet(cant: ReplyFooter.Cant, agentName: String, pcName: Str
         )
         CantReply.NO_WINDOW -> listOf(stringResource(R.string.agents_pc_reply_cant_window))
         CantReply.SETUP -> listOf(stringResource(R.string.agents_pc_reply_cant_setup, pcName))
+        CantReply.DESKTOP -> listOf(stringResource(R.string.agents_pc_reply_cant_desktop, pcName))
+        CantReply.KEYBOARD -> listOf(stringResource(R.string.agents_pc_reply_cant_keyboard, pcName))
         CantReply.OFF -> listOf(stringResource(R.string.agents_pc_reply_cant_off, pcName), stringResource(R.string.agents_pc_reply_cant_off_tip))
     }
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = state, containerColor = scheme.surfaceContainerHigh) {
@@ -901,6 +1040,49 @@ private fun ReplyConfirmSheet(confirm: ReplyConfirm, pcName: String, onSend: () 
                 secondaryEnabled = true,
                 primary = stringResource(R.string.agents_send),
                 onPrimary = onSend,
+                primaryEnabled = true,
+            )
+        }
+    }
+}
+
+/**
+ * The first move of this session (plans/move-and-focus.md §4.3): where it
+ * runs, what G7 does, and Move or Cancel. A phone that already confirmed a
+ * reply into it isn't asked.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun MoveConfirmSheet(confirm: MoveConfirm, agentName: String, pcName: String, onMove: () -> Unit, onCancel: () -> Unit) {
+    val scheme = MaterialTheme.colorScheme
+    val state = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    ModalBottomSheet(onDismissRequest = onCancel, sheetState = state, containerColor = scheme.surfaceContainerHigh) {
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp).padding(bottom = 20.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Text(stringResource(R.string.agents_move_confirm_title), style = MaterialTheme.typography.titleMedium)
+            confirm.target?.let { target ->
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(scheme.surface)
+                        .padding(horizontal = 14.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    Icon(if (target.inApp) G7Icons.window else G7Icons.terminal, contentDescription = null, tint = scheme.onSurface, modifier = Modifier.size(22.dp))
+                    Text(target.line, style = MaterialTheme.typography.titleSmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                }
+            }
+            Text(stringResource(R.string.agents_move_confirm_body, pcName, agentName), style = MaterialTheme.typography.bodyMedium, color = scheme.onSurfaceVariant)
+            ButtonPair(
+                secondary = stringResource(R.string.action_cancel),
+                onSecondary = onCancel,
+                secondaryEnabled = true,
+                primary = stringResource(R.string.agents_move),
+                onPrimary = onMove,
                 primaryEnabled = true,
             )
         }
@@ -971,6 +1153,8 @@ private fun RunningCommand(running: app.g7link.core.AgentItem?, folder: String) 
  * started from this phone, which asks before each change; nothing runs until
  * something is sent), else why not: still open where it runs, a folder that
  * isn't an agent folder (added on the PC), or the agent can't run there now.
+ * Still open in a terminal on a PC that can move it: "Move to G7" instead of
+ * the Continue here it can't do yet, then how the move goes.
  */
 @Composable
 private fun ContinueCard(
@@ -981,6 +1165,7 @@ private fun ContinueCard(
     now: Long,
     continuing: Boolean,
     onContinue: () -> Unit,
+    move: MoveUi,
     modifier: Modifier = Modifier,
 ) {
     val scheme = MaterialTheme.colorScheme
@@ -1014,15 +1199,22 @@ private fun ContinueCard(
                 }
             }
         }
+        val moving = move.show == MoveShow.CLOSING || move.show == MoveShow.CLOSED
         Text(
-            reason ?: stringResource(R.string.agents_session_continue_body, pcName),
+            when (move.show) {
+                MoveShow.CLOSING, MoveShow.CLOSED -> moveProgressText(move.show, agentName, pcName)
+                MoveShow.OFFER -> stringResource(R.string.agents_move_body, pcName, agentName)
+                MoveShow.HIDDEN -> reason ?: stringResource(R.string.agents_session_continue_body, pcName)
+            },
             style = MaterialTheme.typography.bodyMedium,
             color = scheme.onSurfaceVariant,
         )
-        if (continuing) {
+        if (continuing || moving) {
             Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
                 CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp)
             }
+        } else if (move.show == MoveShow.OFFER) {
+            G7PrimaryButton(label = stringResource(R.string.agents_move), onClick = move.move)
         } else {
             G7PrimaryButton(
                 label = stringResource(R.string.agents_session_continue),
@@ -1030,7 +1222,8 @@ private fun ContinueCard(
                 enabled = blocked == null && session.canContinue,
             )
         }
-        if (blocked == null) {
+        // The thread either way asks before it changes something.
+        if (blocked == null || move.show == MoveShow.OFFER) {
             Text(stringResource(R.string.agents_home_asks_first), style = MaterialTheme.typography.bodySmall, color = scheme.onSurfaceVariant)
         }
     }

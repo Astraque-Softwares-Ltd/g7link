@@ -196,11 +196,17 @@
     <string name="settings_clipboard_passwords_hint">Also sends what password managers mark private. It leaves the PC\'s clipboard after a minute, and is never kept in history.</string>
     <string name="settings_clipboard_suggestions">Suggest actions for copied text</string>
     <string name="clip_received_from">Copied from %1$s</string>
+    <string name="clip_copied_link_from">Link copied from %1$s</string>
+    <string name="clip_copied_email_from">Email address copied from %1$s</string>
+    <string name="clip_copied_phone_from">Phone number copied from %1$s</string>
+    <string name="clip_copied_address_from">Address copied from %1$s</string>
+    <string name="clip_copied_tracking_from">Tracking number copied from %1$s</string>
     <string name="clip_action_open">Open</string>
+    <string name="clip_action_open_link">Open link</string>
     <string name="clip_action_maps">Open in Maps</string>
     <string name="clip_action_call">Call</string>
     <string name="clip_action_track">Track</string>
-    <string name="clip_action_email">Email</string>
+    <string name="clip_action_write_email">Write email</string>
     <string name="background_title">Stay reachable in the background</string>
     <string name="settings_run_in_background">Run in the background</string>
     <string name="home_background_off_title">Background connection is off</string>
@@ -2028,6 +2034,21 @@
     <string name="agents_pc_reply_cant_setup">Replying needs the G7 Linux Companion 1.4 on %1$s.</string>
     <string name="agents_pc_reply_cant_off">Replies are off for this phone on %1$s.</string>
     <string name="agents_pc_reply_cant_off_tip">Turn them on there, in G7 Link\'s settings for this phone.</string>
+    <!-- Move to G7 and why replies can't be typed (plans/move-and-focus.md §10) -->
+    <string name="agents_move">Move to G7</string>
+    <string name="agents_move_body">It\'s open in a terminal on %1$s. G7 can close %2$s there and continue it here.</string>
+    <string name="agents_move_confirm_title">Move this session to G7?</string>
+    <string name="agents_move_confirm_body">G7 closes %2$s in its terminal on %1$s and continues the session here as a thread. The terminal and its tab stay open.</string>
+    <string name="agents_move_closing">Closing %1$s on %2$s…</string>
+    <string name="agents_move_closed">Closed on %1$s. Continuing here…</string>
+    <string name="agents_move_busy">%1$s is mid-turn. Move it when it\'s done.</string>
+    <string name="agents_move_rate">Too many at once. Try again in a moment.</string>
+    <string name="agents_move_cant">G7 can\'t close it where it runs. Close it there to continue here.</string>
+    <string name="agents_move_open">%1$s didn\'t close on %2$s. Close it there to continue here.</string>
+    <string name="agents_move_not_known">Not known if it was moved. Check the session.</string>
+    <string name="agents_move_failed">Couldn\'t move it.</string>
+    <string name="agents_pc_reply_cant_desktop">Replying works on the GNOME desktop for now. %1$s runs another one.</string>
+    <string name="agents_pc_reply_cant_keyboard">G7 Link can\'t press keys on %1$s. Run its installer there to set that up.</string>
     <!-- Agents phase 4 (0.1.20): source control on the phone -->
     <string name="agents_git_source_control">Source control</string>
     <string name="agents_git_worktree">Worktree</string>

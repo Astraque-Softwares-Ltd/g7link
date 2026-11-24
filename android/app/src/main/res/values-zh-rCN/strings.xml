@@ -188,11 +188,17 @@
     <string name="settings_clipboard_passwords_hint">也会发送密码管理器标记为私密的内容。一分钟后会从电脑的剪贴板清除，且不会保存到历史记录。</string>
     <string name="settings_clipboard_suggestions">为复制的文本推荐操作</string>
     <string name="clip_received_from">复制自 %1$s</string>
+    <string name="clip_copied_link_from">已从 %1$s 复制链接</string>
+    <string name="clip_copied_email_from">已从 %1$s 复制邮箱地址</string>
+    <string name="clip_copied_phone_from">已从 %1$s 复制电话号码</string>
+    <string name="clip_copied_address_from">已从 %1$s 复制地址</string>
+    <string name="clip_copied_tracking_from">已从 %1$s 复制快递单号</string>
     <string name="clip_action_open">打开</string>
+    <string name="clip_action_open_link">打开链接</string>
     <string name="clip_action_maps">在地图中打开</string>
     <string name="clip_action_call">拨打</string>
     <string name="clip_action_track">查询物流</string>
-    <string name="clip_action_email">邮件</string>
+    <string name="clip_action_write_email">写邮件</string>
     <string name="background_title">在后台保持可连接</string>
     <string name="settings_run_in_background">在后台运行</string>
     <string name="home_background_off_title">后台连接已关闭</string>
@@ -1855,6 +1861,21 @@
     <string name="agents_pc_reply_cant_setup">回复需要 %1$s 上安装 G7 Linux Companion 1.4。</string>
     <string name="agents_pc_reply_cant_off">%1$s 上已为本手机关闭回复。</string>
     <string name="agents_pc_reply_cant_off_tip">请在那里的 G7 Link 设置中为本手机开启。</string>
+    <!-- Move to G7 and why replies can't be typed (plans/move-and-focus.md §10) -->
+    <string name="agents_move">移到 G7</string>
+    <string name="agents_move_body">它在 %1$s 的终端中打开。G7 可以在那里关闭 %2$s，并在这里继续。</string>
+    <string name="agents_move_confirm_title">要把此会话移到 G7 吗？</string>
+    <string name="agents_move_confirm_body">G7 会关闭 %1$s 终端中的 %2$s，并在这里继续此会话。终端及其标签页会保持打开。</string>
+    <string name="agents_move_closing">正在关闭 %2$s 上的 %1$s…</string>
+    <string name="agents_move_closed">已在 %1$s 上关闭。正在这里继续…</string>
+    <string name="agents_move_busy">%1$s 仍在工作。完成后再移动。</string>
+    <string name="agents_move_rate">请求太频繁。请稍后再试。</string>
+    <string name="agents_move_cant">G7 无法在它运行的地方关闭它。请在那里关闭后再在这里继续。</string>
+    <string name="agents_move_open">%1$s 未在 %2$s 上关闭。请在那里关闭后再在这里继续。</string>
+    <string name="agents_move_not_known">不确定是否已移动。请查看会话。</string>
+    <string name="agents_move_failed">无法移动。</string>
+    <string name="agents_pc_reply_cant_desktop">目前只能在 GNOME 桌面上回复。%1$s 使用的是其他桌面。</string>
+    <string name="agents_pc_reply_cant_keyboard">G7 Link 无法在 %1$s 上按键。请在那里运行它的安装程序来完成设置。</string>
     <!-- Agents phase 4 (0.1.20): source control on the phone -->
     <string name="agents_git_source_control">源代码管理</string>
     <string name="agents_git_worktree">工作树</string>

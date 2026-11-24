@@ -194,11 +194,17 @@
     <string name="settings_clipboard_passwords_hint">Sendet auch, was Passwort-Manager als privat markieren. Es verschwindet nach einer Minute aus der Zwischenablage des PCs und landet nie im Verlauf.</string>
     <string name="settings_clipboard_suggestions">Aktionen für kopierten Text vorschlagen</string>
     <string name="clip_received_from">Kopiert von %1$s</string>
+    <string name="clip_copied_link_from">Link von %1$s kopiert</string>
+    <string name="clip_copied_email_from">E-Mail-Adresse von %1$s kopiert</string>
+    <string name="clip_copied_phone_from">Telefonnummer von %1$s kopiert</string>
+    <string name="clip_copied_address_from">Adresse von %1$s kopiert</string>
+    <string name="clip_copied_tracking_from">Sendungsnummer von %1$s kopiert</string>
     <string name="clip_action_open">Öffnen</string>
+    <string name="clip_action_open_link">Link öffnen</string>
     <string name="clip_action_maps">In Karten öffnen</string>
     <string name="clip_action_call">Anrufen</string>
     <string name="clip_action_track">Verfolgen</string>
-    <string name="clip_action_email">E-Mail</string>
+    <string name="clip_action_write_email">E-Mail schreiben</string>
     <string name="background_title">Im Hintergrund erreichbar bleiben</string>
     <string name="settings_run_in_background">Im Hintergrund ausführen</string>
     <string name="home_background_off_title">Hintergrundverbindung ist aus</string>
@@ -2015,6 +2021,21 @@
     <string name="agents_pc_reply_cant_setup">Zum Antworten braucht %1$s den G7 Linux Companion 1.4.</string>
     <string name="agents_pc_reply_cant_off">Antworten sind für dieses Gerät auf %1$s aus.</string>
     <string name="agents_pc_reply_cant_off_tip">Schalte sie dort ein, in den Einstellungen von G7 Link für dieses Gerät.</string>
+    <!-- Move to G7 and why replies can't be typed (plans/move-and-focus.md §10) -->
+    <string name="agents_move">Zu G7 verschieben</string>
+    <string name="agents_move_body">Die Sitzung ist in einem Terminal auf %1$s geöffnet. G7 kann %2$s dort schließen und hier weitermachen.</string>
+    <string name="agents_move_confirm_title">Diese Sitzung zu G7 verschieben?</string>
+    <string name="agents_move_confirm_body">G7 schließt %2$s in seinem Terminal auf %1$s und setzt die Sitzung hier als Thread fort. Das Terminal und sein Tab bleiben offen.</string>
+    <string name="agents_move_closing">%1$s wird auf %2$s geschlossen…</string>
+    <string name="agents_move_closed">Auf %1$s geschlossen. Wird hier fortgesetzt…</string>
+    <string name="agents_move_busy">%1$s arbeitet noch. Verschiebe die Sitzung, wenn es fertig ist.</string>
+    <string name="agents_move_rate">Zu viele auf einmal. Versuch es gleich noch mal.</string>
+    <string name="agents_move_cant">G7 kann sie dort, wo sie läuft, nicht schließen. Schließe sie dort, um hier weiterzumachen.</string>
+    <string name="agents_move_open">%1$s wurde auf %2$s nicht geschlossen. Schließe die Sitzung dort, um hier weiterzumachen.</string>
+    <string name="agents_move_not_known">Unklar, ob sie verschoben wurde. Sieh in der Sitzung nach.</string>
+    <string name="agents_move_failed">Verschieben hat nicht geklappt.</string>
+    <string name="agents_pc_reply_cant_desktop">Antworten funktioniert vorerst nur auf dem GNOME-Desktop. %1$s nutzt einen anderen.</string>
+    <string name="agents_pc_reply_cant_keyboard">G7 Link kann auf %1$s keine Tasten drücken. Führe dort sein Installationsprogramm aus, um das einzurichten.</string>
     <!-- Agents phase 4 (0.1.20): source control on the phone -->
     <string name="agents_git_source_control">Versionsverwaltung</string>
     <string name="agents_git_worktree">Worktree</string>

@@ -114,6 +114,12 @@ enum class CantReply {
     /** "Replying needs the G7 Linux Companion 1.4 on guchu." */
     SETUP,
 
+    /** "Replying works on the GNOME desktop for now. guchu runs another one." (`agent.reply.needs.desktop`) */
+    DESKTOP,
+
+    /** "G7 Link can't press keys on guchu. Run its installer there to set that up." (`agent.reply.needs.keyboard`) */
+    KEYBOARD,
+
     /** "Replies are off for this phone on guchu." */
     OFF,
 }
@@ -429,11 +435,21 @@ object AgentReplyModel {
         return next
     }
 
-    /** What the footer shows for replies; [session] null or ended: nothing (Continue here, as before). */
-    fun footer(state: ReplyState, session: AgentSession?): ReplyFooter {
+    /**
+     * What the footer shows for replies; [session] null or ended: nothing
+     * (Continue here, as before). [needs]: why the PC says it can't type
+     * replies at all (`agent.reply.needs.*`), shown as the quiet line for a
+     * terminal session instead of nothing.
+     */
+    fun footer(state: ReplyState, session: AgentSession?, needs: CantReply? = null): ReplyFooter {
         if (session == null || session.state == AgentSessionState.ENDED) return ReplyFooter.None
         return when (state.offer) {
-            ReplyOffer.UNKNOWN, ReplyOffer.NOT_OFFERED, ReplyOffer.ENDED -> ReplyFooter.None
+            ReplyOffer.UNKNOWN, ReplyOffer.NOT_OFFERED -> if (needs != null && session.source == AgentSessionSource.TERMINAL) {
+                ReplyFooter.Cant(needs, null, state.note?.takeIf { it.sticky })
+            } else {
+                ReplyFooter.None
+            }
+            ReplyOffer.ENDED -> ReplyFooter.None
             ReplyOffer.CANT -> ReplyFooter.Cant(state.cant ?: CantReply.NO_WINDOW, state.cantApp, state.note?.takeIf { it.sticky })
             ReplyOffer.BOX, ReplyOffer.LOCKED -> {
                 val locked = state.offer == ReplyOffer.LOCKED

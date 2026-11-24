@@ -194,11 +194,17 @@
     <string name="settings_clipboard_passwords_hint">Envia também o que os gerenciadores de senhas marcam como privado. Sai da área de transferência do PC após um minuto e nunca é guardado no histórico.</string>
     <string name="settings_clipboard_suggestions">Sugerir ações para o texto copiado</string>
     <string name="clip_received_from">Copiado de %1$s</string>
+    <string name="clip_copied_link_from">Link copiado de %1$s</string>
+    <string name="clip_copied_email_from">Endereço de e-mail copiado de %1$s</string>
+    <string name="clip_copied_phone_from">Número de telefone copiado de %1$s</string>
+    <string name="clip_copied_address_from">Endereço copiado de %1$s</string>
+    <string name="clip_copied_tracking_from">Código de rastreio copiado de %1$s</string>
     <string name="clip_action_open">Abrir</string>
+    <string name="clip_action_open_link">Abrir link</string>
     <string name="clip_action_maps">Abrir no Maps</string>
     <string name="clip_action_call">Ligar</string>
     <string name="clip_action_track">Rastrear</string>
-    <string name="clip_action_email">E-mail</string>
+    <string name="clip_action_write_email">Escrever e-mail</string>
     <string name="background_title">Continue conectado em segundo plano</string>
     <string name="settings_run_in_background">Manter em segundo plano</string>
     <string name="home_background_off_title">Conexão em segundo plano desativada</string>
@@ -2015,6 +2021,21 @@
     <string name="agents_pc_reply_cant_setup">Para responder, é preciso o G7 Linux Companion 1.4 em %1$s.</string>
     <string name="agents_pc_reply_cant_off">As respostas estão desativadas para este celular em %1$s.</string>
     <string name="agents_pc_reply_cant_off_tip">Ative-as lá, nas configurações do G7 Link para este celular.</string>
+    <!-- Move to G7 and why replies can't be typed (plans/move-and-focus.md §10) -->
+    <string name="agents_move">Mover para o G7</string>
+    <string name="agents_move_body">Está aberta em um terminal em %1$s. O G7 pode fechar o %2$s lá e continuá-la aqui.</string>
+    <string name="agents_move_confirm_title">Mover esta sessão para o G7?</string>
+    <string name="agents_move_confirm_body">O G7 fecha o %2$s no terminal em %1$s e continua a sessão aqui como uma conversa. O terminal e a aba dele continuam abertos.</string>
+    <string name="agents_move_closing">Fechando o %1$s em %2$s…</string>
+    <string name="agents_move_closed">Fechada em %1$s. Continuando aqui…</string>
+    <string name="agents_move_busy">%1$s ainda está trabalhando. Mova quando terminar.</string>
+    <string name="agents_move_rate">Pedidos demais de uma vez. Tente de novo daqui a pouco.</string>
+    <string name="agents_move_cant">O G7 não consegue fechá-la onde ela roda. Feche lá para continuar aqui.</string>
+    <string name="agents_move_open">O %1$s não fechou em %2$s. Feche lá para continuar aqui.</string>
+    <string name="agents_move_not_known">Não se sabe se foi movida. Confira a sessão.</string>
+    <string name="agents_move_failed">Não foi possível mover.</string>
+    <string name="agents_pc_reply_cant_desktop">Por enquanto, responder funciona no ambiente GNOME. %1$s usa outro.</string>
+    <string name="agents_pc_reply_cant_keyboard">O G7 Link não consegue pressionar teclas em %1$s. Execute o instalador dele lá para configurar isso.</string>
     <!-- Agents phase 4 (0.1.20): source control on the phone -->
     <string name="agents_git_source_control">Controle de versão</string>
     <string name="agents_git_worktree">Worktree</string>
