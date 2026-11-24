@@ -3,8 +3,10 @@
 //! (`agents::reply`, `plans/reply-tabs-idle.md` §2): written to the
 //! session's own terminal device, the output side, which the terminal draws
 //! and the program on it never reads. The old title is pushed first and
-//! popped after (XTWINOPS 22 and 23). Nothing here reads a terminal, and the
-//! title is never logged.
+//! popped after (XTWINOPS 22 and 23). After a session's agent was ended for
+//! a move to G7 (`agents::reply::move_here`), its terminal gets one fixed
+//! sequence that turns off the mouse reporting the agent may have left on.
+//! Nothing here reads a terminal, and the title is never logged.
 
 use std::fs::{File, OpenOptions};
 use std::io::Write;
@@ -17,6 +19,12 @@ const MAX_TITLE: usize = 48;
 /// Push the window and icon titles (`CSI 22 ; 0 t`), and pop them (`CSI 23 ; 0 t`).
 const PUSH: &[u8] = b"\x1b[22;0t";
 const POP: &[u8] = b"\x1b[23;0t";
+/// Mouse tracking off (X10 and normal, button-event, any-event), its UTF-8,
+/// SGR and urxvt encodings off, focus reports off, and the cursor shown:
+/// a Codex ended by a signal leaves the first ones on, and every mouse move
+/// then types its report into the shell (spike S11). Harmless when none is on.
+const RESTORE: &[u8] =
+    b"\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1005l\x1b[?1006l\x1b[?1015l\x1b[?1004l\x1b[?25h";
 
 /// Sets the title of the terminal `tty_nr` (`/proc/<pid>/stat` field 7),
 /// pushing the old one. False when it isn't a pty of this user, the title
@@ -33,6 +41,13 @@ pub fn mark(tty_nr: u32, title: &str) -> bool {
 pub fn unmark(tty_nr: u32) -> bool {
     let Some(mut pts) = open(tty_nr) else { return false };
     write_once(&mut pts, POP)
+}
+
+/// Writes [`RESTORE`] to the terminal `tty_nr`, and nothing else: for after
+/// the program that may have changed those modes exited.
+pub fn restore(tty_nr: u32) -> bool {
+    let Some(mut pts) = open(tty_nr) else { return false };
+    write_once(&mut pts, RESTORE)
 }
 
 /// A `tty_nr`'s major and minor (the kernel's `new_encode_dev`).
@@ -108,7 +123,9 @@ mod tests {
         // Refused before anything is opened.
         assert!(!mark(0x401, "G7 0123456789abcdef"));
         assert!(!unmark(0x401));
+        assert!(!restore(0x401));
         assert!(!mark(0, "G7 0123456789abcdef"));
+        assert!(!restore(0));
     }
 
     #[test]
@@ -126,5 +143,15 @@ mod tests {
     fn the_title_is_pushed_then_set_in_one_sequence() {
         assert_eq!(sequence("G7 0123456789abcdef"), b"\x1b[22;0t\x1b]0;G7 0123456789abcdef\x07".to_vec());
         assert_eq!(POP, b"\x1b[23;0t");
+    }
+
+    #[test]
+    fn the_restore_only_turns_modes_off_and_shows_the_cursor() {
+        let text = std::str::from_utf8(RESTORE).expect("ASCII");
+        let modes: Vec<&str> = text.split('\x1b').filter(|s| !s.is_empty()).collect();
+        assert_eq!(
+            modes,
+            ["[?1000l", "[?1002l", "[?1003l", "[?1005l", "[?1006l", "[?1015l", "[?1004l", "[?25h"]
+        );
     }
 }

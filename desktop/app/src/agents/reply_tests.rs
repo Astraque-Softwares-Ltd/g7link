@@ -3,7 +3,9 @@
 //! and their tabs, the terminal's title, the keyboard and the desk, and
 //! records every call, so each test says which keys were pressed and which
 //! titles were written and put back. No real window, pty, session,
-//! accessibility bus, clipboard or keyboard.
+//! accessibility bus, clipboard or keyboard. A move to G7 runs on the same
+//! world (`move_tests.rs`), which also plays the host's `session.close` and
+//! `session.continue`.
 
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
@@ -39,6 +41,13 @@ struct Tab {
 struct World {
     log: RefCell<Vec<String>>,
     places: RefCell<VecDeque<Result<Found, HostDown>>>,
+    /// What each `place` answered, in order: `place`, `ended`, `elsewhere`,
+    /// `ambiguous`, `unknown` or `down`.
+    found: RefCell<Vec<&'static str>>,
+    /// The host closes sessions (`cap::MOVE`).
+    host_moves: Cell<bool>,
+    closes: RefCell<VecDeque<Result<move_here::Closing, HostDown>>>,
+    continues: RefCell<VecDeque<Result<move_here::Continued, HostDown>>>,
     windows_ready: Cell<bool>,
     wins: RefCell<Option<Vec<Win>>>,
     /// Per window: its tabs and the selected one; the window's title is
@@ -46,6 +55,8 @@ struct World {
     tabs: RefCell<Vec<(u64, Vec<Tab>, usize)>>,
     activate_ok: Cell<bool>,
     activate_focuses: Cell<bool>,
+    /// Windows that don't take the focus when activated.
+    stuck: RefCell<Vec<u64>>,
     screen: RefCell<Option<String>>,
     primary: RefCell<Option<String>>,
     primary_ok: Cell<bool>,
@@ -68,6 +79,7 @@ struct World {
     focus_after_waits: Cell<Option<usize>>,
     after_primary: RefCell<Option<Hook>>,
     after_paste: RefCell<Option<Hook>>,
+    after_enter: RefCell<Option<Hook>>,
     after_select: RefCell<Option<Hook>>,
     after_mark: RefCell<Option<Hook>>,
     start: Instant,
@@ -98,6 +110,7 @@ fn place() -> Place {
         ptys_under: vec![(200, 1), (150, 1), (EMULATOR, 1), (2, 4)],
         marks: vec![MARK.into()],
         folder: "g7linux".into(),
+        continue_block: None,
     }
 }
 
@@ -111,6 +124,7 @@ fn win(id: u64, pid: u32, class: &str, title: &str) -> Win {
         fullscreen: false,
         minimized: false,
         normal: true,
+        workspace: Some(0),
     }
 }
 
@@ -127,6 +141,10 @@ impl World {
         World {
             log: RefCell::new(Vec::new()),
             places: RefCell::new(VecDeque::from([Ok(Found::Place(place()))])),
+            found: RefCell::new(Vec::new()),
+            host_moves: Cell::new(true),
+            closes: RefCell::new(VecDeque::from([Ok(move_here::Closing::Closed)])),
+            continues: RefCell::new(VecDeque::from([Ok(move_here::Continued::Refused)])),
             windows_ready: Cell::new(true),
             wins: RefCell::new(Some(vec![
                 files_in_front(),
@@ -135,6 +153,7 @@ impl World {
             tabs: RefCell::new(vec![(WINDOW, vec![tab(TTY, CLAUDE_TITLE)], 0)]),
             activate_ok: Cell::new(true),
             activate_focuses: Cell::new(true),
+            stuck: RefCell::new(Vec::new()),
             screen: RefCell::new(None),
             primary: RefCell::new(Some("the owner's selection".into())),
             primary_ok: Cell::new(true),
@@ -153,6 +172,7 @@ impl World {
             focus_after_waits: Cell::new(None),
             after_primary: RefCell::new(None),
             after_paste: RefCell::new(None),
+            after_enter: RefCell::new(None),
             after_select: RefCell::new(None),
             after_mark: RefCell::new(None),
             start: Instant::now(),
@@ -258,7 +278,16 @@ fn next<T: Clone>(queue: &RefCell<VecDeque<T>>) -> T {
 impl Host for World {
     fn place(&self, _session: &str) -> Result<Found, HostDown> {
         self.note("place");
-        next(&self.places)
+        let answer = next(&self.places);
+        self.found.borrow_mut().push(match &answer {
+            Ok(Found::Place(_)) => "place",
+            Ok(Found::Ended) => "ended",
+            Ok(Found::Elsewhere) => "elsewhere",
+            Ok(Found::Ambiguous) => "ambiguous",
+            Ok(Found::Unknown) => "unknown",
+            Err(HostDown) => "down",
+        });
+        answer
     }
 }
 
@@ -273,10 +302,21 @@ impl Windows for World {
 
     fn activate(&self, id: u64) -> bool {
         self.note(format!("activate {id}"));
-        if self.activate_ok.get() && self.activate_focuses.get() {
+        if self.activate_ok.get() && self.activate_focuses.get() && !self.stuck.borrow().contains(&id) {
             self.focus(id);
         }
         self.activate_ok.get()
+    }
+
+    fn minimize(&self, id: u64) -> bool {
+        self.note(format!("minimize {id}"));
+        if let Some(wins) = self.wins.borrow_mut().as_mut() {
+            for w in wins.iter_mut().filter(|w| w.id == id) {
+                w.minimized = true;
+                w.focused = false;
+            }
+        }
+        true
     }
 
     fn set_primary(&self, text: &str) -> bool {
@@ -343,6 +383,11 @@ impl Windows for World {
             }
         }
         self.titles_follow();
+    }
+
+    fn terminal_reset(&self, tty: u32) -> bool {
+        self.note(format!("reset {tty}"));
+        true
     }
 
     fn tab_titled(&self, pid: u32, mark: &str, _route: TabRoute) -> Option<Vec<TabSpot>> {
@@ -420,6 +465,9 @@ impl Keys for World {
 
     fn enter(&self) -> bool {
         self.note("enter");
+        if let Some(hook) = self.after_enter.borrow().as_ref() {
+            hook(self);
+        }
         self.enter_ok.get()
     }
 }
@@ -525,11 +573,24 @@ fn a_reply_is_pasted_from_primary_and_entered() {
     // One window, one terminal: no title is written and no screen is read.
     assert_eq!(
         world.log(),
-        ["place", "activate 7", "place", "primary", "paste", "wait 250", "place", "enter", "clear"],
-        "the same process before the paste; PRIMARY set before the chord and cleared after Enter"
+        [
+            "place",
+            "activate 7",
+            "place",
+            "primary",
+            "paste",
+            "wait 250",
+            "place",
+            "enter",
+            "clear",
+            "wait 300",
+            "activate 1"
+        ],
+        "the same process before the paste; PRIMARY set before the chord and cleared after Enter; \
+         then the focus back to the file manager"
     );
     assert_eq!(*world.primary.borrow(), None);
-    assert_eq!(answer.trail, Trail { proof: "structural", tab: "", steps: 0 });
+    assert_eq!(answer.trail, Trail { proof: "structural", tab: "", steps: 0, back: "given" });
 }
 
 #[test]
@@ -550,8 +611,9 @@ fn waits_for_the_window_to_come_forward() {
     world.activate_focuses.set(false);
     world.focus_after_waits.set(Some(3));
     assert_eq!(outcome(&world), Outcome::Sent);
-    let waits = world.log().iter().filter(|e| *e == "wait 50").count();
-    assert_eq!(waits, 3);
+    let log = world.log();
+    let before_paste = log.iter().take_while(|e| *e != "paste").filter(|e| *e == "wait 50").count();
+    assert_eq!(before_paste, 3);
 }
 
 #[test]
@@ -1172,7 +1234,7 @@ fn structural_proof_needs_one_window_and_one_terminal() {
     let answer = sent(&world);
     assert_eq!(answer.outcome, Outcome::Sent);
     assert_eq!(world.count("mark"), 1);
-    assert_eq!(answer.trail, Trail { proof: "title", tab: "front", steps: 0 });
+    assert_eq!(answer.trail, Trail { proof: "title", tab: "front", steps: 0, back: "given" });
 
     // Two windows, one terminal each.
     let world = World::new();
@@ -1312,7 +1374,7 @@ fn a_new_session_in_the_tab_in_front_is_proven_by_its_title() {
         world.events(&["mark", "unmark", "select", "back", "paste", "enter"]),
         ["mark", "paste", "enter", "unmark"]
     );
-    assert_eq!(answer.trail, Trail { proof: "title", tab: "front", steps: 0 });
+    assert_eq!(answer.trail, Trail { proof: "title", tab: "front", steps: 0, back: "given" });
     assert!(!world.log().contains(&"read".to_owned()), "no screen is read");
     assert_eq!(world.title_of(TTY), CLAUDE_TITLE, "the title is put back");
 }
@@ -1324,10 +1386,10 @@ fn a_session_in_a_background_tab_is_switched_to() {
     assert_eq!(answer.outcome, Outcome::Sent);
     assert_eq!(
         world.events(&["mark", "tabs", "activate", "select", "back", "paste", "enter", "unmark"]),
-        ["mark", "tabs", "activate 7", "select", "paste", "enter", "unmark"],
-        "found by its title, its window forward, its tab selected, then the keys"
+        ["mark", "tabs", "activate 7", "select", "paste", "enter", "unmark", "activate 1"],
+        "found by its title, its window forward, its tab selected, then the keys, then the focus back"
     );
-    assert_eq!(answer.trail, Trail { proof: "title", tab: "switched", steps: 1 });
+    assert_eq!(answer.trail, Trail { proof: "title", tab: "switched", steps: 1, back: "given" });
     assert_eq!(world.selected(WINDOW), 1, "the terminal stays on the session's tab");
     assert_eq!(world.title_of(TTY), CLAUDE_TITLE);
 }
@@ -1699,3 +1761,293 @@ fn primary_is_left_alone_once_its_not_ours() {
     assert_eq!(outcome(&world), Outcome::Sent);
     assert_eq!(world.primary.borrow().as_deref(), Some("selected by hand"));
 }
+
+// ---- Giving the focus back (`plans/move-and-focus.md` §3) ----
+
+/// The file manager, which had the focus before the reply.
+const BEFORE: u64 = 1;
+
+/// What happened after Enter.
+fn after_enter(world: &World) -> Vec<String> {
+    let log = world.log();
+    let at = log.iter().rposition(|e| e == "enter").expect("Enter was pressed");
+    log[at + 1..].to_vec()
+}
+
+fn focused(world: &World) -> Option<u64> {
+    world.list().unwrap_or_default().iter().find(|w| w.focused).map(|w| w.id)
+}
+
+#[test]
+fn after_a_reply_the_focus_goes_back_to_the_window_that_had_it() {
+    let world = World::new();
+    let answer = sent(&world);
+    assert_eq!(answer.outcome, Outcome::Sent);
+    assert_eq!(after_enter(&world), ["clear", "wait 300", "activate 1"], "300 ms after Enter");
+    assert_eq!(answer.trail.back, "given");
+    assert_eq!(focused(&world), Some(BEFORE));
+
+    // With a title: put back first, then the focus.
+    let world = two_tabs(0);
+    let answer = sent(&world);
+    assert_eq!(answer.trail.back, "given");
+    assert_eq!(after_enter(&world), ["clear", "unmark", "wait 300", "activate 1"]);
+    assert_eq!(world.selected(WINDOW), 1, "the terminal stays on the session's tab behind it");
+}
+
+#[test]
+fn nothing_is_given_back_when_nothing_else_had_the_focus() {
+    // Nothing focused before (the desktop, the overview, the launcher).
+    let world = World::new();
+    world.focus(0);
+    let answer = sent(&world);
+    assert_eq!(answer.outcome, Outcome::Sent);
+    assert_eq!(world.events(&["activate", "wait"]), ["activate 7", "wait 250"]);
+    assert_eq!(answer.trail.back, "");
+    // The terminal itself had it.
+    let world = World::new();
+    world.focus(WINDOW);
+    let answer = sent(&world);
+    assert_eq!(world.events(&["activate", "wait"]), ["activate 7", "wait 250"]);
+    assert_eq!(answer.trail.back, "");
+}
+
+#[test]
+fn a_window_that_went_meanwhile_is_never_activated() {
+    let replaced: [(&str, Hook); 3] = [
+        (
+            "closed",
+            Box::new(|w: &World| w.wins.borrow_mut().as_mut().expect("windows").retain(|w| w.id != BEFORE)),
+        ),
+        (
+            "its id another app's window",
+            Box::new(|w: &World| {
+                for win in
+                    w.wins.borrow_mut().as_mut().expect("windows").iter_mut().filter(|w| w.id == BEFORE)
+                {
+                    win.pid = 51;
+                }
+            }),
+        ),
+        (
+            "another class",
+            Box::new(|w: &World| {
+                for win in
+                    w.wins.borrow_mut().as_mut().expect("windows").iter_mut().filter(|w| w.id == BEFORE)
+                {
+                    win.class = "org.example.Other".into();
+                }
+            }),
+        ),
+    ];
+    for (case, change) in replaced {
+        let world = World::new();
+        *world.after_paste.borrow_mut() = Some(change);
+        let answer = sent(&world);
+        assert_eq!(answer.outcome, Outcome::Sent, "{case}");
+        assert_eq!(answer.trail.back, "gone", "{case}");
+        assert_eq!(world.events(&["activate"]), ["activate 7"], "{case}");
+    }
+}
+
+#[test]
+fn locked_or_logind_silent_after_enter_gives_nothing_back() {
+    for lock in [Some(true), None] {
+        let world = World::new();
+        world.locked_is(vec![Some(false), Some(false), Some(false), lock]);
+        let answer = sent(&world);
+        assert_eq!(answer.outcome, Outcome::Sent, "{lock:?}");
+        assert_eq!(answer.trail.back, "kept", "{lock:?}");
+        assert_eq!(world.events(&["activate"]), ["activate 7"], "{lock:?}");
+    }
+}
+
+#[test]
+fn someone_at_the_pc_since_the_reply_began_keeps_the_terminal() {
+    // Each case's hooks: before the keys, and after the paste.
+    type Hooks = (Option<Hook>, Option<Hook>);
+    type Case = (&'static str, fn() -> Hooks);
+    let cases: [Case; 4] = [
+        ("touched after the paste", || {
+            (None, Some(Box::new(|w: &World| w.free.set(Some(Duration::from_secs(4))))))
+        }),
+        ("a phone typing", || (None, Some(Box::new(|w: &World| w.typing.set(true))))),
+        ("the desktop stopped saying", || (None, Some(Box::new(|w: &World| w.free.set(None))))),
+        ("touched before the keys, then only G7's own", || {
+            (
+                Some(Box::new(|w: &World| w.free.set(Some(Duration::from_secs(4))))),
+                Some(Box::new(|w: &World| w.free.set(Some(Duration::ZERO)))),
+            )
+        }),
+    ];
+    for (case, hooks) in cases {
+        let world = World::new();
+        let (before_keys, after_paste) = hooks();
+        *world.after_primary.borrow_mut() = before_keys;
+        *world.after_paste.borrow_mut() = after_paste;
+        let answer = sent(&world);
+        assert_eq!(answer.outcome, Outcome::Sent, "{case}");
+        assert_eq!(answer.trail.back, "kept", "{case}");
+        assert_eq!(world.events(&["activate"]), ["activate 7"], "{case}");
+        assert_eq!(focused(&world), Some(WINDOW), "{case}");
+    }
+}
+
+#[test]
+fn a_focus_moved_meanwhile_stays_where_it_went() {
+    let world = World::new();
+    if let Some(wins) = world.wins.borrow_mut().as_mut() {
+        wins.push(win(3, 60, "org.gnome.TextEditor", "notes"));
+    }
+    *world.after_enter.borrow_mut() = Some(Box::new(|w: &World| w.focus(3)));
+    let answer = sent(&world);
+    assert_eq!(answer.outcome, Outcome::Sent);
+    assert_eq!(answer.trail.back, "kept");
+    assert_eq!(world.events(&["activate"]), ["activate 7"]);
+    assert_eq!(focused(&world), Some(3));
+}
+
+#[test]
+fn text_that_may_sit_in_the_box_keeps_the_terminal_in_front() {
+    // A question came between the paste and Enter.
+    let world = World::new();
+    world.places(vec![
+        Ok(Found::Place(place())),
+        Ok(Found::Place(place())),
+        Ok(Found::Place(Place { state: Now::NeedsYou, ..place() })),
+    ]);
+    let answer = sent(&world);
+    assert_eq!(answer.outcome, Outcome::Failed(Failed::Interrupted));
+    assert_eq!(answer.trail.back, "kept");
+    assert_eq!(world.events(&["activate", "wait"]), ["activate 7", "wait 250"], "no wait, no activate");
+    // Enter couldn't be pressed.
+    let world = World::new();
+    world.enter_ok.set(false);
+    let answer = sent(&world);
+    assert_eq!(answer.outcome, Outcome::Failed(Failed::Input));
+    assert_eq!(answer.trail.back, "kept");
+    assert_eq!(world.events(&["activate"]), ["activate 7"]);
+}
+
+#[test]
+fn a_refusal_after_the_terminal_came_forward_gives_the_focus_back_at_once() {
+    let cases: [(&str, World, Outcome); 3] = [
+        (
+            "locked at the gate, unlocked again",
+            {
+                let w = two_tabs(0);
+                w.locked_is(vec![Some(false), Some(false), Some(true), Some(false)]);
+                w
+            },
+            Outcome::Refused(Refused::Locked),
+        ),
+        (
+            "PRIMARY refused",
+            {
+                let w = World::new();
+                w.primary_ok.set(false);
+                w
+            },
+            Outcome::Refused(Refused::Setup),
+        ),
+        (
+            "another process before the paste",
+            {
+                let w = World::new();
+                w.places(vec![Ok(Found::Place(place())), Ok(Found::Ended)]);
+                w
+            },
+            Outcome::Refused(Refused::NoProcess),
+        ),
+    ];
+    for (case, world, expected) in cases {
+        let answer = sent(&world);
+        assert_eq!(answer.outcome, expected, "{case}");
+        assert_eq!(answer.trail.back, "given", "{case}");
+        assert_eq!(world.keys(), NOTHING, "{case}");
+        assert!(!world.log().contains(&"wait 300".to_owned()), "{case}: nothing was typed to wait for");
+        assert_eq!(world.log().last().map(String::as_str), Some("activate 1"), "{case}");
+    }
+}
+
+#[test]
+fn a_terminal_that_was_minimized_is_minimized_again_once_the_focus_is_back() {
+    let minimized = || {
+        let world = World::new();
+        if let Some(wins) = world.wins.borrow_mut().as_mut() {
+            wins[1].minimized = true;
+        }
+        world
+    };
+    let world = minimized();
+    assert_eq!(sent(&world).trail.back, "given");
+    assert_eq!(after_enter(&world), ["clear", "wait 300", "activate 1", "minimize 7"]);
+
+    // The focus didn't arrive: the terminal stays as it is, nothing is tried again.
+    let world = minimized();
+    world.stuck.borrow_mut().push(BEFORE);
+    assert_eq!(sent(&world).trail.back, "failed");
+    let after = after_enter(&world);
+    assert_eq!(after.iter().filter(|e| e.starts_with("activate")).count(), 1);
+    assert_eq!(after.iter().filter(|e| *e == "wait 50").count(), 10, "half a second");
+    assert!(!after.iter().any(|e| e.starts_with("minimize")));
+
+    // A terminal that wasn't minimized isn't minimized.
+    let world = World::new();
+    sent(&world);
+    assert!(!world.log().iter().any(|e| e.starts_with("minimize")));
+}
+
+#[test]
+fn a_window_on_another_workspace_is_left_alone() {
+    for workspace in [Some(1), Some(-1), None] {
+        let world = World::new();
+        if let Some(wins) = world.wins.borrow_mut().as_mut() {
+            wins[0].workspace = workspace;
+        }
+        let answer = sent(&world);
+        assert_eq!(answer.outcome, Outcome::Sent, "{workspace:?}");
+        assert_eq!(answer.trail.back, "kept", "{workspace:?}");
+        assert_eq!(world.events(&["activate"]), ["activate 7"], "{workspace:?}");
+    }
+}
+
+// ---- What the PC offers (`plans/move-and-focus.md` §7.1) ----
+
+#[test]
+fn what_a_pc_offers_is_found_by_capability() {
+    use g7link_core::{
+        agent_move::reply_needs,
+        session_move,
+        session_reply::{self, needs},
+    };
+    assert_eq!(Setup::of(false, false, false), Setup::Desktop);
+    assert_eq!(Setup::of(false, true, true), Setup::Desktop, "no shell is no window backend");
+    assert_eq!(Setup::of(true, false, true), Setup::Extension);
+    assert_eq!(Setup::of(true, false, false), Setup::Extension);
+    assert_eq!(Setup::of(true, true, false), Setup::Keyboard);
+    assert_eq!(Setup::of(true, true, true), Setup::Ready);
+
+    let four = [session_reply::CAP, needs::DESKTOP, needs::EXTENSION, needs::KEYBOARD];
+    for (setup, word, need) in [
+        (Setup::Ready, session_reply::CAP, None),
+        (Setup::Desktop, needs::DESKTOP, Some(needs::DESKTOP)),
+        (Setup::Extension, needs::EXTENSION, Some(needs::EXTENSION)),
+        (Setup::Keyboard, needs::KEYBOARD, Some(needs::KEYBOARD)),
+    ] {
+        for host_moves in [false, true] {
+            let caps = capabilities(setup, host_moves);
+            assert_eq!(caps.iter().filter(|c| four.contains(c)).count(), 1, "{setup:?}: one of the four");
+            assert!(caps.contains(&word), "{setup:?}");
+            assert_eq!(reply_needs(|c| caps.contains(&c)), need, "{setup:?}: as a phone reads it");
+            assert_eq!(
+                caps.contains(&session_move::CAP),
+                setup == Setup::Ready && host_moves,
+                "{setup:?} {host_moves}: a move only beside a reply"
+            );
+        }
+    }
+}
+
+#[path = "move_tests.rs"]
+mod moves;

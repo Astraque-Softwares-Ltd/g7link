@@ -206,11 +206,12 @@ pub fn compute_capabilities(node: Option<&Node>) -> Vec<String> {
         if crate::agents::offers_control() {
             caps.push(g7link_core::agent::CONTROL.into());
         }
-        // Replies typed into sessions here, while the window backend and the
-        // virtual keyboard can do it (§9).
-        if crate::agents::reply::offered() {
-            caps.push(g7link_core::session_reply::CAP.into());
-        }
+        // Replies typed into sessions here while the window backend and the
+        // virtual keyboard can do it, else the one thing they need (§9); a
+        // move to G7 beside them while the host can close a session (§9.1).
+        let setup = crate::agents::reply::offered();
+        let offered = crate::agents::reply::capabilities(setup, crate::agents::offers_move());
+        caps.extend(offered.into_iter().map(String::from));
     }
     caps
 }

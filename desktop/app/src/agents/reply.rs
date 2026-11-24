@@ -14,7 +14,10 @@
 //! it), finds the window or tab showing that title, and selects that tab
 //! through the accessibility bus. The title is put back on every way out.
 //! Someone at the PC is `in_use` with how long to wait, so a phone can send
-//! the reply again once the PC is free.
+//! the reply again once the PC is free. Once the reply is in, the focus goes
+//! back to the window that had it, when nobody touched the PC meanwhile
+//! (`plans/move-and-focus.md` §3). Moving a session to G7 ([`move_here`])
+//! types nothing at all: the agent host ends the session's proven process.
 //!
 //! The sequence runs over four small traits ([`Host`], [`Windows`],
 //! [`Keys`], [`Desk`]) so every refusal is tested on fakes; the live ones
@@ -79,6 +82,10 @@ const MAX_RETRY_MS: u64 = 60_000;
 const MIN_MARK_CHARS: usize = 16;
 /// Bytes in a target's `app`, `agent` and `folder`.
 const MAX_TARGET_BYTES: usize = 64;
+/// After Enter, before the focus goes back: the key reaches the terminal first.
+const GIVE_BACK_AFTER: Duration = Duration::from_millis(300);
+/// The window that had the focus has this long to take it back.
+const BACK_WAIT: Duration = Duration::from_millis(500);
 
 // ---- What the request and the answer are ----
 
@@ -131,6 +138,10 @@ pub(crate) enum Refused {
     Text,
     Rate,
     Setup,
+    /// A move's: the session's folder isn't one of the agent folders.
+    Folder,
+    /// A move's: the agent can't run on this PC now.
+    Agent,
 }
 
 impl Refused {
@@ -151,6 +162,8 @@ impl Refused {
             Refused::Text => "text",
             Refused::Rate => "rate",
             Refused::Setup => "setup",
+            Refused::Folder => "folder",
+            Refused::Agent => "agent",
         }
     }
 }
@@ -225,6 +238,11 @@ pub(crate) struct Trail {
     pub tab: &'static str,
     /// Tabs moved past when switching.
     pub steps: usize,
+    /// The focus afterwards: `given` back to the window that had it, `kept`
+    /// on the terminal (a rule said no), `gone` (that window isn't there),
+    /// `failed` (it didn't take the focus), or empty: nothing was brought
+    /// forward, or nothing else had the focus.
+    pub back: &'static str,
 }
 
 impl Answer {
@@ -329,6 +347,20 @@ pub(crate) struct Place {
     pub marks: Vec<String>,
     /// The folder's label, never a path.
     pub folder: String,
+    /// What would still stop continuing it once this process is gone, from
+    /// a host that says (`cap::MOVE`).
+    pub continue_block: Option<Blocked>,
+}
+
+/// Why a session couldn't be continued as a thread.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Blocked {
+    /// Something keeps it open with no trace (a session of the Codex app).
+    Open,
+    /// Its folder isn't one of the agent folders.
+    Folder,
+    /// The agent isn't installed or signed in.
+    Agent,
 }
 
 impl std::fmt::Debug for Place {
@@ -343,6 +375,7 @@ impl std::fmt::Debug for Place {
             .field("foreground", &self.foreground)
             .field("chain", &self.chain.len())
             .field("marks", &self.marks.len())
+            .field("continue_block", &self.continue_block)
             .finish_non_exhaustive()
     }
 }
@@ -383,6 +416,8 @@ pub(crate) struct Win {
     pub minimized: bool,
     /// A normal window, not a dialog or a menu.
     pub normal: bool,
+    /// Its workspace's index, -1 on every workspace; `None` when not said.
+    pub workspace: Option<i64>,
 }
 
 impl std::fmt::Debug for Win {
@@ -395,6 +430,7 @@ impl std::fmt::Debug for Win {
             .field("fullscreen", &self.fullscreen)
             .field("minimized", &self.minimized)
             .field("normal", &self.normal)
+            .field("workspace", &self.workspace)
             .finish_non_exhaustive()
     }
 }
@@ -408,6 +444,7 @@ pub(crate) trait Windows {
     /// `None` when the backend didn't answer.
     fn list(&self) -> Option<Vec<Win>>;
     fn activate(&self, id: u64) -> bool;
+    fn minimize(&self, id: u64) -> bool;
     fn set_primary(&self, text: &str) -> bool;
     /// Clears PRIMARY if it still holds `expected`.
     fn clear_primary(&self, expected: &str);
@@ -421,6 +458,10 @@ pub(crate) trait Windows {
     fn title_mark(&self, tty: u32, title: &str) -> bool;
     /// Puts back the title [`Windows::title_mark`] pushed.
     fn title_unmark(&self, tty: u32);
+    /// Turns off the mouse reporting an agent that exited may have left on
+    /// the terminal `tty`, and shows its cursor (written to its device, the
+    /// output side); false when it couldn't.
+    fn terminal_reset(&self, tty: u32) -> bool;
     /// Where tabs titled with `mark` are among the windows of the app with
     /// `pid`, read without changing anything; `None` when it can't be read.
     fn tab_titled(&self, pid: u32, mark: &str, route: TabRoute) -> Option<Vec<TabSpot>>;
@@ -504,6 +545,17 @@ struct Bound {
     agent_start: u64,
     emulator: u32,
     emulator_start: u64,
+}
+
+impl Bound {
+    /// The same phone, session and run of the agent: a move ends that
+    /// process, whichever window shows it.
+    fn same_run(&self, other: &Bound) -> bool {
+        self.phone == other.phone
+            && self.session == other.session
+            && self.agent == other.agent
+            && self.agent_start == other.agent_start
+    }
 }
 
 #[derive(Debug)]
@@ -630,18 +682,43 @@ impl Ledger {
     /// Spends `nonce` (once, matching or not); true when it was for
     /// `bound`, which is then confirmed.
     fn redeem(&mut self, nonce: &str, bound: &Bound, now: Instant) -> bool {
-        self.prune(now);
-        let Some(at) = self.nonces.iter().position(|n| n.value == nonce) else { return false };
-        let spent = self.nonces.remove(at).expect("an index just found");
-        if spent.bound != *bound {
-            return false;
+        let matched = self.spend(nonce, now).is_some_and(|spent| spent == *bound);
+        if matched {
+            self.confirm(bound, now);
         }
+        matched
+    }
+
+    /// Whether this phone confirmed this run of the agent in this session,
+    /// in any window: what a move asks.
+    fn run_confirmed(&mut self, bound: &Bound, now: Instant) -> bool {
+        self.prune(now);
+        self.confirmed.iter().any(|(b, _)| b.same_run(bound))
+    }
+
+    /// [`Ledger::redeem`] for a move: the nonce must be for the same run of
+    /// the agent, for this phone and session.
+    fn redeem_run(&mut self, nonce: &str, bound: &Bound, now: Instant) -> bool {
+        let matched = self.spend(nonce, now).is_some_and(|spent| spent.same_run(bound));
+        if matched {
+            self.confirm(bound, now);
+        }
+        matched
+    }
+
+    /// Removes `nonce`, giving back what it was for.
+    fn spend(&mut self, nonce: &str, now: Instant) -> Option<Bound> {
+        self.prune(now);
+        let at = self.nonces.iter().position(|n| n.value == nonce)?;
+        self.nonces.remove(at).map(|spent| spent.bound)
+    }
+
+    fn confirm(&mut self, bound: &Bound, now: Instant) {
         self.confirmed.retain(|(b, _)| !(b.phone == bound.phone && b.session == bound.session));
         if self.confirmed.len() >= MAX_CONFIRMED {
             self.confirmed.pop_front();
         }
         self.confirmed.push_back((bound.clone(), now));
-        true
     }
 }
 
@@ -915,6 +992,32 @@ struct Front {
     class: String,
 }
 
+impl Front {
+    fn of(window: &Win) -> Self {
+        Front { id: window.id, pid: window.pid, class: window.class.clone() }
+    }
+
+    /// The same window: its id, and the same pid and class (an id reused
+    /// by another window isn't it).
+    fn is(&self, window: &Win) -> bool {
+        window.id == self.id && window.pid == self.pid && window.class == self.class
+    }
+}
+
+/// What was in front before a reply, and what it brought forward: for
+/// giving the focus back (`plans/move-and-focus.md` §3).
+#[derive(Debug, Default)]
+struct Shown {
+    /// The window that had the focus before anything was brought forward.
+    prior: Option<Front>,
+    /// The windows that were minimized then.
+    minimized: Vec<u64>,
+    /// The window G7 brought forward, once it had the focus.
+    front: Option<Front>,
+    /// Someone used the PC between the first look and G7's keys.
+    touched: bool,
+}
+
 /// Whether `front` has the focus, and, when G7 wrote a title, shows it.
 fn focused_on<W: Windows>(windows: &W, front: &Front, mark: Option<&str>) -> bool {
     windows.list().is_some_and(|list| {
@@ -1057,6 +1160,7 @@ pub(crate) fn answer<H: Host, W: Windows, K: Keys, D: Desk>(
         proof = answer.trail.proof,
         tab = answer.trail.tab,
         steps = answer.trail.steps,
+        back = answer.trail.back,
         "a phone's reply into a session"
     );
     Ok(answer)
@@ -1167,7 +1271,10 @@ fn send<H: Host, W: Windows, K: Keys, D: Desk>(
     let entry =
         Entry { replies, phone, session: &ask.session, text: &text, place: &place, resolved: &resolved };
     let mut trail = Trail::default();
-    let answer = enter(pc, &entry, &mut trail);
+    let mut shown = Shown::default();
+    let answer = enter(pc, &entry, &mut trail, &mut shown);
+    // The title is back and PRIMARY cleared: the answer is decided.
+    trail.back = give_back(pc, &shown, answer.outcome);
     Ok(Answer { trail, ..answer.at(&resolved) })
 }
 
@@ -1193,6 +1300,7 @@ fn enter<H: Host, W: Windows, K: Keys, D: Desk>(
     pc: &Pc<'_, H, W, K, D>,
     entry: &Entry<'_>,
     trail: &mut Trail,
+    shown: &mut Shown,
 ) -> Answer {
     let place = entry.place;
     let resolved = entry.resolved;
@@ -1209,20 +1317,22 @@ fn enter<H: Host, W: Windows, K: Keys, D: Desk>(
     }
     let Some(tty) = place.tty else { return Answer::refused(Refused::Place) };
     let deadline = pc.desk.now() + BEFORE_PASTE;
+    shown.prior = listed.iter().find(|w| w.focused).map(Front::of);
+    shown.minimized = listed.iter().filter(|w| w.minimized).map(|w| w.id).collect();
 
     // The window, and its tab, in front and proven.
     let (front, proven) = match resolved.window {
         Some(id) => {
             trail.proof = "structural";
             let front = Front { id, pid: resolved.emulator.pid, class: resolved.class.clone() };
-            if let Err(outcome) = bring_forward(pc, &front) {
+            if let Err(outcome) = bring_forward(pc, &front, &mut shown.front) {
                 return Answer::of(outcome);
             }
             (front, None)
         }
         None => {
             trail.proof = if by_status_file(place) { "title" } else { "title_text" };
-            match title_proof(pc, place, resolved, tty, deadline, trail) {
+            match title_proof(pc, place, resolved, tty, deadline, trail, &mut shown.front) {
                 Ok(proven) => (proven.front.clone(), Some(proven)),
                 Err(outcome) => return Answer::of(outcome),
             }
@@ -1252,6 +1362,8 @@ fn enter<H: Host, W: Windows, K: Keys, D: Desk>(
     if let Some(back) = proven.as_ref().and_then(|p| p.back.as_ref()) {
         back.keep();
     }
+    // Before G7's own keys, which the desk counts as nobody's.
+    shown.touched = pc.desk.phone_typing() || pc.desk.free_in() != Some(Duration::ZERO);
     entry.replies.ledger().entered(entry.phone, entry.session, Instant::now());
     if !pc.keys.paste() {
         return Answer::failed(Failed::Input);
@@ -1281,10 +1393,12 @@ fn same_run(again: &Place, place: &Place) -> bool {
     again.pid == place.pid && again.start_ticks == place.start_ticks && again.tty == place.tty
 }
 
-/// Brings `front` forward and waits for it to have the focus.
+/// Brings `front` forward and waits for it to have the focus; then it's
+/// `brought`, whatever happens after.
 fn bring_forward<H: Host, W: Windows, K: Keys, D: Desk>(
     pc: &Pc<'_, H, W, K, D>,
     front: &Front,
+    brought: &mut Option<Front>,
 ) -> Result<(), Outcome> {
     if !pc.windows.activate(front.id) {
         return Err(Outcome::Failed(Failed::Focus));
@@ -1297,7 +1411,61 @@ fn bring_forward<H: Host, W: Windows, K: Keys, D: Desk>(
         pc.desk.wait(FOCUS_POLL);
         waited += FOCUS_POLL;
     }
+    *brought = Some(front.clone());
     Ok(())
+}
+
+/// Gives the focus back to the window that had it before G7 brought the
+/// terminal forward (`plans/move-and-focus.md` §3): after a reply once
+/// Enter had time to arrive, at once when nothing was typed, never when
+/// text may sit in the agent's box. Only while the PC is unlocked, nobody
+/// touched it since before the reply, the terminal still has the focus, and
+/// that window is still there, on the terminal's workspace. Once, never
+/// retried. The word for the log.
+fn give_back<H: Host, W: Windows, K: Keys, D: Desk>(
+    pc: &Pc<'_, H, W, K, D>,
+    shown: &Shown,
+    outcome: Outcome,
+) -> &'static str {
+    let Some(front) = &shown.front else { return "" };
+    // The terminal had the focus itself, or nothing listed did.
+    let Some(prior) = shown.prior.as_ref().filter(|prior| prior.id != front.id) else { return "" };
+    match outcome {
+        Outcome::Sent => pc.desk.wait(GIVE_BACK_AFTER),
+        // The text may be in the agent's box: the PC's user must see it.
+        Outcome::Failed(Failed::Interrupted | Failed::Input) => return "kept",
+        Outcome::Ready | Outcome::Refused(_) | Outcome::Failed(Failed::Focus) => {}
+    }
+    if pc.desk.locked() != Some(false) {
+        return "kept";
+    }
+    // Someone back at the PC may be typing into the terminal now.
+    if shown.touched || pc.desk.phone_typing() || pc.desk.free_in() != Some(Duration::ZERO) {
+        return "kept";
+    }
+    let Some(listed) = pc.windows.list() else { return "kept" };
+    // Moved by someone or something else: left where it is.
+    let Some(front_now) = listed.iter().find(|w| front.is(w) && w.focused) else { return "kept" };
+    let Some(prior_now) = listed.iter().find(|w| prior.is(w)) else { return "gone" };
+    // Giving it back would switch workspaces (not tried with the owner, S10).
+    if prior_now.workspace.is_none() || prior_now.workspace != front_now.workspace {
+        return "kept";
+    }
+    if !pc.windows.activate(prior.id) {
+        return "failed";
+    }
+    let mut waited = Duration::ZERO;
+    while !focused_on(pc.windows, prior, None) {
+        if waited >= BACK_WAIT {
+            return "failed";
+        }
+        pc.desk.wait(FOCUS_POLL);
+        waited += FOCUS_POLL;
+    }
+    if shown.minimized.contains(&front.id) {
+        pc.windows.minimize(front.id);
+    }
+    "given"
 }
 
 /// The title proof: a one-time title on the session's terminal, the window
@@ -1311,6 +1479,7 @@ fn title_proof<'a, H: Host, W: Windows, K: Keys, D: Desk>(
     tty: u32,
     deadline: Instant,
     trail: &mut Trail,
+    brought: &mut Option<Front>,
 ) -> Result<Proven<'a, W>, Outcome> {
     let refused = Outcome::Refused;
     let pid = resolved.emulator.pid;
@@ -1340,7 +1509,7 @@ fn title_proof<'a, H: Host, W: Windows, K: Keys, D: Desk>(
         Seen::Window(window) => {
             trail.tab = "front";
             let front = Front { id: window.id, pid, class: window.class };
-            bring_forward(pc, &front)?;
+            bring_forward(pc, &front, brought)?;
             front
         }
         Seen::Tab(spot) => {
@@ -1349,7 +1518,7 @@ fn title_proof<'a, H: Host, W: Windows, K: Keys, D: Desk>(
             }
             let window = spot_window(pc.windows, pid, &spot)?;
             let front = Front { id: window.id, pid, class: window.class };
-            bring_forward(pc, &front)?;
+            bring_forward(pc, &front, brought)?;
             if spot.at == spot.selected {
                 trail.tab = "front";
             } else {
@@ -1514,6 +1683,11 @@ fn found(result: SessionPlaceResult, folder: &str) -> Found {
             .collect(),
         marks: place.marks,
         folder: folder.to_owned(),
+        continue_block: place.continue_block.map(|block| match block {
+            api::ContinueBlock::Open => Blocked::Open,
+            api::ContinueBlock::Folder => Blocked::Folder,
+            api::ContinueBlock::Agent => Blocked::Agent,
+        }),
     })
 }
 
@@ -1523,6 +1697,23 @@ struct LiveHost {
     client: Client,
     runtime: tokio::runtime::Handle,
     folder: String,
+}
+
+impl LiveHost {
+    /// For `session`, asked from a thread of its own. `folder` is the
+    /// session's folder label when the page's list has it.
+    async fn new(client: &Client, folder: Option<String>, session: &str) -> Self {
+        let folder = match folder {
+            Some(folder) => folder,
+            None => client
+                .sessions_list(Some(g7link_core::agent::MAX_SESSIONS as u32))
+                .await
+                .ok()
+                .and_then(|list| list.into_iter().find(|s| s.id == session).map(|s| s.folder_label))
+                .unwrap_or_default(),
+        };
+        LiveHost { client: client.clone(), runtime: tokio::runtime::Handle::current(), folder }
+    }
 }
 
 impl Host for LiveHost {
@@ -1543,14 +1734,18 @@ fn wire(answer: Answer) -> AgentSessionReplied {
     AgentSessionReplied {
         result: answer.outcome.result().to_owned(),
         reason: answer.outcome.reason().map(str::to_owned),
-        target: answer.target.map(|t| AgentReplyTarget {
-            app: t.app,
-            agent: t.agent,
-            folder: t.folder,
-            kind: t.kind.to_owned(),
-        }),
+        target: answer.target.map(wire_target),
         nonce: answer.nonce,
         retry_ms: answer.retry_ms.map(u64::from),
+    }
+}
+
+fn wire_target(target: Target) -> AgentReplyTarget {
+    AgentReplyTarget {
+        app: target.app,
+        agent: target.agent,
+        folder: target.folder,
+        kind: target.kind.to_owned(),
     }
 }
 
@@ -1580,16 +1775,7 @@ pub(crate) async fn phone(
     if !client.host().has(cap::PLACE) {
         return Ok(AgentReply::Replied(wire(Answer::refused(Refused::Setup))));
     }
-    let folder = match folder {
-        Some(folder) => folder,
-        None => client
-            .sessions_list(Some(g7link_core::agent::MAX_SESSIONS as u32))
-            .await
-            .ok()
-            .and_then(|list| list.into_iter().find(|s| s.id == session).map(|s| s.folder_label))
-            .unwrap_or_default(),
-    };
-    let host = LiveHost { client: client.clone(), runtime: tokio::runtime::Handle::current(), folder };
+    let host = LiveHost::new(client, folder, &session).await;
     let ask = Ask { session, check: text.is_none(), text, confirm };
     let (tx, rx) = tokio::sync::oneshot::channel();
     let spawned = std::thread::Builder::new().name("agent-reply".into()).spawn(move || {
@@ -1607,9 +1793,9 @@ pub(crate) async fn phone(
     }
 }
 
-/// Offers `agent.reply` again when what it needs comes or goes (the
-/// extension enabled after login, or updated). One thread for the app's
-/// lifetime.
+/// Offers `agent.reply`, or says what it needs, again when that comes or
+/// goes (the extension enabled after login, or updated). One thread for the
+/// app's lifetime.
 pub(crate) fn watch_setup() {
     const EVERY: Duration = Duration::from_secs(60);
     let spawned = std::thread::Builder::new().name("agent-reply-setup".into()).spawn(|| {
@@ -1620,7 +1806,7 @@ pub(crate) fn watch_setup() {
                 continue;
             }
             let before = *SETUP.lock().unwrap_or_else(|e| e.into_inner());
-            if before.map(|s| s == Setup::Ready) != Some(offered()) {
+            if before != Some(offered()) {
                 crate::core_host::refresh_capabilities();
             }
         }
@@ -1661,6 +1847,7 @@ impl Windows for LiveWindows {
                     fullscreen: w.fullscreen,
                     minimized: w.minimized,
                     normal: w.normal,
+                    workspace: w.workspace,
                 })
                 .collect(),
         )
@@ -1668,6 +1855,10 @@ impl Windows for LiveWindows {
 
     fn activate(&self, id: u64) -> bool {
         crate::sys::shell_windows::activate(id)
+    }
+
+    fn minimize(&self, id: u64) -> bool {
+        crate::sys::shell_windows::minimize(id)
     }
 
     fn set_primary(&self, text: &str) -> bool {
@@ -1694,6 +1885,10 @@ impl Windows for LiveWindows {
         if !crate::sys::tty_title::unmark(tty) {
             tracing::info!("a terminal's title couldn't be put back after a phone's reply");
         }
+    }
+
+    fn terminal_reset(&self, tty: u32) -> bool {
+        crate::sys::tty_title::restore(tty)
     }
 
     fn tab_titled(&self, pid: u32, mark: &str, route: TabRoute) -> Option<Vec<TabSpot>> {
@@ -1756,42 +1951,84 @@ impl Desk for LiveDesk {
     }
 }
 
-/// Whether this PC can enter replies now: the extension lists windows with
-/// their states and writes PRIMARY alone, and the virtual keyboard can be
-/// made. Asks the desktop (blocking); the answer is kept for [`setup`].
-pub(crate) fn offered() -> bool {
-    let extension = crate::sys::shell_clipboard::has_primary() && crate::sys::shell_windows::has_states();
-    let keyboard = crate::sys::input::reply_keyboard_possible();
-    let setup = match (extension, keyboard) {
-        (true, true) => Setup::Ready,
-        (false, _) => Setup::Extension,
-        (true, false) => Setup::Keyboard,
-    };
+/// What this PC can do about replies now (`plans/move-and-focus.md` §7.1),
+/// each found by asking for it, never by the desktop's name: GNOME Shell on
+/// the session bus, the companion extension's window states and PRIMARY,
+/// and a virtual keyboard. Asks the desktop (blocking); the answer is kept
+/// for [`setup`]. While the PC is locked GNOME turns the extension off, so
+/// what was found unlocked stands.
+pub(crate) fn offered() -> Setup {
+    let kept = *SETUP.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(setup) = kept
+        && crate::sys::input::lock_state() == Some(true)
+    {
+        return setup;
+    }
+    let shell = crate::sys::shell_windows::has_shell();
+    let extension =
+        shell && crate::sys::shell_clipboard::has_primary() && crate::sys::shell_windows::has_states();
+    let setup = Setup::of(shell, extension, crate::sys::input::reply_keyboard_possible());
     *SETUP.lock().unwrap_or_else(|e| e.into_inner()) = Some(setup);
-    setup == Setup::Ready
+    setup
 }
 
+/// Whether replies can be typed on this PC, and if not, what they need first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Setup {
+pub(crate) enum Setup {
     Ready,
+    /// No window backend for this desktop: GNOME Shell isn't on the bus.
+    Desktop,
     /// The companion extension is missing or too old.
     Extension,
     /// No virtual keyboard can be made.
     Keyboard,
 }
 
+impl Setup {
+    /// In this order: the desktop, its extension, the keyboard.
+    fn of(shell: bool, extension: bool, keyboard: bool) -> Setup {
+        match (shell, extension, keyboard) {
+            (false, ..) => Setup::Desktop,
+            (true, false, _) => Setup::Extension,
+            (true, true, false) => Setup::Keyboard,
+            (true, true, true) => Setup::Ready,
+        }
+    }
+}
+
+/// The capabilities a PC in `setup` offers: `agent.reply`, or the one word
+/// that says what it needs (docs/protocol/agents.md §9); and `agent.move`
+/// beside `agent.reply` while the agent host can close sessions.
+pub(crate) fn capabilities(setup: Setup, host_moves: bool) -> Vec<&'static str> {
+    use g7link_core::{
+        session_move,
+        session_reply::{self, needs},
+    };
+    match setup {
+        Setup::Ready if host_moves => vec![session_reply::CAP, session_move::CAP],
+        Setup::Ready => vec![session_reply::CAP],
+        Setup::Desktop => vec![needs::DESKTOP],
+        Setup::Extension => vec![needs::EXTENSION],
+        Setup::Keyboard => vec![needs::KEYBOARD],
+    }
+}
+
 static SETUP: Mutex<Option<Setup>> = Mutex::new(None);
 
-/// What [`offered`] found last, for Settings: `ready`, `extension`,
-/// `keyboard`, or empty when it hasn't been asked.
+/// What [`offered`] found last, for Settings: `ready`, `desktop`,
+/// `extension`, `keyboard`, or empty when it hasn't been asked.
 pub(crate) fn setup() -> &'static str {
     match *SETUP.lock().unwrap_or_else(|e| e.into_inner()) {
         Some(Setup::Ready) => "ready",
+        Some(Setup::Desktop) => "desktop",
         Some(Setup::Extension) => "extension",
         Some(Setup::Keyboard) => "keyboard",
         None => "",
     }
 }
+
+#[path = "move_here.rs"]
+pub(crate) mod move_here;
 
 #[cfg(test)]
 #[path = "reply_tests.rs"]

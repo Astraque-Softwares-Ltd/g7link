@@ -2,8 +2,8 @@
 //! The focused window, through G7 Linux's companion GNOME Shell extension:
 //! for apps that publish nothing on the accessibility bus, the window is all
 //! the PC can tell a phone about where its typing goes. Also every window,
-//! and bringing one forward, for a phone's reply into a session
-//! (`agents::reply`).
+//! and bringing one forward (and minimizing it again), for a phone's reply
+//! into a session (`agents::reply`).
 
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -63,6 +63,8 @@ pub struct Listed {
     pub minimized: bool,
     /// A normal window, not a dialog or a menu.
     pub normal: bool,
+    /// Its workspace's index, -1 on every workspace; `None` when not said.
+    pub workspace: Option<i64>,
 }
 
 impl std::fmt::Debug for Listed {
@@ -75,6 +77,7 @@ impl std::fmt::Debug for Listed {
             .field("fullscreen", &self.fullscreen)
             .field("minimized", &self.minimized)
             .field("normal", &self.normal)
+            .field("workspace", &self.workspace)
             .finish_non_exhaustive()
     }
 }
@@ -96,6 +99,8 @@ struct Entry {
     fullscreen: Option<bool>,
     #[serde(default)]
     minimized: Option<bool>,
+    #[serde(default)]
+    workspace: Option<i64>,
 }
 
 fn session() -> Option<zbus::blocking::Connection> {
@@ -146,6 +151,7 @@ fn parse_list(json: &str) -> Option<(Vec<Listed>, bool)> {
             fullscreen: e.fullscreen.unwrap_or(false),
             minimized: e.minimized.unwrap_or(false),
             normal: e.window_type.is_none_or(|t| t == NORMAL),
+            workspace: e.workspace,
         })
         .collect();
     Some((windows, states))
@@ -189,6 +195,22 @@ pub fn activate(id: u64) -> bool {
             conn.call_method(Some(SHELL), PATH, Some(INTERFACE), "Activate", &(id,)).is_ok()
         })
     })
+}
+
+/// Minimizes window `id`. False when the extension refused or isn't there.
+pub fn minimize(id: u64) -> bool {
+    let Ok(id) = u32::try_from(id) else { return false };
+    super::non_tokio(|| {
+        session().is_some_and(|conn| {
+            conn.call_method(Some(SHELL), PATH, Some(INTERFACE), "Minimize", &(id,)).is_ok()
+        })
+    })
+}
+
+/// Whether GNOME Shell is on the session bus: the one desktop G7 has a
+/// window backend for. Asked of the bus, never of the desktop's name.
+pub fn has_shell() -> bool {
+    super::non_tokio(|| session().is_some_and(|conn| super::dbus_name_has_owner(&conn, SHELL)))
 }
 
 /// Calls `changed` with each newly focused window. One thread for the app's
@@ -261,8 +283,8 @@ mod tests {
     #[test]
     fn reads_the_window_list_and_its_states() {
         let json = r#"[
-            {"id":11,"title":"Home","wm_class":"org.gnome.Nautilus","pid":50,"has_focus":true,"window_type":0,"fullscreen":false,"minimized":false},
-            {"id":12,"title":"claude","wm_class":"org.gnome.Ptyxis","pid":100,"has_focus":false,"window_type":0,"fullscreen":true,"minimized":true},
+            {"id":11,"title":"Home","wm_class":"org.gnome.Nautilus","pid":50,"has_focus":true,"window_type":0,"fullscreen":false,"minimized":false,"workspace":0},
+            {"id":12,"title":"claude","wm_class":"org.gnome.Ptyxis","pid":100,"has_focus":false,"window_type":0,"fullscreen":true,"minimized":true,"workspace":-1},
             {"id":13,"title":"Preferences","wm_class":"org.gnome.Ptyxis","pid":100,"window_type":3,"fullscreen":false,"minimized":false}
         ]"#;
         let (windows, states) = parse_list(json).expect("a list");
@@ -276,6 +298,11 @@ mod tests {
         );
         assert!(!windows[2].normal, "a dialog");
         assert!(!windows[2].focused, "missing focus is no focus");
+        assert_eq!(
+            windows.iter().map(|w| w.workspace).collect::<Vec<_>>(),
+            [Some(0), Some(-1), None],
+            "on every workspace is -1; unsaid is unknown"
+        );
 
         // Before 1.5 the flags aren't there.
         let old = r#"[{"id":11,"title":"Home","wm_class":"x","pid":5,"has_focus":true,"window_type":0}]"#;

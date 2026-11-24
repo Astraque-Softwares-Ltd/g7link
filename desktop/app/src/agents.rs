@@ -1231,6 +1231,9 @@ struct BridgeState {
     /// The host offers phase 2's controls (`cap::CONTROL`): models, the
     /// queue, questions, plans, files, images, drafts.
     control: bool,
+    /// The host ends a session's process for Move to G7 (`cap::MOVE`), and
+    /// says where sessions run (`cap::PLACE`).
+    moves: bool,
     /// Keep this PC awake while an agent works (`None`: not known).
     keep_awake: Option<bool>,
     /// Tell me when a limit resets (`None`: not known, or the host has no
@@ -2376,6 +2379,7 @@ async fn serve<R: Relay>(
     let outdated = client.outdated(&launch.version).is_some();
     let says_why = client.host().has(cap::DENY_MESSAGE);
     let control = client.host().has(cap::CONTROL);
+    let moves = client.host().has(cap::MOVE) && client.host().has(cap::PLACE);
     let history = client.host().has(cap::HISTORY);
     let undo = client.host().has(cap::UNDO);
     let presence = client.host().has(cap::PRESENCE);
@@ -2406,6 +2410,7 @@ async fn serve<R: Relay>(
         s.keep_awake = settings.filter(|_| control).map(|x| x.keep_awake);
         s.limit_alarm = settings.filter(|_| presence).map(|x| x.limit_alarm);
         s.control = control;
+        s.moves = moves;
         s.history = history;
         s.undo = undo;
         (s.open.as_ref().map(|o| (o.generation, o.kind, o.id.clone())), s.conn)
@@ -2463,6 +2468,7 @@ async fn serve<R: Relay>(
         s.threads.clear();
         s.questions.clear();
         s.control = false;
+        s.moves = false;
         s.sessions.clear();
         s.following = None;
         s.keep_awake = None;
@@ -3232,6 +3238,12 @@ async fn run_request(from: DeviceId, request: AgentRequest) -> Result<AgentReply
             let folder = lock().sessions.iter().find(|s| s.id == session_id).map(|s| s.folder_label.clone());
             return reply::phone(from, &client, folder, session_id, text, confirm).await;
         }
+        // Move to G7 (§9.1): the host ends the session's process, then
+        // continues it for this phone, its own checks the judge.
+        AgentRequest::SessionMove { session: session_id, confirm } => {
+            let folder = lock().sessions.iter().find(|s| s.id == session_id).map(|s| s.folder_label.clone());
+            return reply::move_here::phone(from, &client, origin(), folder, session_id, confirm).await;
+        }
     })
 }
 
@@ -3683,6 +3695,12 @@ pub fn says_why() -> bool {
 /// The host offers phase 2's controls, so phones may use them (`agent.control`).
 pub fn offers_control() -> bool {
     lock().control
+}
+
+/// The host can close a session for Move to G7, so phones may ask for one
+/// beside a reply (`agent.move`).
+pub fn offers_move() -> bool {
+    lock().moves
 }
 
 /// The timeline model is on screen: `waker` queues [`take_ui`] on the GUI
