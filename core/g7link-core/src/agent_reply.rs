@@ -76,11 +76,18 @@ pub(crate) async fn handle_request(
     rsp.send(answer(shared, peer, env).await).await
 }
 
-/// PC: the refusal of a reply from `peer` before its body is read: this PC
-/// doesn't offer it, or a toggle is off.
-fn refusal(shared: &Arc<Shared>, peer: DeviceId) -> Option<Envelope> {
-    if !shared.we_offer(session_reply::CAP) {
-        return Some(Envelope::error(ErrorCode::Unsupported, "replies can't be entered on this PC now"));
+/// PC: the refusal of a reply, or of a move (§9.1), from `peer` before its
+/// body is read: this PC doesn't offer `cap` now (`unsupported` says what),
+/// or one of §9's toggles is off. Both share `agent_reply`'s one-time
+/// prompt.
+pub(crate) fn refusal(
+    shared: &Arc<Shared>,
+    peer: DeviceId,
+    cap: &str,
+    unsupported: &str,
+) -> Option<Envelope> {
+    if !shared.we_offer(cap) {
+        return Some(Envelope::error(ErrorCode::Unsupported, unsupported));
     }
     if let Some(refused) = agents::refusal(shared, peer, true) {
         return Some(refused);
@@ -95,7 +102,9 @@ fn refusal(shared: &Arc<Shared>, peer: DeviceId) -> Option<Envelope> {
 }
 
 async fn answer(shared: &Arc<Shared>, peer: DeviceId, env: &Envelope) -> Envelope {
-    if let Some(refused) = refusal(shared, peer) {
+    if let Some(refused) =
+        refusal(shared, peer, session_reply::CAP, "replies can't be entered on this PC now")
+    {
         return refused;
     }
     let Some(body) = agents::decode::<AgentSessionReply>(env, AgentSessionReply::is_valid) else {
@@ -137,12 +146,31 @@ async fn ask(shared: &Arc<Shared>, peer: DeviceId, body: AgentSessionReply) -> R
     if !body.is_valid() {
         return Err(agents::invalid(types::AGENT_SESSION_REPLY));
     }
-    let session = shared.session(&peer).ok_or(Error::Offline)?;
-    if !shared.peer_offers_cap(&peer, session_reply::CAP) {
-        return Err(Error::Unsupported);
-    }
     let check = body.check;
     let env = Envelope::new(types::AGENT_SESSION_REPLY, &body)?;
+    let reply = send_once(shared, peer, session_reply::CAP, env).await?;
+    match reply.expect_body::<AgentSessionReplied>(types::OK) {
+        Ok(replied) if replied.is_valid() => Ok(replied.for_request(check)),
+        _ => Err(Error::Timeout),
+    }
+}
+
+/// Phone: sends `env`, a request that types on `peer` (§9, §9.1), once,
+/// and gives back the PC's `ok` unread. `Unsupported`, without sending,
+/// while `peer` doesn't offer `cap`. An error after it went out with no
+/// usable answer, the PC's `INTERNAL` included, is [`Error::Timeout`]; the
+/// PC's `BUSY` (another one is being typed there) is a `Protocol` error
+/// starting `BUSY`; a request the PC turned away unread is `Busy`.
+pub(crate) async fn send_once(
+    shared: &Arc<Shared>,
+    peer: DeviceId,
+    cap: &str,
+    env: Envelope,
+) -> Result<Envelope> {
+    let session = shared.session(&peer).ok_or(Error::Offline)?;
+    if !shared.peer_offers_cap(&peer, cap) {
+        return Err(Error::Unsupported);
+    }
     let (answer, sent) = session.request_tracked(env, REPLY_WAIT).await;
     let reply = match answer {
         Ok(reply) => reply,
@@ -161,10 +189,7 @@ async fn ask(shared: &Arc<Shared>, peer: DeviceId, body: AgentSessionReply) -> R
             }
         });
     }
-    match reply.expect_body::<AgentSessionReplied>(types::OK) {
-        Ok(replied) if replied.is_valid() => Ok(replied.for_request(check)),
-        _ => Err(Error::Timeout),
-    }
+    Ok(reply)
 }
 
 /// The node's §9 methods (phone).

@@ -109,12 +109,26 @@ pub mod session_reply {
         pub const APP: &str = "app";
         pub const ALL: &[&str] = &[TERMINAL, APP];
     }
+
+    /// Capability words a PC offers instead of [`CAP`] while it can't type
+    /// replies, so a phone can say why: at most one of the four at a time
+    /// (`crate::messages::reply_needs` reads them).
+    pub mod needs {
+        /// No window backend for this desktop.
+        pub const DESKTOP: &str = "agent.reply.needs.desktop";
+        /// GNOME Shell is there; the G7 Linux Companion is missing or too old.
+        pub const EXTENSION: &str = "agent.reply.needs.extension";
+        /// No virtual keyboard can be made (`/dev/uinput`).
+        pub const KEYBOARD: &str = "agent.reply.needs.keyboard";
+        /// In the order a PC checks them.
+        pub const ALL: &[&str] = &[DESKTOP, EXTENSION, KEYBOARD];
+    }
 }
 
 use session_reply::{kind, reason, result};
 
 /// Whether `word` can be a `result` or a `reason`: 1 to 32 of `[a-z_]`.
-fn is_reply_word(word: &str) -> bool {
+pub(super) fn is_reply_word(word: &str) -> bool {
     (1..=session_reply::MAX_WORD_BYTES).contains(&word.len())
         && word.bytes().all(|b| b.is_ascii_lowercase() || b == b'_')
 }

@@ -18,6 +18,10 @@ never sends a path, a command, a program name or a flag.
 | `agent.say_why` | desktop | `agent.answer` may carry `message`: deny and say why (§2.4) |
 | `agent.control` | both | Models and effort, plan mode, steering and the queue, the agent's questions, images, `@` files, `/` commands and drafts (§5) |
 | `agent.reply` | desktop | Can enter a reply into a session started on this PC now (§9) |
+| `agent.move` | desktop | Can move a session started on this PC to G7 now (§9.1); offered only with `agent.reply` |
+| `agent.reply.needs.desktop` | desktop | Offered instead of `agent.reply`: G7 can't type replies on this desktop (§9) |
+| `agent.reply.needs.extension` | desktop | Offered instead of `agent.reply`: the desktop's extension is missing or too old (§9) |
+| `agent.reply.needs.keyboard` | desktop | Offered instead of `agent.reply`: no virtual keyboard can be made (§9) |
 
 Everything here is governed by the PC's per-device toggle `agents`, **off by
 default**. While it is off for a phone the PC sends that phone nothing from
@@ -262,8 +266,9 @@ agent.asked  += message?: text                 // with outcome "denied": what th
 A phone can also follow the Claude and Codex sessions the PC's user started
 there without G7 Link: in a terminal, or in the agent's own desktop app. They
 are read-only from the phone: no message answers or stops a session, and only
-§9's reply, behind a toggle of its own, types into one. Once nothing has a
-session open, the phone may continue it as a thread of its own.
+§9's reply and its move to G7 (§9.1), behind a toggle of their own, type into
+one. Once nothing has a session open, the phone may continue it as a thread of
+its own.
 
 The PC offers `agent.sessions`; a phone that shows them offers
 `agent.follow`. Everything here is governed by a second per-device toggle on
@@ -1102,7 +1107,14 @@ phone can show; a reply is never a best guess.
 
 The PC offers `agent.reply` only while it can do it now: it offers
 `agent.sessions`, its window backend can write the PRIMARY selection, and its
-input device can be made. Everything here is governed by a third per-device
+input device can be made. While it can't, it may offer instead one of three
+words that say why, so a phone can show "Can't reply to it from here" with a
+reason rather than nothing: `agent.reply.needs.desktop` (G7 has no window
+backend for this desktop), `agent.reply.needs.extension` (the desktop's
+extension is missing or too old) or `agent.reply.needs.keyboard` (no virtual
+keyboard can be made). A PC offers at most one of the four at a time; a phone
+that sees more than one reads only the first in that order, and a phone sees
+none from a PC before 0.1.29. Everything here is governed by a third per-device
 toggle on the PC, `agent_reply`, **off by default**, which counts only while
 `agents` and `agent_sessions` are on. While it is off the PC answers `DENIED`,
 and the first such request makes the PC show its user a one-time prompt for
@@ -1135,6 +1147,12 @@ This isn't `agent/reply`, §5's answer to an agent's question.
   `interrupted` (the text was pasted and **not** sent; a phone never retries
   it, which would paste it twice) or `input` (a key couldn't be pressed; the
   paste may have landed, so a phone shows it as `interrupted`).
+- **The focus.** After a reply or a move, the PC gives the focus back to the
+  window that had it before, when nobody touched the PC meanwhile, the PC
+  isn't locked, the terminal still has the focus and that window still
+  exists. After `interrupted` and `input` (and a move's `draft` and `open`)
+  it leaves the terminal in front: the PC's user must see what's in it.
+  Nothing of this is on the wire.
 - **Refusal reasons:** `locked`, `in_use` (someone used the PC in the last
   5 s, or a window is full screen; with `retry_ms` a phone may send the same
   reply again after that long, for up to a minute, while its user sees it
@@ -1194,6 +1212,73 @@ Errors as §2.3: `UNSUPPORTED` while the PC doesn't offer `agent.reply`;
 `BAD_MESSAGE` for a request out of its limits; `BUSY` while another reply is
 being entered on the PC; `INTERNAL` when the PC's answer didn't come in time
 (a phone treats it as not known whether it was typed).
+
+### 9.1 Moving a session
+
+Added in G7 Link 0.1.29. "Move to G7" ends a session where it runs and
+continues it as a thread started by the phone, in one tap: the PC ends the
+session's agent where it runs (typing its own exit command into the proven
+terminal, or ending its proven process) and, only once nothing has the
+session open, makes the thread exactly as `agent.session.continue` does (§3),
+whose checks on the PC stay the judge. A phone offers it for a session whose
+`source` is `terminal`, whose `state` is `idle` and which is `blocked: open`.
+
+The PC offers `agent.move` only beside `agent.reply`, while its agent host can
+say, before anything is typed, what would still stop the continue. §9's three
+toggles govern it, with §9's one-time prompt; it shares §9's confirmation,
+rate and one-at-a-time lock. Nothing here travels on Bluetooth, and a phone
+never holds a move while offline or sends it again by itself.
+
+```
+RPC agent/session.move   t = "agent.session.move"
+    b = { session: text, confirm?: text }
+    → ok { result: text, reason?: text, target?: AgentReplyTarget, nonce?: text,
+           retry_ms?: uint, thread?: AgentThread }
+```
+
+- **`result`:** `moved` (with `thread`: the agent closed and the session is
+  that thread now; it left the PC's list, and the phone opens the thread),
+  `closed` (the agent closed, and the PC won't continue it yet), `refused`
+  (nothing was typed) or `failed`.
+- **`closed`.** The agent exited but the PC still sees the session open (a
+  Codex session within 90 s of its last write), or the continue was refused.
+  The session is `ended` in the PC's list; once the PC's list says
+  `can_continue`, the phone sends `agent.session.continue` by itself, once,
+  while that session's screen is open, for up to 2 minutes. After that the
+  session offers Continue here as any ended session does. Nothing is lost
+  either way.
+- **Refusal reasons** (nothing was typed): §9's `locked`, `in_use`,
+  `confirm`, `needs_you`, `busy` (the agent is mid-turn, Claude's included),
+  `ended`, `no_process`, `no_window`, `ambiguous`, `tab`, `unproven`,
+  `place`, `rate` and `setup`, and `folder` (the session's folder isn't one of
+  the PC's agent folders) and `agent` (the agent can't run on the PC now),
+  both found before anything is typed.
+- **Failure reasons:** `focus` (nothing was typed), `interrupted` and `input`
+  (as a reply's: the exit command may sit in the agent's box, not entered),
+  `draft` (the exit command was pasted and not entered: the agent's box held
+  something else, or couldn't be read) and `open` (it was entered and the
+  agent didn't close in time). The PC never tries a second time to end it.
+- **Confirming** is §9's, and shared: a phone that confirmed replies into
+  this session where it runs now isn't asked again; a first move is refused
+  with `confirm`, the `target` and a `nonce`, and sent again with `confirm`
+  set to it. `retry_ms` comes with `rate` and `in_use` as in §9.
+- **The thread** is in the form the asking phone reads (§5.7 without
+  `agent.control`), with `from_phone` set.
+- **The focus** goes back as §9 says, once the agent closed, when a window
+  was brought forward at all.
+- A receiver reads a `result` it doesn't know as `failed` and a `reason` it
+  doesn't know as a plain "Couldn't move it". A `moved` without a thread the
+  phone can read is shown as not known whether it was moved.
+
+Limits as §9's: `session` an id; `confirm`, `nonce` 32 lowercase hex digits;
+`result`, `reason` 1 to 32 `[a-z_]`; `target` as §9's; `retry_ms` at most
+60000; `thread` as §2.2's.
+
+Errors as §9's: `UNSUPPORTED` while the PC doesn't offer `agent.move`;
+`DENIED` while a toggle is off; `NOT_FOUND` for a session the PC doesn't list;
+`BAD_MESSAGE` for a request out of its limits; `BUSY` while a reply or a move
+is being entered on the PC; `INTERNAL` when the PC's answer didn't come in
+time (a phone treats it as not known whether it was moved).
 
 ## 10. Hand-off
 
@@ -1556,6 +1641,15 @@ review while the thread works.
   `G7LinkError.Timeout`: not known whether it was typed. The FFI's
   `agent_session_reply_check` and `agent_session_reply` clean the text
   first (line ends made `\n`, other control characters dropped).
+- The core answers §9.1's request after the same checks, with `agent.move`
+  in place of `agent.reply`, then asks the platform
+  (`AgentRequest::SessionMove`, answered with `AgentReply::Moved`). It passes
+  an answer on only when it's whole (`moved` with its thread and only then,
+  a `confirm` with its target and nonce), made to fit, the thread in the
+  asking phone's form; anything else is `INTERNAL`. On the phone,
+  `Node::agent_session_move` sends it once, and errors as §9's;
+  `Node::agent_move_offered` and `Node::agent_reply_needs` read what the PC
+  offered when it last connected.
 - The core answers §12's requests after checking the toggle and the limits
   (an id that isn't its shape, or an op it doesn't know, never reaches the
   platform), then asks the platform (`AgentRequest::ScriptRun`,

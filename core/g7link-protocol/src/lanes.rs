@@ -228,6 +228,7 @@ pub const RPCS: &[RpcOp] = &[
     rpc(types::AGENT_PR_LIST, svc::AGENT, "pr.list", true),
     rpc(types::AGENT_WRITE, svc::AGENT, "write", false),
     rpc(types::AGENT_SESSION_REPLY, svc::AGENT, "session.reply", false),
+    rpc(types::AGENT_SESSION_MOVE, svc::AGENT, "session.move", false),
     rpc(types::AGENT_HANDOFF_OPEN, svc::AGENT, "handoff.open", false),
     rpc(types::AGENT_SCRIPT_RUN, svc::AGENT, "script.run", false),
     rpc(types::AGENT_SCRIPT_STOP, svc::AGENT, "script.stop", false),
@@ -639,6 +640,7 @@ mod tests {
         assert_eq!(lane_of(AGENT_GIT_JOB), Some(Lane::Rpc { svc: svc::AGENT, op: "git.job" }));
         assert_eq!(lane_of(AGENT_WRITE), Some(Lane::Rpc { svc: svc::AGENT, op: "write" }));
         assert_eq!(lane_of(AGENT_SESSION_REPLY), Some(Lane::Rpc { svc: svc::AGENT, op: "session.reply" }));
+        assert_eq!(lane_of(AGENT_SESSION_MOVE), Some(Lane::Rpc { svc: svc::AGENT, op: "session.move" }));
         assert_eq!(lane_of(AGENT_HANDOFF_OPEN), Some(Lane::Rpc { svc: svc::AGENT, op: "handoff.open" }));
         assert_eq!(lane_of(AGENT_IMAGE), Some(Lane::Stream { svc: svc::AGENT, op: agent_image::OP_UPLOAD }));
         assert_eq!(
@@ -666,7 +668,7 @@ mod tests {
             assert_eq!(rpc_by_header(op.svc, op.op), Some(*op));
             assert_ne!(op.op, OP_LANE);
         }
-        assert_eq!(RPCS.len(), 88);
+        assert_eq!(RPCS.len(), 89);
         let paged: Vec<&str> = RPCS.iter().filter(|op| op.paged).map(|op| op.t).collect();
         assert_eq!(
             paged,

@@ -453,10 +453,10 @@ pub enum NodeEvent {
     AgentSessionsRequested {
         device: DeviceId,
     },
-    /// PC: a paired phone asked to reply into a session started on this PC
-    /// while its `agent_reply` toggle is off (`agents` and `agent_sessions`
-    /// on). Once per phone per run, for a one-time prompt
-    /// (`docs/protocol/agents.md` §9).
+    /// PC: a paired phone asked to reply into a session started on this PC,
+    /// or to move one to G7, while its `agent_reply` toggle is off (`agents`
+    /// and `agent_sessions` on). Once per phone per run, for a one-time
+    /// prompt (`docs/protocol/agents.md` §9, §9.1).
     AgentReplyRequested {
         device: DeviceId,
     },

@@ -321,6 +321,14 @@ pub enum AgentRequest {
     /// session's window and press Enter. `confirm`: the nonce of an earlier
     /// `confirm` answer, only with `text`. Answered with `Replied`.
     SessionReply { session: String, text: Option<String>, confirm: Option<String> },
+    /// `agent.session.move` (§9.1), after the core checked that this PC
+    /// offers `agent.move`, §9's three toggles and the limits: close the
+    /// session where it runs and, only once nothing has it open, continue
+    /// it as a supervised thread started by the phone that asked (as
+    /// `SessionContinue`, whose host checks stay the judge). `confirm`: the
+    /// nonce of an earlier `confirm` answer, §9's and shared with replies.
+    /// Answered with `Moved`.
+    SessionMove { session: String, confirm: Option<String> },
     // ---- Hand-off (`docs/protocol/agents.md` §10) ----
     /// `agent.handoff.open`, after the core checked the toggle and the
     /// limits: open `thread` on this PC's screen at item `seq` (the Agents
@@ -565,6 +573,11 @@ impl std::fmt::Debug for AgentRequest {
                 .field("bytes", &text.as_ref().map(String::len))
                 .field("confirm", &confirm.is_some())
                 .finish(),
+            Self::SessionMove { session, confirm } => f
+                .debug_struct("SessionMove")
+                .field("session", session)
+                .field("confirm", &confirm.is_some())
+                .finish(),
             Self::Handoff { thread, seq } => {
                 f.debug_struct("Handoff").field("thread", thread).field("seq", seq).finish()
             }
@@ -598,9 +611,10 @@ impl std::fmt::Debug for AgentRequest {
 /// `Export` for `Export`, `Files` for `Files`, `Commands` for `Commands`,
 /// `Draft` for `DraftGet`, `DraftSaved` for `DraftSet`, `Image` for
 /// `ImageAdd`, `Thumb` for `ImageThumb`, `Replied` for `SessionReply`,
-/// `HandedOff` for `Handoff`, `Ok` for the rest. Threads carry
-/// `from_phone` for the phone that asked; the core makes everything fit the
-/// phone that asked (legacy forms, no secret asks, relative paths only).
+/// `Moved` for `SessionMove`, `HandedOff` for `Handoff`, `Ok` for the rest.
+/// Threads carry `from_phone` for the phone that asked; the core makes
+/// everything fit the phone that asked (legacy forms, no secret asks,
+/// relative paths only).
 #[derive(Clone, PartialEq, Eq)]
 pub enum AgentReply {
     Ok,
@@ -660,6 +674,11 @@ pub enum AgentReply {
     /// ([`crate::agent_reply::AgentSessionReplied::answers`]); anything else
     /// is `Internal`.
     Replied(crate::agent_reply::AgentSessionReplied),
+    /// `SessionMove`: `moved` (with the thread), `closed`, `refused` or
+    /// `failed` (§9.1). The core passes it on only when it's whole
+    /// ([`crate::agent_move::AgentSessionMoved::answers`]), its thread made
+    /// to fit the phone that asked; anything else is `Internal`.
+    Moved(crate::agent_move::AgentSessionMoved),
     /// `Handoff`: `opened`, `locked` or `away` (§10,
     /// [`crate::agent_handoff::AgentHandedOff`]'s constructors); any other
     /// word is `Internal`.
@@ -714,6 +733,7 @@ impl std::fmt::Debug for AgentReply {
             Self::PrRows(rows) => f.debug_tuple("PrRows").field(&rows.prs.len()).finish(),
             Self::Refused(error) => f.debug_tuple("Refused").field(error).finish(),
             Self::Replied(replied) => f.debug_tuple("Replied").field(replied).finish(),
+            Self::Moved(moved) => f.debug_tuple("Moved").field(moved).finish(),
             Self::HandedOff(done) => f.debug_tuple("HandedOff").field(&done.result).finish(),
             Self::ScriptRun { run, by } => {
                 f.debug_struct("ScriptRun").field("run", run).field("by", &by.map(|d| d.short())).finish()
@@ -2280,6 +2300,9 @@ pub(crate) async fn handle(
         t if crate::agent_git::is_event(t) => crate::agent_git::handle_event(shared, peer, env).await,
         t if crate::agent_reply::is_request(t) => {
             crate::agent_reply::handle_request(shared, peer, env, rsp).await?;
+        }
+        t if crate::agent_move::is_request(t) => {
+            crate::agent_move::handle_request(shared, peer, env, rsp).await?;
         }
         t if crate::agent_handoff::is_message(t) => {
             crate::agent_handoff::handle(shared, peer, env, rsp).await?;

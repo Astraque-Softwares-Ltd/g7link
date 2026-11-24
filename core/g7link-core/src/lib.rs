@@ -13,6 +13,7 @@ mod agent_cache;
 pub mod agent_git;
 pub mod agent_handoff;
 pub mod agent_history;
+pub mod agent_move;
 pub mod agent_presence;
 pub mod agent_reply;
 pub mod agent_scripts;
@@ -84,6 +85,7 @@ pub use agent_history::{
     AgentSearchRequest, AgentThreadsRequest, AgentTurn, AgentTurnFile, AgentTurnFiles, AgentUndo,
     Cached as AgentCached, CachedItems as AgentCachedItems, HeldState, HeldWhy, TurnRange, history,
 };
+pub use agent_move::{AgentSessionMove, AgentSessionMoved, session_move};
 pub use agent_presence::{AgentPcPresence, AgentPresence, AgentView, AgentViewing, presence};
 pub use agent_reply::{AgentReplyTarget, AgentSessionReplied, AgentSessionReply, session_reply};
 pub use agent_scripts::{AgentRunBrief, AgentScript, AgentScriptRun, scripts};

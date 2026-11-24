@@ -252,6 +252,8 @@ pub mod types {
     pub const AGENT_GIT_PROGRESS: &str = "agent.git.progress";
     // ---- agent: reply on the PC (docs/protocol/agents.md §9) ----
     pub const AGENT_SESSION_REPLY: &str = "agent.session.reply";
+    // ---- agent: move to G7 (docs/protocol/agents.md §9.1) ----
+    pub const AGENT_SESSION_MOVE: &str = "agent.session.move";
     // ---- agent: hand-off (docs/protocol/agents.md §10) ----
     pub const AGENT_HANDOFF: &str = "agent.handoff";
     pub const AGENT_HANDOFF_OPEN: &str = "agent.handoff.open";
@@ -7730,6 +7732,8 @@ mod agent_git;
 pub use agent_git::*;
 mod agent_reply;
 pub use agent_reply::*;
+mod agent_move;
+pub use agent_move::*;
 mod agent_handoff;
 pub use agent_handoff::*;
 mod agent_beside;
