@@ -4,7 +4,7 @@ All notable changes to G7 Link. Versions follow
 [semantic versioning](https://semver.org); before 1.0, a minor version may
 change things that need a step from you, and its notes say so.
 
-## 0.1.27 (unreleased)
+## 0.1.27 (2026-11-24)
 
 **Update both together** for replies on the PC to wait and switch tabs.
 
