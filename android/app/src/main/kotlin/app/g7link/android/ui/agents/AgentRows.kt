@@ -6,10 +6,15 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.content.res.Resources
 import android.os.Build
+import android.os.SystemClock
+import androidx.compose.animation.core.FiniteAnimationSpec
 import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.LinearOutSlowInEasing
 import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -33,6 +38,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyItemScope
 import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
@@ -52,6 +58,7 @@ import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -62,6 +69,7 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.MotionDurationScale
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.drawWithContent
@@ -92,6 +100,7 @@ import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
@@ -100,6 +109,7 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.currentStateAsState
 import app.g7link.android.R
 import app.g7link.android.ui.theme.AgentPalette
+import app.g7link.android.ui.theme.G7Motion
 import app.g7link.android.ui.theme.G7Icons
 import app.g7link.android.ui.theme.G7RowAction
 import app.g7link.android.ui.theme.LocalAppFonts
@@ -199,7 +209,11 @@ internal class RowActions(
     val openChanges: (UInt, String?) -> Unit = { _, _ -> },
     /** Undo on a rewind's notice. */
     val undo: () -> Unit = {},
-)
+) {
+    /** The same actions, opening and closing rows with [toggle]. */
+    fun withToggle(toggle: (String) -> Unit): RowActions =
+        RowActions(toggle, link, copy, output, diff, mark, implement, changePlan, messageActions, openChanges, undo)
+}
 
 /**
  * A thread's rows from the FFI (contract §P6.2), keyed by their keys and typed
@@ -232,6 +246,33 @@ internal fun AgentRowsList(
     var jumping by remember { mutableStateOf(false) }
     val reduced = LocalReducedMotion.current
     val scope = rememberCoroutineScope()
+    // Rows move only while what the reader just opened or closed settles (RowsMotion).
+    var motion by remember { mutableStateOf(RowsMotion()) }
+    val moving by remember { derivedStateOf { motion.moving } }
+    val currentRows by rememberUpdatedState(rows)
+    val listActions = remember(actions, reduced) {
+        if (reduced) {
+            actions
+        } else {
+            actions.withToggle { key ->
+                motion = motion.tapped(key, RowsMotion.openIn(currentRows, key), SystemClock.uptimeMillis())
+                actions.toggle(key)
+            }
+        }
+    }
+    LaunchedEffect(motion.untilMs) {
+        val until = motion.untilMs ?: return@LaunchedEffect
+        delay((until - SystemClock.uptimeMillis()).coerceAtLeast(0L))
+        motion = RowsMotion()
+    }
+    // A tap's rows came: following again only if the end is still in view once they're laid out.
+    var landed by remember { mutableIntStateOf(0) }
+    LaunchedEffect(landed) {
+        if (landed == 0) return@LaunchedEffect
+        withFrameNanos { }
+        follow = !listState.canScrollForward
+        if (follow) unseen = false
+    }
     val toLatest: suspend (Boolean) -> Unit = { animate ->
         jumping = true
         try {
@@ -273,7 +314,12 @@ internal fun AgentRowsList(
     }
     LaunchedEffect(rows, scrollTo) {
         val newest = AgentPlanCards.units(rows).lastOrNull()?.key
-        unseen = TimelineFollow.unseen(unseen, follow, newestKey, newest)
+        val tapped = motion.key?.let { key ->
+            motion.landed(RowsMotion.openIn(rows, key), SystemClock.uptimeMillis(), coroutineContext[MotionDurationScale]?.scaleFactor ?: 1f)
+        }
+        if (tapped != null) motion = tapped
+        // What the reader opened isn't news from below.
+        if (tapped == null) unseen = TimelineFollow.unseen(unseen, follow, newestKey, newest)
         newestKey = newest
         val held = anchor
         val moved = held?.let { EarlierAnchor.moved(AgentPlanCards.units(rows).map { unit -> unit.key }, it, earlier) }
@@ -295,6 +341,12 @@ internal fun AgentRowsList(
                 return@LaunchedEffect
             }
         }
+        if (tapped != null) {
+            // The tapped row stays under the finger: no going to the end for what it opened.
+            follow = false
+            landed++
+            return@LaunchedEffect
+        }
         if (follow && rows.isNotEmpty()) toLatest(false)
     }
     val moreBelow by remember(listState) { derivedStateOf { listState.canScrollForward } }
@@ -306,7 +358,7 @@ internal fun AgentRowsList(
         ) {
             if (earlier) {
                 item(key = EARLIER_KEY, contentType = "earlier") {
-                    Box(Modifier.fillMaxWidth().padding(bottom = 12.dp), contentAlignment = Alignment.Center) {
+                    Box(rowMotion(moving).fillMaxWidth().padding(bottom = 12.dp), contentAlignment = Alignment.Center) {
                         if (loadingEarlier) {
                             CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
                         } else {
@@ -317,18 +369,19 @@ internal fun AgentRowsList(
             }
             val units = AgentPlanCards.units(rows)
             items(units.size, key = { units[it].key }, contentType = { unitType(units[it]) }) { index ->
+                val moves = rowMotion(moving)
                 when (val unit = units[index]) {
                     is RowUnit.One -> {
                         val row = unit.row
                         val gap = topGap(lastRow(units.getOrNull(index - 1)), row)
-                        NestedRow(row.depth.toInt(), gap) {
-                            Lit(lit = context.highlightSeq != null && row.seq == context.highlightSeq) { AgentRowView(row, context, actions) }
+                        NestedRow(row.depth.toInt(), gap, moves) {
+                            Lit(lit = context.highlightSeq != null && row.seq == context.highlightSeq) { AgentRowView(row, context, listActions) }
                         }
                     }
-                    is RowUnit.Plan -> NestedRow(unit.head.depth.toInt(), if (index > 0) 12.dp else 0.dp) { PlanCard(unit, context, actions) }
+                    is RowUnit.Plan -> NestedRow(unit.head.depth.toInt(), if (index > 0) 12.dp else 0.dp, moves) { PlanCard(unit, context, listActions) }
                 }
             }
-            footer?.invoke(this)
+            footer?.invoke(MovingItems(this) { moving })
         }
         if (TimelineFollow.jumpShown(follow, moreBelow)) {
             JumpToLatest(
@@ -366,6 +419,55 @@ private fun JumpToLatest(unseen: Boolean, onClick: () -> Unit, modifier: Modifie
         if (unseen) Text(stringResource(R.string.agents_new_below), style = MaterialTheme.typography.labelLarge, color = ink, maxLines = 1)
         Icon(G7Icons.chevronDown, contentDescription = null, tint = ink, modifier = Modifier.size(16.dp))
     }
+}
+
+/**
+ * A row's motion while a tap's rows settle ([RowsMotion]): what it opened fades in as the rows below
+ * slide down, what it closed fades out as they slide up. Otherwise none, so rows streaming in, the
+ * first load and Earlier's rows stay as they were.
+ */
+private fun LazyItemScope.rowMotion(moving: Boolean): Modifier =
+    if (moving) {
+        Modifier.animateItem(fadeInSpec = ROW_IN, placementSpec = ROW_MOVE, fadeOutSpec = ROW_OUT)
+    } else {
+        Modifier.animateItem(fadeInSpec = null, placementSpec = null, fadeOutSpec = null)
+    }
+
+/** The footer's items (the thread's end, held messages, a reply on its way), moving with the rows ([rowMotion]). */
+private class MovingItems(private val scope: LazyListScope, private val moving: () -> Boolean) : LazyListScope {
+    override fun item(key: Any?, contentType: Any?, content: @Composable LazyItemScope.() -> Unit) {
+        // Read outside the item's scope: its DSL marker hides this class's members.
+        val moves = moving
+        scope.item(key, contentType) {
+            val itemScope = this
+            Column(rowMotion(moves())) { itemScope.content() }
+        }
+    }
+
+    override fun items(
+        count: Int,
+        key: ((index: Int) -> Any)?,
+        contentType: (index: Int) -> Any?,
+        itemContent: @Composable LazyItemScope.(index: Int) -> Unit,
+    ) {
+        val moves = moving
+        scope.items(count, key, contentType) { index ->
+            val itemScope = this
+            Column(rowMotion(moves())) { itemScope.itemContent(index) }
+        }
+    }
+}
+
+/** A disclosure chevron: right when closed, turning down as its row opens. */
+@Composable
+private fun Disclosure(open: Boolean, tint: Color) {
+    val turn = animateFloatAsState(
+        targetValue = if (open) 90f else 0f,
+        animationSpec = if (LocalReducedMotion.current) snap() else G7Motion.move(TURN_MS),
+        label = "Disclosure",
+    )
+    // Read in the layer, so a turn redraws the chevron without recomposing the row.
+    Icon(G7Icons.chevronRight, contentDescription = null, tint = tint, modifier = Modifier.size(12.dp).graphicsLayer { rotationZ = turn.value })
 }
 
 /** To the end of the last row: at once, or as a short scroll. */
@@ -426,11 +528,11 @@ private fun topGap(prev: AgentRow?, row: AgentRow): Dp {
 
 /** A row moved in by its depth, with one hairline per level: the only nesting mark. */
 @Composable
-private fun NestedRow(depth: Int, gap: Dp, content: @Composable () -> Unit) {
+private fun NestedRow(depth: Int, gap: Dp, modifier: Modifier = Modifier, content: @Composable () -> Unit) {
     val line = MaterialTheme.colorScheme.outlineVariant
     val levels = depth.coerceIn(0, 8)
     Box(
-        Modifier
+        modifier
             .fillMaxWidth()
             .then(
                 if (levels > 0) {
@@ -899,7 +1001,7 @@ private fun Gutter(open: Boolean?, icon: ImageVector?, tint: Color) {
     val muted = MaterialTheme.colorScheme.onSurfaceVariant
     Box(Modifier.width(GUTTER), contentAlignment = Alignment.Center) {
         if (open != null) {
-            Icon(if (open) G7Icons.chevronDown else G7Icons.chevronRight, contentDescription = null, tint = muted, modifier = Modifier.size(12.dp))
+            Disclosure(open, muted)
         }
     }
     Spacer(Modifier.width(4.dp))
@@ -1409,7 +1511,7 @@ private fun FoldRow(row: AgentRow, kind: AgentRowKind.Fold, actions: RowActions)
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Box(Modifier.width(GUTTER), contentAlignment = Alignment.Center) {
-            Icon(if (kind.open) G7Icons.chevronDown else G7Icons.chevronRight, contentDescription = null, tint = scheme.onSurfaceVariant, modifier = Modifier.size(12.dp))
+            Disclosure(kind.open, scheme.onSurfaceVariant)
         }
         Text(
             stringResource(R.string.agents_worked, durationText(resources, kind.workedMs)),
@@ -1481,7 +1583,7 @@ private fun ChangesRow(row: AgentRow, kind: AgentRowKind.Changes, actions: RowAc
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 if (!recorded) {
-                    Icon(if (file.open) G7Icons.chevronDown else G7Icons.chevronRight, contentDescription = null, tint = scheme.onSurfaceVariant, modifier = Modifier.size(12.dp))
+                    Disclosure(file.open, scheme.onSurfaceVariant)
                 }
                 Text(
                     buildAnnotatedString {
@@ -1805,6 +1907,85 @@ internal object TimelineFollow {
         else -> was
     }
 }
+
+/**
+ * When the transcript's rows move (the owner's ask, 2026-11-24): only while what the reader just
+ * opened or closed settles. A tap opens the window ([tapped], with whether its row was open); the
+ * first rows where that row turned ([landed]) keep it open [SETTLE_MS] longer, for their motion to
+ * end. If they don't come, it closes [WAIT_MS] after the tap. Rows streaming in, the first load and
+ * Earlier's rows come while it's closed, so they don't move.
+ */
+@Immutable
+internal data class RowsMotion(
+    /** The row tapped, until its rows come. */
+    val key: String? = null,
+    /** Whether it was open when tapped; null when it wasn't found. */
+    val wasOpen: Boolean? = null,
+    /** When the window closes (uptime); null while it's closed. */
+    val untilMs: Long? = null,
+) {
+    val moving: Boolean get() = untilMs != null
+
+    /** The reader tapped [key], a row that was [open] (null: not in the rows). */
+    fun tapped(key: String, open: Boolean?, nowMs: Long): RowsMotion = RowsMotion(key, open, nowMs + WAIT_MS)
+
+    /**
+     * New rows came, with the tapped row [open] (null: gone). When they're the ones the tap asked
+     * for (the row turned), the motion that lets them settle, over [SETTLE_MS] times Android's
+     * animation [scale] (never shorter); else null, as they're some other change.
+     */
+    fun landed(open: Boolean?, nowMs: Long, scale: Float = 1f): RowsMotion? {
+        val until = untilMs ?: return null
+        if (key == null || nowMs >= until) return null
+        if (wasOpen != null && open == wasOpen) return null
+        return RowsMotion(untilMs = nowMs + (SETTLE_MS * scale.coerceAtLeast(1f)).toLong())
+    }
+
+    companion object {
+        /** From a tap to its rows, at most. */
+        const val WAIT_MS = 1_000L
+
+        /** From a tap's rows to the end of their motion ([ROW_MOVE_MS]), with room to spare. */
+        const val SETTLE_MS = 400L
+
+        /**
+         * Whether the row a toggle names is open in [rows]: a step, group, thought, fold, plan or
+         * question by its key, a changed file by its Changes row's key and its index ("key:2").
+         * Null when there's no such row.
+         */
+        fun openIn(rows: List<AgentRow>, key: String): Boolean? {
+            rows.firstOrNull { it.key == key }?.let { return openOf(it.kind) }
+            val cut = key.lastIndexOf(':')
+            if (cut <= 0) return null
+            val index = key.substring(cut + 1).toIntOrNull() ?: return null
+            val head = key.substring(0, cut)
+            val changes = rows.firstOrNull { it.key == head }?.kind as? AgentRowKind.Changes ?: return null
+            return changes.files.getOrNull(index)?.open
+        }
+
+        private fun openOf(kind: AgentRowKind): Boolean? = when (kind) {
+            is AgentRowKind.Tool -> kind.open
+            is AgentRowKind.Group -> kind.open
+            is AgentRowKind.Thought -> kind.open
+            is AgentRowKind.Fold -> kind.open
+            is AgentRowKind.Plan -> kind.open
+            is AgentRowKind.Question -> kind.open
+            is AgentRowKind.User, is AgentRowKind.Block, is AgentRowKind.Detail, is AgentRowKind.Changes,
+            is AgentRowKind.ChangesNote, is AgentRowKind.Mark, is AgentRowKind.Notice, is AgentRowKind.Live,
+            -> null
+        }
+    }
+}
+
+// A tap's rows: what opens fades in a beat after the rows below start sliding down, what closes
+// fades quickly as they slide up over it; G7's move easing, no bounce.
+private const val ROW_MOVE_MS = 240
+private val ROW_MOVE: FiniteAnimationSpec<IntOffset> = tween(ROW_MOVE_MS, easing = G7Motion.Move)
+private val ROW_IN: FiniteAnimationSpec<Float> = tween(180, delayMillis = 60, easing = LinearOutSlowInEasing)
+private val ROW_OUT: FiniteAnimationSpec<Float> = tween(120, easing = LinearOutSlowInEasing)
+
+/** A disclosure chevron's turn. */
+private const val TURN_MS = G7Motion.SMALL_IN
 
 internal data class EarlierAnchor(val key: Any, val index: Int, val offset: Int) {
     companion object {
