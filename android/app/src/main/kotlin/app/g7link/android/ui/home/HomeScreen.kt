@@ -164,7 +164,6 @@ import app.g7link.android.core.PHONE_SPEAKER_OUTPUT
 import app.g7link.android.ui.theme.G7IconButton
 import app.g7link.android.ui.theme.FirstLineIcon
 import app.g7link.android.ui.theme.G7Icons
-import app.g7link.android.ui.capture.screenshotLabel
 import app.g7link.android.core.PcCaptureState
 import app.g7link.android.ui.theme.G7Mark
 import app.g7link.android.ui.theme.G7Row
@@ -700,15 +699,16 @@ fun HomeScreen(
                     }
                     val capture = pcCapture[pc.id] ?: PcCaptureState()
                     val canCapture = pc.has("device.pc_capture")
-                    val screenshotTileLabel = stringResource(screenshotLabel(capture))
-                    val recordText = if (canCapture) recordTileLabel(capture) else ""
+                    // Each tile keeps its name: what's under way shows as a spinner, the accent or a time.
+                    val screenshotTileLabel = stringResource(R.string.pc_capture_screenshot)
+                    val record = if (canCapture) recordTileText(capture) else null
                     val inFlight = powering[pc.id]
                     val trackpadLabel = stringResource(R.string.home_tile_trackpad)
                     val deckLabel = stringResource(R.string.action_deck_pc)
                     val pcFilesLabel = stringResource(R.string.home_tile_pc_files)
-                    val ringLabel = stringResource(if (ringing) R.string.action_stop_ringing else R.string.action_ring_device)
-                    val lockLabel = stringResource(if (inFlight == false) R.string.locking else R.string.home_lock)
-                    val sleepLabel = stringResource(if (inFlight == true) R.string.sleeping else R.string.action_sleep_pc)
+                    val ringLabel = stringResource(R.string.action_ring_device)
+                    val lockLabel = stringResource(R.string.home_lock)
+                    val sleepLabel = stringResource(R.string.action_sleep_pc)
                     HomeTileGrid(
                         buildList {
                             add(
@@ -741,7 +741,7 @@ fun HomeScreen(
                                     onClick = { browseFilesPcId = pc.id },
                                 ),
                             )
-                            if (canCapture) {
+                            if (record != null) {
                                 add(
                                     HomeTileSpec(
                                         id = "screenshot",
@@ -756,12 +756,14 @@ fun HomeScreen(
                                 add(
                                     HomeTileSpec(
                                         id = "record",
-                                        label = recordText,
+                                        label = record.label,
                                         icon = G7Icons.video,
                                         tint = tints.red,
                                         enabled = online,
                                         active = capture.recordingSince != null,
                                         busy = capture.recordingBusy,
+                                        toggle = true,
+                                        description = record.description,
                                         onClick = { onPcRecord(pc.id) },
                                     ),
                                 )
@@ -774,6 +776,7 @@ fun HomeScreen(
                                     tint = tints.blue,
                                     enabled = online,
                                     active = ringing,
+                                    toggle = true,
                                     onClick = { onRing(pc.id, !ringing) },
                                 ),
                             )
@@ -803,6 +806,19 @@ fun HomeScreen(
                             }
                         },
                     )
+                    // The PC shows its screen-sharing dialog for a screenshot or a recording.
+                    AnimatedVisibility(
+                        visible = online && capture.approve && (capture.shooting || capture.recordingBusy),
+                        enter = g7Expand(),
+                        exit = g7Collapse(),
+                    ) {
+                        Text(
+                            stringResource(R.string.pc_capture_approve),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.padding(start = 12.dp, end = 12.dp, top = 8.dp),
+                        )
+                    }
                     val deckState = pc.deckState
                     if (online && deckState != null) {
                         HomeSoundCard(
@@ -955,10 +971,7 @@ fun HomeScreen(
                 Column {
                     G7SectionLabel(stringResource(R.string.home_activity))
                     if (showClipRow || showTimelineRow) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth().padding(horizontal = 2.dp),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        ) {
+                        HomeFitRow(modifier = Modifier.fillMaxWidth().padding(horizontal = 2.dp)) {
                             if (showClipRow) {
                                 HomeWideTile(
                                     label = stringResource(R.string.clipboard_history_title),
@@ -967,7 +980,6 @@ fun HomeScreen(
                                     note = state.clipboardHistory.size.toString(),
                                     highlighted = pulsingTarget == GuideHighlightTarget.HOME_CLIPBOARD_HISTORY,
                                     onClick = { showClipboardHistory = true },
-                                    modifier = Modifier.weight(1f),
                                 )
                             }
                             if (showTimelineRow) {
@@ -978,7 +990,6 @@ fun HomeScreen(
                                     note = state.timelineTotal.takeIf { it > 0u }?.toString(),
                                     highlighted = pulsingTarget == GuideHighlightTarget.HOME_TIMELINE,
                                     onClick = { showTimeline = true },
-                                    modifier = Modifier.weight(1f),
                                 )
                             }
                         }
@@ -1247,7 +1258,7 @@ private fun PeerRows(
     }
     val filesLabel = stringResource(R.string.home_files)
     val clipboardLabel = stringResource(R.string.home_tile_clipboard)
-    val ringLabel = stringResource(if (ringing) R.string.action_stop_ringing else R.string.action_ring_device)
+    val ringLabel = stringResource(R.string.action_ring_device)
     Column {
         G7SectionLabel(listOfNotNull(device.name, kind, linkText(device.link), battery).joinToString(" · "))
         HomeTileGrid(
@@ -1275,6 +1286,7 @@ private fun PeerRows(
                     tint = tints.blue,
                     enabled = device.online && device.has("pair.ring"),
                     active = ringing,
+                    toggle = true,
                     onClick = { onRing(device.id, !ringing) },
                 ),
             ),

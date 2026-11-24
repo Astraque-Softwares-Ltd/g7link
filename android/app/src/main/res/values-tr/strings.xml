@@ -265,8 +265,6 @@
     <string name="pc_locked">%1$s kilitlendi.</string>
     <string name="pc_sleeping">%1$s uyku moduna geçiyor.</string>
     <string name="sending_clipboard">Gönderiliyor…</string>
-    <string name="locking">Kilitleniyor…</string>
-    <string name="sleeping">Uyku moduna geçiyor…</string>
     <string name="pc_actions_off">%1$s üzerinde bu telefon için kilitleme ve uyku kapalı.</string>
     <string name="channel_links">Bilgisayarınızdan gelen bağlantılar</string>
     <!-- Play on phone: what a PC plays, streamed to the phone. -->
@@ -1322,7 +1320,7 @@
     <string name="home_tile_stop_recording">Durdur · %1$s</string>
     <string name="home_tile_microphone">Mikrofon</string>
     <string name="home_tile_phone_speaker">Telefonu hoparlör yap</string>
-    <string name="home_tile_phone_audio">Telefon sesi %1$s üzerinde</string>
+    <string name="home_tile_pc_speaker">Bilgisayarı hoparlör yap</string>
     <string name="home_access">Erişime izin ver</string>
     <string name="home_activity">Etkinlik</string>
     <string name="home_switch_pc">Bilgisayar değiştir</string>

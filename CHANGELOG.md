@@ -12,6 +12,16 @@ change things that need a step from you, and its notes say so.
   session shows the Claude or OpenAI mark before the agent's name, so you
   can tell Claude and Codex apart at a glance.
 
+### Changed
+
+- **Home's labels stay on one line.** The Bluetooth switch in the phone's
+  sound card is now "PC as speaker", beside "Phone as speaker". A tile keeps
+  its name while something is under way: Record shows the recording's time,
+  Ring lights up while the PC rings, and "Approve on your PC" appears under
+  the tiles. Where a language or a larger text size needs more room, tiles go
+  three or two to a row and the sound switches and Activity tiles stack,
+  instead of a name breaking onto a second line.
+
 ## 0.1.27 (2026-11-24)
 
 **Update both together** for replies on the PC to wait and switch tabs.

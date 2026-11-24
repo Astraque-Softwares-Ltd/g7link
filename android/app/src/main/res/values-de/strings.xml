@@ -265,8 +265,6 @@
     <string name="pc_locked">%1$s ist gesperrt.</string>
     <string name="pc_sleeping">%1$s wechselt in den Energiesparmodus.</string>
     <string name="sending_clipboard">Wird gesendet…</string>
-    <string name="locking">Wird gesperrt…</string>
-    <string name="sleeping">Wechselt in Energiesparmodus…</string>
     <string name="pc_actions_off">Sperren und Energiesparmodus sind für dieses Gerät auf %1$s deaktiviert.</string>
     <string name="channel_links">Links von deinem PC</string>
     <!-- Play on phone: what a PC plays, streamed to the phone. -->
@@ -1322,7 +1320,7 @@
     <string name="home_tile_stop_recording">Beenden · %1$s</string>
     <string name="home_tile_microphone">Mikrofon</string>
     <string name="home_tile_phone_speaker">Gerät als Lautsprecher</string>
-    <string name="home_tile_phone_audio">Telefon-Audio auf %1$s</string>
+    <string name="home_tile_pc_speaker">PC als Lautsprecher</string>
     <string name="home_access">Zugriff erlauben</string>
     <string name="home_activity">Aktivität</string>
     <string name="home_switch_pc">PC wechseln</string>

@@ -2239,4 +2239,5 @@
         <item quantity="many">No se muestran %1$d comentarios anteriores.</item>
         <item quantity="other">No se muestran %1$d comentarios anteriores.</item>
     </plurals>
+    <string name="home_tile_pc_speaker">PC como altavoz</string>
 </resources>

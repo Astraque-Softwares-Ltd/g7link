@@ -257,8 +257,6 @@
     <string name="pc_locked">%1$s 已锁定。</string>
     <string name="pc_sleeping">%1$s 正在进入睡眠。</string>
     <string name="sending_clipboard">正在发送…</string>
-    <string name="locking">正在锁定…</string>
-    <string name="sleeping">正在进入睡眠…</string>
     <string name="pc_actions_off">%1$s 上已对本手机关闭锁定与睡眠功能。</string>
     <string name="channel_links">来自电脑的链接</string>
     <string name="watch_offer_title">观看 %1$s 上的播放</string>
@@ -1189,7 +1187,7 @@
     <string name="home_tile_stop_recording">停止 · %1$s</string>
     <string name="home_tile_microphone">麦克风</string>
     <string name="home_tile_phone_speaker">手机作扬声器</string>
-    <string name="home_tile_phone_audio">%1$s 播放手机音频</string>
+    <string name="home_tile_pc_speaker">电脑作扬声器</string>
     <string name="home_access">允许访问</string>
     <string name="home_activity">动态</string>
     <string name="home_switch_pc">切换电脑</string>

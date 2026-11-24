@@ -264,8 +264,6 @@
 <string name="pc_locked">%1$s đã bị khóa.</string>
 <string name="pc_sleeping">%1$s sắp chuyển sang chế độ ngủ.</string>
 <string name="sending_clipboard">Đang gửi…</string>
-<string name="locking">Đang khóa…</string>
-<string name="sleeping">Đang chuyển sang chế độ ngủ…</string>
 <string name="pc_actions_off">Khóa và chế độ ngủ đã bị tắt cho điện thoại này trên %1$s.</string>
 <string name="channel_links">Liên kết từ PC của bạn</string>
 <!-- Play on phone: what a PC plays, streamed to the phone. -->
@@ -1258,7 +1256,7 @@
     <string name="home_tile_stop_recording">Dừng · %1$s</string>
     <string name="home_tile_microphone">Micrô</string>
     <string name="home_tile_phone_speaker">Điện thoại làm loa</string>
-    <string name="home_tile_phone_audio">Âm thanh điện thoại trên %1$s</string>
+    <string name="home_tile_pc_speaker">PC làm loa</string>
     <string name="home_access">Cho phép truy cập</string>
     <string name="home_activity">Hoạt động</string>
     <string name="home_switch_pc">Đổi PC</string>
