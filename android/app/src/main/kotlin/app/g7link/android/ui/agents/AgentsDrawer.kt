@@ -141,9 +141,9 @@ internal object AgentsNavigation {
 /**
  * The Agents side drawer around a screen (t3code's floating thread sidebar, at
  * phone size): the PCs to switch between when more than one is paired, New
- * thread, the threads grouped like the list (Needs you, Working, Recent) with
- * their state dots, and the sessions started on the PC. A tap switches to what
- * was tapped and closes it.
+ * thread, then Needs you, Working, Pinned and Recent, each with the threads
+ * and the sessions started on the PC together, newest first, with their state
+ * dots. A tap switches to what was tapped and closes it.
  *
  * It opens from the header's button or a swipe that starts in a strip just
  * inside the left edge, past the system's back-gesture area, and only on a
@@ -344,25 +344,10 @@ private fun DrawerContent(
                 }
             }
         }
-        threadSection("needs", R.string.agents_state_waiting, groups.needsYou, agents, selected, now, onThread)
-        threadSection("working", R.string.agents_state_working, groups.working, agents, selected, now, onThread)
-        threadSection("pinned", R.string.agents_shelf_pinned, groups.pinned, agents, selected, now, onThread)
-        threadSection("recent", R.string.agents_filter_recent, groups.recent, agents, selected, now, onThread)
-        if (groups.sessions.isNotEmpty()) {
-            item(key = "sessions", contentType = "label") {
-                G7SectionLabel(stringResource(R.string.agents_session_section, device.name), Modifier.padding(top = 8.dp))
-            }
-            items(groups.sessions, key = { "session:${it.id}" }, contentType = { "session" }) { session ->
-                DrawerRow(
-                    label = session.title,
-                    sublabel = sessionPlace(session, agents.agentName(session.agent)),
-                    selected = selected == DrawerSelection.Session(session.id),
-                    onClick = { onSession(session.id) },
-                ) {
-                    SessionDot(session)
-                }
-            }
-        }
+        section("needs", R.string.agents_state_waiting, groups.needsYou, agents, selected, now, onThread, onSession)
+        section("working", R.string.agents_state_working, groups.working, agents, selected, now, onThread, onSession)
+        section("pinned", R.string.agents_shelf_pinned, groups.pinned, agents, selected, now, onThread, onSession)
+        section("recent", R.string.agents_filter_recent, groups.recent, agents, selected, now, onThread, onSession)
         if (groups.empty) {
             item(key = "empty", contentType = "empty") {
                 Text(
@@ -376,38 +361,61 @@ private fun DrawerContent(
     }
 }
 
-/** A group of threads under its label, as the list groups them; nothing when it's empty. */
-private fun LazyListScope.threadSection(
+/** A group under its label, its threads and sessions together; nothing when it's empty. */
+private fun LazyListScope.section(
     key: String,
     @StringRes label: Int,
-    threads: List<AgentThread>,
+    rows: List<ProjectItem>,
     agents: AgentsState,
     selected: DrawerSelection?,
     now: Long,
     onThread: (String) -> Unit,
+    onSession: (String) -> Unit,
 ) {
-    if (threads.isEmpty()) return
+    if (rows.isEmpty()) return
     item(key = "label:$key", contentType = "label") {
         G7SectionLabel(stringResource(label), Modifier.padding(top = 8.dp))
     }
-    items(threads, key = { "thread:${it.id}" }, contentType = { "thread" }) { thread ->
-        val status = AgentsModel.status(thread)
-        // A question waiting, or a plan ready, says so where the folder would (reconcile file, "Lists").
-        val asking = maxOf(agents.questionsFor(thread.id).size, thread.asking.toInt())
-        val what = when {
-            asking > 0 && thread.asks == 0u -> pluralStringResource(R.plurals.agents_question_asks_you, asking, asking)
-            status == ThreadStatus.PlanReady -> stringResource(R.string.agents_plan_ready_sub)
-            else -> thread.folder
+    items(rows, key = { it.key }, contentType = { if (it is ProjectItem.Thread) "thread" else "session" }) { row ->
+        when (row) {
+            is ProjectItem.Thread -> ThreadRow(row.thread, agents, selected, now, onThread)
+            is ProjectItem.Session -> SessionRow(row.session, agents, selected, now, onSession)
         }
-        DrawerRow(
-            label = thread.title,
-            sublabel = listOf(agents.agentName(thread.agent), what).filter { it.isNotBlank() }.joinToString(" · "),
-            note = if (AgentsModel.running(thread)) null else relativeTime(thread.updatedMs, now),
-            selected = selected == DrawerSelection.Thread(thread.id),
-            onClick = { onThread(thread.id) },
-        ) {
-            ThreadStatusMark(status)
-        }
+    }
+}
+
+@Composable
+private fun ThreadRow(thread: AgentThread, agents: AgentsState, selected: DrawerSelection?, now: Long, onThread: (String) -> Unit) {
+    val status = AgentsModel.status(thread)
+    // A question waiting, or a plan ready, says so where the folder would (reconcile file, "Lists").
+    val asking = maxOf(agents.questionsFor(thread.id).size, thread.asking.toInt())
+    val what = when {
+        asking > 0 && thread.asks == 0u -> pluralStringResource(R.plurals.agents_question_asks_you, asking, asking)
+        status == ThreadStatus.PlanReady -> stringResource(R.string.agents_plan_ready_sub)
+        else -> thread.folder
+    }
+    DrawerRow(
+        label = thread.title,
+        sublabel = listOf(agents.agentName(thread.agent), what).filter { it.isNotBlank() }.joinToString(" · "),
+        note = if (AgentsModel.running(thread)) null else relativeTime(thread.updatedMs, now),
+        selected = selected == DrawerSelection.Thread(thread.id),
+        onClick = { onThread(thread.id) },
+    ) {
+        ThreadStatusMark(status)
+    }
+}
+
+/** A session started on the PC: where it runs (in a terminal, in the Claude app), and when it last moved unless it works. */
+@Composable
+private fun SessionRow(session: AgentSession, agents: AgentsState, selected: DrawerSelection?, now: Long, onSession: (String) -> Unit) {
+    DrawerRow(
+        label = session.title,
+        sublabel = sessionPlace(session, agents.agentName(session.agent)),
+        note = if (AgentsModel.sessionLook(session) == SessionLook.WORKING) null else relativeTime(session.updatedMs, now),
+        selected = selected == DrawerSelection.Session(session.id),
+        onClick = { onSession(session.id) },
+    ) {
+        SessionDot(session)
     }
 }
 

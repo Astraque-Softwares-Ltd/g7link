@@ -310,19 +310,18 @@ data class ResolvedAsk(
 )
 
 /**
- * What the Agents drawer lists of a PC, grouped like the thread list: what
- * needs you, what works, the rest; then the sessions started on the PC when it
- * lists them to this phone.
+ * What the Agents drawer lists of a PC: what needs you, what works, the
+ * pinned, the rest; each group holds threads and the sessions started on the
+ * PC (when it lists them to this phone) together, the newest first.
  */
 @Immutable
 data class DrawerGroups(
-    val needsYou: List<AgentThread> = emptyList(),
-    val working: List<AgentThread> = emptyList(),
-    val recent: List<AgentThread> = emptyList(),
-    val sessions: List<AgentSession> = emptyList(),
-    val pinned: List<AgentThread> = emptyList(),
+    val needsYou: List<ProjectItem> = emptyList(),
+    val working: List<ProjectItem> = emptyList(),
+    val recent: List<ProjectItem> = emptyList(),
+    val pinned: List<ProjectItem> = emptyList(),
 ) {
-    val empty: Boolean get() = needsYou.isEmpty() && working.isEmpty() && pinned.isEmpty() && recent.isEmpty() && sessions.isEmpty()
+    val empty: Boolean get() = needsYou.isEmpty() && working.isEmpty() && pinned.isEmpty() && recent.isEmpty()
 }
 
 /** How a thread reads at a glance (the reconcile file's state words). */
@@ -906,26 +905,30 @@ object AgentsModel {
     }
 
     /**
-     * The drawer's groups, in the list's order (requests first, then the newest):
-     * Needs you (a request waits), Working (no request), Pinned, Recent
-     * (everything else that stopped), and the sessions the PC lists. Archived
-     * and snoozed threads are on their shelves, not here.
+     * The drawer's groups, as a folder orders its rows (requests first, then
+     * the newest): Needs you (a request waits; a session's guessed wait after
+     * the ones its agent reported), Working, Pinned, Recent (everything else
+     * that stopped). Sessions the PC lists sit in them beside the threads, so a
+     * session today is never below last month's threads. Archived and snoozed
+     * threads are on their shelves, not here.
      */
     fun drawerGroups(state: AgentsState): DrawerGroups {
-        val needsYou = ArrayList<AgentThread>()
-        val working = ArrayList<AgentThread>()
-        val pinned = ArrayList<AgentThread>()
-        val recent = ArrayList<AgentThread>()
-        for (thread in state.listed) {
-            when {
-                needsYou(thread) -> needsYou += thread
-                thread.state == AgentThreadState.WORKING -> working += thread
-                thread.pinned -> pinned += thread
-                else -> recent += thread
+        val needsYou = ArrayList<ProjectItem>()
+        val working = ArrayList<ProjectItem>()
+        val pinned = ArrayList<ProjectItem>()
+        val recent = ArrayList<ProjectItem>()
+        val items = state.listed.map { ProjectItem.Thread(it) } + AgentProjects.sessionsShown(state).map { ProjectItem.Session(it) }
+        for (item in items.sortedWith(compareByDescending<ProjectItem> { it.updatedMs }.thenBy { it.key })) {
+            when (AgentProjects.rank(item)) {
+                ProjectRank.NEEDS_YOU, ProjectRank.MAY_NEED_YOU -> needsYou += item
+                ProjectRank.RUNNING -> working += item
+                ProjectRank.PINNED -> pinned += item
+                ProjectRank.REST -> recent += item
             }
         }
-        val sessions = if (state.sessionsAllowed == true && !state.sessionsUnsupported) state.sessions else emptyList()
-        return DrawerGroups(needsYou, working, recent, sessions, pinned)
+        // Reported waits before guessed ones; the sort keeps the newest first within each.
+        needsYou.sortBy { AgentProjects.rank(it) }
+        return DrawerGroups(needsYou, working, recent, pinned)
     }
 
     /**

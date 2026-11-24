@@ -12,7 +12,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/** The drawer groups threads as the list does, and lists sessions only where the PC lists them. */
+/** The drawer groups threads and the sessions started on the PC together, newest first, and lists sessions only where the PC lists them. */
 class AgentsDrawerTest {
     private fun thread(id: String, state: AgentThreadState, updatedMs: Long, asks: UInt = 0u) = AgentThread(
         id = id,
@@ -28,15 +28,15 @@ class AgentsDrawerTest {
         error = null,
     )
 
-    private fun session(id: String) = AgentSession(
+    private fun session(id: String, state: AgentSessionState = AgentSessionState.WORKING, updatedMs: Long = 1L, guess: Boolean = false) = AgentSession(
         id = id,
         agent = "codex",
         folder = "g7linux",
         title = "Session $id",
-        state = AgentSessionState.WORKING,
-        guess = false,
+        state = state,
+        guess = guess,
         source = AgentSessionSource.TERMINAL,
-        updatedMs = 1L,
+        updatedMs = updatedMs,
         step = null,
         summary = null,
         waitingFor = null,
@@ -61,16 +61,43 @@ class AgentsDrawerTest {
         assertEquals(listOf("waits", "asks"), groups.needsYou.map { it.id })
         assertEquals(listOf("works"), groups.working.map { it.id })
         assertEquals(listOf("done", "stopped", "failed"), groups.recent.map { it.id })
-        assertTrue(groups.sessions.isEmpty())
         assertFalse(groups.empty)
     }
 
     @Test
     fun `sessions show only while the PC lists them to this phone`() {
         val listed = AgentsModel.withSessions(AgentsState(), listOf(session("sc01")))
-        assertEquals(listOf("sc01"), AgentsModel.drawerGroups(listed).sessions.map { it.id })
-        assertTrue(AgentsModel.drawerGroups(AgentsModel.sessionsOff(listed)).sessions.isEmpty())
-        assertTrue(AgentsModel.drawerGroups(AgentsModel.sessionsUnsupported(listed)).sessions.isEmpty())
+        assertEquals(listOf("sc01"), AgentsModel.drawerGroups(listed).working.map { it.id })
+        assertTrue(AgentsModel.drawerGroups(AgentsModel.sessionsOff(listed)).empty)
+        assertTrue(AgentsModel.drawerGroups(AgentsModel.sessionsUnsupported(listed)).empty)
         assertTrue(AgentsModel.drawerGroups(AgentsState()).empty)
+    }
+
+    @Test
+    fun `a session sits in its group beside the threads, by time, never below them all`() {
+        val threads = AgentsModel.withThreads(
+            AgentsState(),
+            listOf(
+                thread("old", AgentThreadState.DONE, updatedMs = 10L),
+                thread("older", AgentThreadState.DONE, updatedMs = 5L),
+                thread("asks", AgentThreadState.WORKING, updatedMs = 30L, asks = 1u),
+                thread("works", AgentThreadState.WORKING, updatedMs = 20L),
+            ),
+        )
+        val state = AgentsModel.withSessions(
+            threads,
+            listOf(
+                session("waits", AgentSessionState.NEEDS_YOU, updatedMs = 40L),
+                session("guess", AgentSessionState.NEEDS_YOU, updatedMs = 50L, guess = true),
+                session("busy", AgentSessionState.WORKING, updatedMs = 25L),
+                session("idle", AgentSessionState.IDLE, updatedMs = 15L),
+                session("ended", AgentSessionState.ENDED, updatedMs = 1L),
+            ),
+        )
+        val groups = AgentsModel.drawerGroups(state)
+        // Reported waits first (newest first), the guessed one after them.
+        assertEquals(listOf("waits", "asks", "guess"), groups.needsYou.map { it.id })
+        assertEquals(listOf("busy", "works"), groups.working.map { it.id })
+        assertEquals(listOf("idle", "old", "older", "ended"), groups.recent.map { it.id })
     }
 }

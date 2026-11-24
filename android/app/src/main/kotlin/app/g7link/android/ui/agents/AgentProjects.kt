@@ -10,17 +10,21 @@ import app.g7link.core.AgentThreadState
 /** A row in a folder: a thread G7 runs, or a session started on the PC that this phone follows. */
 @Immutable
 sealed interface ProjectItem {
+    /** The thread's or session's own id. */
+    val id: String
     val key: String
     val folder: String
     val updatedMs: Long
 
     data class Thread(val thread: AgentThread) : ProjectItem {
+        override val id: String get() = thread.id
         override val key: String get() = "thread:${thread.id}"
         override val folder: String get() = thread.folder
         override val updatedMs: Long get() = thread.updatedMs
     }
 
     data class Session(val session: AgentSession) : ProjectItem {
+        override val id: String get() = session.id
         override val key: String get() = "session:${session.id}"
         override val folder: String get() = session.folder
         override val updatedMs: Long get() = session.updatedMs
