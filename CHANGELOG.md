@@ -6,12 +6,43 @@ change things that need a step from you, and its notes say so.
 
 ## 0.1.29 (unreleased)
 
+**Update both together** for Move to G7.
+
+### Added
+
+- **Move to G7.** A Claude or Codex session still open in a terminal on the
+  PC has "Move to G7" on the phone: one tap ends the agent in that terminal
+  and continues the session as a G7 thread, so from then on the phone talks
+  to it directly, with no window, tab or focus involved. It works while the
+  PC is locked. The terminal and its tab stay open; anything half-typed in
+  the agent's box is lost, so the phone asks first.
+- **The focus comes back.** After G7 types a reply into a terminal, it hands
+  the focus back to the window you were in, when nobody touched the PC
+  meanwhile.
+
 ### Changed
+
+- **"Copied from" on the phone says what was copied.** "Email address
+  copied from guchu", with the address and a "Write email" button (also for
+  links, phone numbers, street addresses and tracking numbers). The lock
+  screen shows only "Copied from guchu".
+- **Opening or closing a fold in the Agents chat glides** instead of
+  jumping, when you tap it; rows that stream in while an agent works don't
+  move.
 
 - **Projects on the PC's Agents list remember how you left them.** A
   project you opened or closed stays that way after a restart, as on the
   phone. An open project shows its branch, how many files changed, its pull
   request and a script running in it.
+
+### Fixed
+
+- A Claude session you stopped, or one the Claude app moved on from, no
+  longer shows "Working" forever: Claude's "[Request interrupted by user]"
+  ends the turn, and a guessed "Working" that nothing runs any more turns
+  idle after 10 minutes.
+- While the PC is locked, a session's reply box stays on the phone and says
+  the PC is locked, instead of disappearing.
 
 ## 0.1.28 (2026-11-24)
 
