@@ -119,6 +119,23 @@
         <source>Limit reached</source>
         <translation>Limite ulaşıldı</translation>
     </message>
+    <message>
+        <location filename="../qml/pages/AgentsPage.qml" line="1002"/>
+        <source>Detached at %1</source>
+        <translation>%1 konumunda ayrık</translation>
+    </message>
+    <message numerus="yes">
+        <location filename="../qml/pages/AgentsPage.qml" line="1006"/>
+        <source>%n changed</source>
+        <translation>
+            <numerusform>%n değişti</numerusform>
+        </translation>
+    </message>
+    <message>
+        <location filename="../qml/pages/AgentsPage.qml" line="1007"/>
+        <source>%1 is running</source>
+        <translation>%1 çalışıyor</translation>
+    </message>
 </context>
 <context>
     <name>App</name>

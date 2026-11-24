@@ -12,6 +12,8 @@ QtObject {
     readonly property int restShown: 3
     // Folders whose open or closed state is kept.
     readonly property int maxRemembered: 64
+    // The PC sends a folder's name in at most 64 characters (§2.2); a longer one isn't kept.
+    readonly property int maxFolderChars: 64
 
     // Where a row sits in its folder, first to last.
     readonly property int needsYouRank: 0
@@ -87,7 +89,7 @@ QtObject {
         return out
     }
 
-    // One folder: its rows by rank, then the newest; its counts; its branch.
+    // One folder: its rows by rank, then the newest; its counts; its strip and running script.
     function group(folder, rows) {
         const ordered = rows.slice().sort((a, b) => rank(a) - rank(b) || updated(b) - updated(a) || byText(key(a), key(b)))
         let needsYou = 0
@@ -117,18 +119,28 @@ QtObject {
             threads: threads,
             sessions: ordered.length - threads,
             lastMs: lastMs,
-            branch: branchOf(ordered),
+            strip: stripOf(ordered),
+            script: scriptOf(ordered),
             // Rows shown before "n more": every one that needs you, may, or runs, then restShown more.
             firstShown: Math.min(ordered.length, active + restShown)
         }
     }
 
-    // The branch of its newest thread that has one, preferring one outside a worktree.
-    function branchOf(ordered) {
-        const withBranch = ordered.filter((i) => i.kind === "thread" && (i.row.branch || "").length > 0)
+    // A thread's strip ({ branch, detached, worktree, changed, pr }) says where it is.
+    function stripShown(strip) {
+        return !!strip && ((strip.branch || "").length > 0 || (strip.detached || "").length > 0)
+    }
+    // The strip of its newest thread that has one, preferring one outside a worktree ({} for none).
+    function stripOf(ordered) {
+        const withStrip = ordered.filter((i) => i.kind === "thread" && stripShown(i.row.strip))
             .sort((a, b) => updated(b) - updated(a))
-        const pick = withBranch.find((i) => (i.row.worktree || "").length === 0) || withBranch[0]
-        return pick ? pick.row.branch : ""
+        const pick = withStrip.find((i) => i.row.strip.worktree !== true) || withStrip[0]
+        return pick ? pick.row.strip : ({})
+    }
+    // A script running for one of its threads, by name, the first in order ("" for none).
+    function scriptOf(ordered) {
+        const pick = ordered.find((i) => i.kind === "thread" && (i.row.script || "").length > 0)
+        return pick ? pick.row.script : ""
     }
 
     // What needs you: threads with a request or question, and sessions whose
@@ -163,6 +175,35 @@ QtObject {
         const next = chosen.filter((c) => c[0] !== folder)
         next.push([folder, open])
         return next.slice(Math.max(0, next.length - maxRemembered))
+    }
+
+    function storable(folder) {
+        return folder.length <= maxFolderChars && folder.indexOf("\n") < 0 && folder.indexOf("\r") < 0
+    }
+
+    // The choices as one stored string (Preferences.agentFolders): a line per
+    // folder, "1" or "0" and a tab before its name, the oldest first.
+    function encode(chosen) {
+        const kept = chosen.filter((c) => storable(c[0]))
+        return kept.slice(Math.max(0, kept.length - maxRemembered))
+            .map((c) => (c[1] ? "1\t" : "0\t") + c[0]).join("\n")
+    }
+
+    // Reads encode's string back as [[folder, open], ...]; anything else is skipped.
+    function decode(stored) {
+        if (!stored)
+            return []
+        let out = []
+        for (const line of stored.split(/\r\n|\r|\n/).slice(0, maxRemembered * 2)) {
+            if (line.length < 2 || line[1] !== "\t" || (line[0] !== "1" && line[0] !== "0"))
+                continue
+            const folder = line.substring(2)
+            if (!storable(folder))
+                continue
+            out = out.filter((c) => c[0] !== folder)
+            out.push([folder, line[0] === "1"])
+        }
+        return out.slice(Math.max(0, out.length - maxRemembered))
     }
 
     // The rows a folder shows: all of them, or the first ones before "n more".

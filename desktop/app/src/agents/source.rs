@@ -640,7 +640,7 @@ fn status_json(st: &GitStatus, unticked: &BTreeSet<String>) -> Value {
 
 /// The strip in a thread's header: the status when it was read, else the
 /// thread's own summary and its last `git.changed`.
-fn strip_json(src: &Source, info: &ThreadInfo) -> Value {
+pub(super) fn strip_json(src: &Source, info: &ThreadInfo) -> Value {
     let brief = |p: &api::PrBrief| json!({ "number": p.number, "state": word(&p.state), "draft": p.draft, "pass": p.pass, "fail": p.fail, "pending": p.pending });
     let pr = src.panel.pr.as_ref().filter(|_| src.panel.thread_id == info.id).and_then(|v| v.pr.as_ref());
     let changed = src.changed.get(&info.id);
@@ -674,6 +674,16 @@ fn strip_json(src: &Source, info: &ThreadInfo) -> Value {
         "locked": false,
         "pr": pr.unwrap_or_else(|| json!({})),
     })
+}
+
+/// What a thread's row gives its folder's header in the list (AgentProjects):
+/// the strip its own header shows and a script running for it ("" for none).
+/// Read from what the host last said; the list runs no git.
+pub(super) fn add_folder_strip(src: &Source, info: &ThreadInfo, row: &mut Value) {
+    if let Some(row) = row.as_object_mut() {
+        row.insert("strip".into(), strip_json(src, info));
+        row.insert("script".into(), json!(scripts::running_name(info)));
+    }
 }
 
 /// The open thread's panel, strip and dialogs (`{}` when no thread is open).

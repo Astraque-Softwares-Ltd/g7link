@@ -151,6 +151,9 @@ pub const MIN_WINDOW_WIDTH: u32 = 320;
 pub const MIN_WINDOW_HEIGHT: u32 = 240;
 pub const MAX_WINDOW_WIDTH: u32 = 7680;
 pub const MAX_WINDOW_HEIGHT: u32 = 4320;
+/// The Agents list's stored folder choices are dropped past this: 64 names of
+/// at most 64 characters (3 bytes each in UTF-8) with their flags fit inside.
+pub const MAX_AGENT_FOLDERS_BYTES: usize = 16 * 1024;
 
 fn default_local_api_port() -> u16 {
     DEFAULT_LOCAL_API_PORT
@@ -694,6 +697,11 @@ pub struct Settings {
     /// maximized until the user restores it).
     #[serde(default = "default_true", alias = "window_maximized")]
     pub window_maximized: bool,
+    /// The Agents list's folders the user opened or closed, the oldest first:
+    /// a line each, `1` or `0` and a tab before the folder's name, as
+    /// `AgentProjects.encode` writes them.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub agent_folders: String,
 }
 
 impl Settings {
@@ -784,6 +792,7 @@ impl Default for Settings {
             window_width: DEFAULT_WINDOW_WIDTH,
             window_height: DEFAULT_WINDOW_HEIGHT,
             window_maximized: true,
+            agent_folders: String::new(),
         }
     }
 }
@@ -805,6 +814,9 @@ impl Settings {
         if self.window_x.is_none() || self.window_y.is_none() {
             self.window_x = None;
             self.window_y = None;
+        }
+        if self.agent_folders.len() > MAX_AGENT_FOLDERS_BYTES {
+            self.agent_folders.clear();
         }
         self
     }
@@ -1077,6 +1089,7 @@ mod tests {
             window_width: 1280,
             window_height: 820,
             window_maximized: true,
+            agent_folders: "1\tg7linux\n0\tsite".into(),
         };
         settings.save(dir.path()).unwrap();
         assert_eq!(Settings::load(dir.path()), settings);
@@ -1429,5 +1442,18 @@ mod tests {
         assert_eq!(partial.window_screen.as_deref(), Some("DP-2"));
         assert_eq!(partial.window_x, None);
         assert_eq!(partial.window_y, None);
+    }
+
+    #[test]
+    fn the_agents_folder_choices_keep_and_an_oversized_store_is_dropped() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(Settings::load(dir.path()).agent_folders, "", "none chosen yet");
+        let largest = format!("1\t{}\n", "\u{4e2d}".repeat(64)).repeat(64);
+        assert!(largest.len() <= MAX_AGENT_FOLDERS_BYTES, "64 folders of 64 characters fit");
+        Settings { agent_folders: largest.clone(), ..Default::default() }.save(dir.path()).unwrap();
+        assert_eq!(Settings::load(dir.path()).agent_folders, largest);
+        let oversized = "0\tx\n".repeat(MAX_AGENT_FOLDERS_BYTES);
+        Settings { agent_folders: oversized, ..Default::default() }.save(dir.path()).unwrap();
+        assert_eq!(Settings::load(dir.path()).agent_folders, "", "a hand-edited file can't grow the list");
     }
 }

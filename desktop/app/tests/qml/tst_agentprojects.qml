@@ -107,13 +107,73 @@ TestCase {
         compare(chosen.length, AgentProjects.maxRemembered)
     }
 
-    function test_a_folder_shows_its_main_branch_before_a_worktree() {
+    function strip(branch, extra) {
+        return Object.assign({ repo: "ok", branch: branch, detached: "", worktree: false, changed: 0, pr: {} }, extra || {})
+    }
+
+    function test_a_folder_shows_its_main_strip_before_a_worktree() {
         const group = AgentProjects.groups([
-            thread("wt", "f", "done", 900, { branch: "fix-tabs", worktree: "fix-tabs" }),
-            thread("main", "f", "done", 100, { branch: "main", worktree: "" }),
-            thread("none", "f", "done", 999)
+            thread("wt", "f", "done", 900, { strip: strip("fix-tabs", { worktree: true }) }),
+            thread("old", "f", "done", 50, { strip: strip("old-main") }),
+            thread("main", "f", "done", 100, { strip: strip("main", { changed: 3, pr: { number: 42, state: "open" } }) }),
+            thread("none", "f", "done", 999, { strip: {} })
         ], [])[0]
-        compare(group.branch, "main")
+        compare(group.strip.branch, "main", "the newest outside a worktree")
+        compare(group.strip.changed, 3)
+        compare(group.strip.pr.number, 42)
+        const worktreeOnly = AgentProjects.groups([thread("wt", "g", "done", 1, { strip: strip("fix-tabs", { worktree: true }) })], [])[0]
+        compare(worktreeOnly.strip.branch, "fix-tabs", "a worktree's when it's the only one")
+        const detached = AgentProjects.groups([thread("d", "h", "done", 1, { strip: strip("", { detached: "1a2b3c4" }) })], [])[0]
+        verify(AgentProjects.stripShown(detached.strip))
+        const none = AgentProjects.groups([thread("n", "i", "done", 1, { strip: {} }), session("s", "i", "idle", 2)], [])[0]
+        verify(!AgentProjects.stripShown(none.strip))
+    }
+
+    function test_a_folder_shows_a_script_running_for_one_of_its_threads() {
+        const group = AgentProjects.groups([
+            thread("quiet", "f", "done", 900, { script: "" }),
+            thread("dev", "f", "done", 100, { script: "dev" }),
+            thread("busy", "f", "working", 50, { script: "test" })
+        ], [])[0]
+        compare(group.script, "test", "in the folder's order: the running thread first")
+        compare(AgentProjects.groups([thread("a", "g", "done", 1)], [])[0].script, "")
+    }
+
+    function test_choices_are_stored_and_read_back_in_order() {
+        let chosen = AgentProjects.chose([], "g7linux", false)
+        chosen = AgentProjects.chose(chosen, "site", true)
+        chosen = AgentProjects.chose(chosen, "g7linux", true)
+        const stored = AgentProjects.encode(chosen)
+        compare(stored, "1\tsite\n1\tg7linux")
+        compare(AgentProjects.decode(stored), [["site", true], ["g7linux", true]])
+        compare(AgentProjects.decode(""), [])
+        compare(AgentProjects.decode(undefined), [])
+    }
+
+    function test_stored_choices_skip_long_names_newlines_and_bad_lines() {
+        const tooLong = "x".repeat(AgentProjects.maxFolderChars + 1)
+        const fits = "y".repeat(AgentProjects.maxFolderChars)
+        const stored = AgentProjects.encode([[tooLong, true], ["two\nlines", false], ["cr\rhere", true], [fits, false], ["ok", true]])
+        compare(stored, "0\t" + fits + "\n1\tok")
+        compare(AgentProjects.decode("1\t" + tooLong + "\n2\tbad\nno tab\n0\n\n1\tok\r\n0\tok"), [["ok", false]],
+                "a later line for the same folder wins")
+        compare(AgentProjects.decode("0\t"), [["", false]], "the folder with no name")
+    }
+
+    function test_stored_choices_keep_the_newest_sixty_four() {
+        let chosen = []
+        for (let i = 0; i < 70; ++i)
+            chosen.push(["f" + i, i % 2 === 0])
+        const read = AgentProjects.decode(AgentProjects.encode(chosen))
+        compare(read.length, AgentProjects.maxRemembered)
+        compare(read[0], ["f6", true])
+        compare(read[read.length - 1], ["f69", false])
+        let lines = []
+        for (let i = 0; i < 200; ++i)
+            lines.push("1\tg" + i)
+        const many = AgentProjects.decode(lines.join("\n"))
+        compare(many.length, AgentProjects.maxRemembered)
+        compare(many[many.length - 1][0], "g" + (AgentProjects.maxRemembered * 2 - 1), "a long store is read only so far")
     }
 
     function test_blank_folders_group_together() {

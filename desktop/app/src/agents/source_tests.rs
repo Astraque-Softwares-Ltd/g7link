@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! Source control's reducers: the quote chip's text form (the shared
 //! fixtures), the commit box, the agent's answer, the job output, the pull
-//! request card, the merge dialog's guard, and what the phone relay drops.
+//! request card, the merge dialog's guard, what the phone relay drops, and
+//! what a thread's row gives its folder's header.
 
 use std::collections::BTreeSet;
 
 use g7_agents::api::{
-    GitChange, GitFile, GitStatus, Job, PrInfo, PrMethodsResult, Purpose, Remote, RepoState, Staged,
-    WorktreeTag, Wrote,
+    GitChange, GitChangedEvent, GitFile, GitStatus, Job, PrBrief, PrInfo, PrMethodsResult, PrState, Purpose,
+    Remote, RepoState, RunBrief, RunPhase, Staged, WorktreeTag, Wrote,
 };
 use serde_json::{Value, json};
 
@@ -377,4 +378,74 @@ fn the_relay_drops_what_a_phone_may_not_get() {
     assert_eq!(p.lines.last(), long.lines.last(), "the newest are kept");
     assert_eq!(p.dropped as usize, 100 - p.lines.len());
     assert_eq!(p.from as usize, 100 - p.lines.len());
+}
+
+#[test]
+fn a_threads_row_gives_its_folder_the_strip_and_a_running_script_without_git() {
+    let mut src = Source::default();
+    let mut info = super::history_tests::a_thread("t1");
+    let mut row = json!({ "id": "t1" });
+    add_folder_strip(&src, &info, &mut row);
+    assert_eq!(row["strip"], json!({}), "never read: no strip");
+    assert_eq!(row["script"], "");
+
+    info.branch = Some("main".into());
+    info.changed = Some(3);
+    add_folder_strip(&src, &info, &mut row);
+    let strip = &row["strip"];
+    assert_eq!(
+        (strip["branch"].as_str(), strip["changed"].as_u64()),
+        (Some("main"), Some(3)),
+        "its own summary"
+    );
+    assert_eq!((strip["worktree"].as_bool(), strip["pr"].clone()), (Some(false), json!({})));
+
+    // The last `git.changed` is newer than the thread's summary and has the pull request.
+    src.changed.insert(
+        "t1".into(),
+        GitChangedEvent {
+            thread_id: "t1".into(),
+            branch: Some("fix-tabs".into()),
+            detached: false,
+            changed: 5,
+            ahead: Some(1),
+            behind: None,
+            pr: Some(PrBrief {
+                number: 42,
+                state: PrState::Open,
+                draft: false,
+                pass: 2,
+                fail: 0,
+                pending: 1,
+            }),
+        },
+    );
+    info.worktree = Some(WorktreeTag {
+        id: "abcdef012345".into(),
+        branch: "fix-tabs".into(),
+        label: "fix-tabs".into(),
+        missing: false,
+    });
+    add_folder_strip(&src, &info, &mut row);
+    let strip = &row["strip"];
+    assert_eq!((strip["branch"].as_str(), strip["changed"].as_u64()), (Some("fix-tabs"), Some(5)));
+    assert_eq!((strip["pr"]["number"].as_u64(), strip["worktree"].as_bool()), (Some(42), Some(true)));
+    let other = super::history_tests::a_thread("t2");
+    let mut other_row = json!({ "id": "t2" });
+    add_folder_strip(&src, &other, &mut other_row);
+    assert_eq!(other_row["strip"], json!({}), "another thread's git.changed isn't this one's");
+
+    let brief = |id: &str, name: &str, phase: RunPhase| RunBrief {
+        id: id.into(),
+        script_id: "s0000000a".into(),
+        name: name.into(),
+        phase,
+        exit: None,
+    };
+    info.runs = vec![brief("r1", "test", RunPhase::Done), brief("r2", "dev", RunPhase::Running)];
+    add_folder_strip(&src, &info, &mut row);
+    assert_eq!(row["script"], "dev", "the running one, not an ended one kept");
+    info.runs = vec![brief("r1", "test", RunPhase::Failed)];
+    add_folder_strip(&src, &info, &mut row);
+    assert_eq!(row["script"], "");
 }

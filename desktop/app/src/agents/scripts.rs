@@ -36,6 +36,12 @@ fn is_running(phase: RunPhase) -> bool {
     phase == RunPhase::Running
 }
 
+/// A script running for the thread, by name ("" for none): its folder's
+/// header shows it. The host keeps `runs` current with `thread.state`.
+pub(crate) fn running_name(info: &ThreadInfo) -> &str {
+    info.runs.iter().find(|r| is_running(r.phase)).map_or("", |r| r.name.as_str())
+}
+
 /// The Run menu's rows: the folder's scripts in order, each with the run of
 /// it that is running in this thread ("" for none).
 pub(crate) fn menu_rows(folder: Option<&Folder>, runs: &[RunBrief]) -> Vec<Value> {

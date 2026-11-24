@@ -119,6 +119,24 @@
         <source>Limit reached</source>
         <translation>Limite atingido</translation>
     </message>
+    <message>
+        <location filename="../qml/pages/AgentsPage.qml" line="1002"/>
+        <source>Detached at %1</source>
+        <translation>Desanexado em %1</translation>
+    </message>
+    <message numerus="yes">
+        <location filename="../qml/pages/AgentsPage.qml" line="1006"/>
+        <source>%n changed</source>
+        <translation>
+            <numerusform>%n alterado</numerusform>
+            <numerusform>%n alterados</numerusform>
+        </translation>
+    </message>
+    <message>
+        <location filename="../qml/pages/AgentsPage.qml" line="1007"/>
+        <source>%1 is running</source>
+        <translation>%1 está em execução</translation>
+    </message>
 </context>
 <context>
     <name>App</name>

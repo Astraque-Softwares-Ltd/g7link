@@ -119,6 +119,23 @@
         <source>Limit reached</source>
         <translation>已达额度上限</translation>
     </message>
+    <message>
+        <location filename="../qml/pages/AgentsPage.qml" line="1002"/>
+        <source>Detached at %1</source>
+        <translation>游离于 %1</translation>
+    </message>
+    <message numerus="yes">
+        <location filename="../qml/pages/AgentsPage.qml" line="1006"/>
+        <source>%n changed</source>
+        <translation>
+            <numerusform>%n 个已更改</numerusform>
+        </translation>
+    </message>
+    <message>
+        <location filename="../qml/pages/AgentsPage.qml" line="1007"/>
+        <source>%1 is running</source>
+        <translation>%1 正在运行</translation>
+    </message>
 </context>
 <context>
     <name>App</name>

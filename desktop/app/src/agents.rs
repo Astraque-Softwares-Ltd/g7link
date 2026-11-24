@@ -3424,7 +3424,11 @@ pub(crate) fn view() -> View {
     let s = lock();
     let now = now_ms();
     let threads = listed_threads(&s.threads, now);
-    let row_of = |t: &ThreadInfo| full_thread_row(t, &s.agents, now);
+    let row_of = |t: &ThreadInfo| {
+        let mut row = full_thread_row(t, &s.agents, now);
+        source::add_folder_strip(&s.source, t, &mut row);
+        row
+    };
     let open = s.open.as_ref();
     // The phone that shows the open thread or session: "open on Pixel".
     let open_on = |thread: Option<&str>, session: Option<&str>| {

@@ -276,9 +276,10 @@ Item {
     readonly property var needsItems: AgentProjects.needsYou(listedThreads, listedSessions)
     readonly property var groups: AgentProjects.groups(listedThreads, listedSessions)
     readonly property string newestFolder: AgentProjects.newest(groups)
-    // Folders the user opened or closed ([[folder, open], ...]) and those
-    // showing every row; a filter opens them all.
-    property var folderChoices: []
+    // Folders the user opened or closed ([[folder, open], ...]), kept in
+    // Preferences across restarts, and those showing every row; a filter
+    // opens them all.
+    property var folderChoices: AgentProjects.decode(Preferences.agentFolders)
     property var foldersShowingAll: []
     readonly property bool filtering: query.length > 0
     function folderOpen(group) {
@@ -286,6 +287,7 @@ Item {
     }
     function toggleFolder(group) {
         page.folderChoices = AgentProjects.chose(page.folderChoices, group.folder, !folderOpen(group))
+        Preferences.agentFolders = AgentProjects.encode(page.folderChoices)
     }
     function folderRows(group) {
         return folderOpen(group) ? AgentProjects.shown(group, filtering || foldersShowingAll.indexOf(group.folder) >= 0) : []
@@ -969,8 +971,9 @@ Item {
     }
 
     // A folder in the list (AgentProjects' group): its glyph and name, then
-    // what's in it. Open, its counts and branch; closed, what needs you or
-    // runs in it and when it last moved. A click opens or closes it.
+    // what's in it. Open, its counts, then its branch, changes and pull
+    // request, and a script running in it; closed, what needs you or runs in
+    // it and when it last moved. A click opens or closes it.
     component FolderHeader: Item {
         id: head
         property var group: ({})
@@ -993,7 +996,15 @@ Item {
             : group.needsYou === 1 ? qsTr("1 needs you") : qsTr("%1 need you").arg(group.needsYou)
         readonly property string runningText: (group.running || 0) === 0 ? ""
             : group.running === 1 ? qsTr("1 running") : qsTr("%1 running").arg(group.running)
-        readonly property string branch: group.branch || ""
+        readonly property var strip: group.strip || ({})
+        readonly property bool stripShown: AgentProjects.stripShown(strip)
+        readonly property string where: (strip.branch || "").length > 0 ? strip.branch
+            : qsTr("Detached at %1").arg(strip.detached || "")
+        readonly property int changedFiles: strip.changed || 0
+        readonly property var pr: strip.pr || ({})
+        readonly property int prNumber: pr.number || 0
+        readonly property string changedText: changedFiles > 0 ? qsTr("%n changed", "", changedFiles) : ""
+        readonly property string scriptText: (group.script || "").length > 0 ? qsTr("%1 is running").arg(group.script) : ""
         // "2 min", "1 h", "3 d".
         function ago(ms) {
             const minutes = Math.max(0, Math.floor((head.now - ms) / 60000))
@@ -1005,7 +1016,7 @@ Item {
             return hours < 24 ? qsTr("%1 h").arg(hours) : qsTr("%1 d").arg(Math.floor(hours / 24))
         }
         readonly property string summary: open
-            ? [counts, branch].filter((s) => s.length > 0).join(" · ")
+            ? counts
             : [needsText, runningText, needsText.length + runningText.length > 0 ? "" : counts, ago(group.lastMs || 0)]
                 .filter((s) => s.length > 0).join(" · ")
 
@@ -1013,7 +1024,10 @@ Item {
         activeFocusOnTab: interactive
         Accessible.role: Accessible.Button
         Accessible.name: head.name
-        Accessible.description: head.summary
+        Accessible.description: [head.summary,
+            head.open && head.stripShown ? [head.where, head.changedText, head.prNumber > 0 ? "#" + head.prNumber : ""]
+                .filter((s) => s.length > 0).join(", ") : "",
+            head.open ? head.scriptText : ""].filter((s) => s.length > 0).join(". ")
         Accessible.onPressAction: if (head.interactive) head.toggled()
         Keys.onPressed: (event) => {
             if (head.interactive && (event.key === Qt.Key_Return || event.key === Qt.Key_Enter || event.key === Qt.Key_Space)) {
@@ -1091,6 +1105,81 @@ Item {
                         : (summaryLine.needsShown || summaryLine.runningShown ? "" : head.counts + " · ") + head.ago(head.group.lastMs || 0)
                     width: Math.max(0, summaryLine.width - x)
                     text: (summaryLine.needsShown || summaryLine.runningShown ? " · " : "") + rest
+                    role: "bodySmall"
+                    muted: true
+                    maximumLineCount: 1
+                }
+            }
+            // Open, where it is: the branch (or where HEAD is detached), what
+            // changed and its pull request, as its newest thread last said.
+            Row {
+                id: stripLine
+                visible: head.open && head.stripShown
+                width: parent.width
+                topPadding: 3
+                spacing: 6
+                Icon {
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: 12
+                    height: 12
+                    path: AgentGitGlyphs.branch
+                    color: Theme.surfaceContentVariant
+                }
+                Txt {
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: Math.min(implicitWidth, Math.max(0, stripLine.width - 18 - stripTail.width))
+                    text: head.where
+                    role: "code"
+                    size: Theme.typography.bodySmall.size
+                    muted: true
+                    maximumLineCount: 1
+                }
+                Row {
+                    id: stripTail
+                    anchors.verticalCenter: parent.verticalCenter
+                    spacing: 6
+                    Txt {
+                        visible: head.changedFiles > 0
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: head.changedText
+                        role: "bodySmall"
+                        muted: true
+                    }
+                    Icon {
+                        visible: head.prNumber > 0
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: 12
+                        height: 12
+                        path: head.pr.state === "merged" ? AgentGitGlyphs.merged : AgentGitGlyphs.pullRequest
+                        color: Theme.surfaceContentVariant
+                    }
+                    Txt {
+                        visible: head.prNumber > 0
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: "#" + head.prNumber
+                        role: "bodySmall"
+                        muted: true
+                    }
+                }
+            }
+            // Open, a script running for one of its threads.
+            Row {
+                id: scriptLine
+                visible: head.open && head.scriptText.length > 0
+                width: parent.width
+                topPadding: 2
+                spacing: 6
+                Icon {
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: 12
+                    height: 12
+                    path: Icons.play
+                    color: Theme.tintTeal
+                }
+                Txt {
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: Math.max(0, scriptLine.width - 18)
+                    text: head.scriptText
                     role: "bodySmall"
                     muted: true
                     maximumLineCount: 1

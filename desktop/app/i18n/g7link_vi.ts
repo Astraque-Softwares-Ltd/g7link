@@ -119,6 +119,23 @@
         <source>Limit reached</source>
         <translation>Đã đạt hạn mức</translation>
     </message>
+    <message>
+        <location filename="../qml/pages/AgentsPage.qml" line="1002"/>
+        <source>Detached at %1</source>
+        <translation>Tách rời tại %1</translation>
+    </message>
+    <message numerus="yes">
+        <location filename="../qml/pages/AgentsPage.qml" line="1006"/>
+        <source>%n changed</source>
+        <translation>
+            <numerusform>%n thay đổi</numerusform>
+        </translation>
+    </message>
+    <message>
+        <location filename="../qml/pages/AgentsPage.qml" line="1007"/>
+        <source>%1 is running</source>
+        <translation>%1 đang chạy</translation>
+    </message>
 </context>
 <context>
     <name>App</name>

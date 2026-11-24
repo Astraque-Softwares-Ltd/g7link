@@ -162,6 +162,9 @@ pub mod qobject {
         #[qproperty(i32, window_height)]
         /// Whether the main window was maximized when last open.
         #[qproperty(bool, window_maximized)]
+        /// The Agents list's folders the user opened or closed, as
+        /// `AgentProjects.encode` writes them; saved as they change.
+        #[qproperty(QString, agent_folders)]
         type Preferences = super::PreferencesRust;
 
         /// Resets the setup walkthrough to step 0 and opens it again.
@@ -377,6 +380,7 @@ pub struct PreferencesRust {
     window_width: i32,
     window_height: i32,
     window_maximized: bool,
+    agent_folders: QString,
     /// What the user chose (`start_with_windows` shows the default until then).
     start_choice: Option<bool>,
     /// Custom recordings folder if chosen (`None` means default).
@@ -467,6 +471,7 @@ impl cxx_qt::Initialize for qobject::Preferences {
         self.as_mut().set_star_prompt_done(settings.star_prompt_done);
         self.as_mut().set_star_prompt_updated(settings.star_prompt_updated);
         self.as_mut().set_star_prompt_minutes(settings.star_prompt_minutes.min(i32::MAX as u32) as i32);
+        self.as_mut().set_agent_folders(QString::from(&settings.agent_folders));
         let folder_rules_json =
             serde_json::to_string(&settings.folder_sync_rules).unwrap_or_else(|_| "[]".into());
         self.as_mut().set_folder_sync_rules_json(QString::from(&folder_rules_json));
@@ -794,6 +799,7 @@ impl cxx_qt::Initialize for qobject::Preferences {
             .release();
         self.as_mut().on_star_prompt_done_changed(|p| p.save()).release();
         self.as_mut().on_star_prompt_minutes_changed(|p| p.save()).release();
+        self.as_mut().on_agent_folders_changed(|p| p.save()).release();
 
         super::subscribe(self.qt_thread(), crate::state::Changes::PREFS, Self::refresh_runtime_flags);
     }
@@ -1171,6 +1177,7 @@ impl qobject::Preferences {
             window_width: win_w,
             window_height: win_h,
             window_maximized: win_max,
+            agent_folders: String::from(&p.agent_folders),
         }
     }
 
