@@ -140,6 +140,7 @@ class Preferences(context: Context) {
         private const val AGENT_CHOICE_AGENT = "agent_choice.agent."
         private const val AGENT_CHOICE_FOLDER = "agent_choice.folder."
         private const val AGENT_SESSIONS_ALLOWED = "agent_sessions_allowed."
+        private const val AGENT_FOLDERS = "agent_folders."
 
         /** "quiet" (G7) or a color-only palette from [Palettes]. */
         val VALID_THEMES = setOf("quiet") + Palettes.families.map { it.id }
@@ -244,12 +245,22 @@ class Preferences(context: Context) {
             }
         }
 
-        /** Forgets what was picked on [pcId], and that it listed its sessions, as it was unpaired. */
+        /** The Agents list's folders the user opened or closed on [pcId], as [app.g7link.android.ui.agents.AgentProjects.encode] stored them. */
+        fun agentFolders(context: Context, pcId: String): String? = shared(context).getString(AGENT_FOLDERS + pcId, null)
+
+        fun setAgentFolders(context: Context, pcId: String, stored: String) {
+            shared(context).edit {
+                if (stored.isEmpty()) remove(AGENT_FOLDERS + pcId) else putString(AGENT_FOLDERS + pcId, stored)
+            }
+        }
+
+        /** Forgets what was picked on [pcId], that it listed its sessions, and its folders' open state, as it was unpaired. */
         fun removeAgentChoice(context: Context, pcId: String) {
             shared(context).edit {
                 remove(AGENT_CHOICE_AGENT + pcId)
                 remove(AGENT_CHOICE_FOLDER + pcId)
                 remove(AGENT_SESSIONS_ALLOWED + pcId)
+                remove(AGENT_FOLDERS + pcId)
             }
         }
 
@@ -261,6 +272,7 @@ class Preferences(context: Context) {
                     key.startsWith(AGENT_CHOICE_AGENT) -> key.removePrefix(AGENT_CHOICE_AGENT)
                     key.startsWith(AGENT_CHOICE_FOLDER) -> key.removePrefix(AGENT_CHOICE_FOLDER)
                     key.startsWith(AGENT_SESSIONS_ALLOWED) -> key.removePrefix(AGENT_SESSIONS_ALLOWED)
+                    key.startsWith(AGENT_FOLDERS) -> key.removePrefix(AGENT_FOLDERS)
                     else -> return@filter false
                 }
                 pc !in paired

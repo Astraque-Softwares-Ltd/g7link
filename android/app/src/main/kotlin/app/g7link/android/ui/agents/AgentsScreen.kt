@@ -82,6 +82,7 @@ import app.g7link.android.ui.theme.G7PrimaryButton
 import app.g7link.android.ui.theme.G7RaisedButton
 import app.g7link.android.ui.theme.G7Row
 import app.g7link.android.ui.theme.G7SectionLabel
+import app.g7link.android.ui.theme.LocalReducedMotion
 import app.g7link.android.ui.theme.g7Tints
 import app.g7link.core.AgentCatalog
 import app.g7link.core.AgentInfo
@@ -175,6 +176,8 @@ fun AgentsScreen(
     }
 
     BackHandler(enabled = page != AgentsPage.LIST) { page = AgentsPage.LIST }
+    // A shelf (Archived, Snoozed) goes back to the projects first.
+    BackHandler(enabled = page == AgentsPage.LIST && filter.shelf != Shelf.MAIN) { filter = ThreadFilter.ALL }
     when (page) {
         AgentsPage.SEARCH -> {
             AgentSearchScreen(
@@ -266,12 +269,6 @@ fun AgentsScreen(
             ) {
                 AgentsDrawerButton(drawer)
                 G7IconButton(
-                    icon = G7Icons.search,
-                    contentDescription = stringResource(R.string.agents_search),
-                    onClick = { page = AgentsPage.SEARCH },
-                    enabled = !offline && listShown,
-                )
-                G7IconButton(
                     icon = G7Icons.plus,
                     contentDescription = stringResource(R.string.agents_new_thread),
                     onClick = { newThread = true },
@@ -288,6 +285,7 @@ fun AgentsScreen(
             if (offline && listShown) OfflineBar(device.name, agents.savedMs ?: agents.listedMs, rememberNow())
             when {
                 listShown -> ThreadList(
+                    pcId = device.id,
                     pcName = device.name,
                     agents = agents,
                     catalog = catalog,
@@ -299,6 +297,7 @@ fun AgentsScreen(
                     onOpenSession = onOpenSession,
                     askedSessions = askedSessions,
                     onAskSessions = { askedSessions = true },
+                    onSearch = if (offline) null else ({ page = AgentsPage.SEARCH }),
                 )
                 load == ListLoad.LOADING -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     CircularProgressIndicator(Modifier.size(28.dp), strokeWidth = 2.dp)
@@ -427,8 +426,14 @@ private fun ListMenu(canImport: Boolean, onImport: () -> Unit, onSettings: () ->
     }
 }
 
+/**
+ * The list: the setup notes, then the projects (what needs you on a pager, a
+ * card per folder that opens and closes, the shelves under them) or a shelf's
+ * threads; the search button floats at the bottom end.
+ */
 @Composable
 private fun ThreadList(
+    pcId: String,
     pcName: String,
     agents: AgentsState,
     catalog: AgentCatalog?,
@@ -440,74 +445,88 @@ private fun ThreadList(
     onOpenSession: (String) -> Unit,
     askedSessions: Boolean,
     onAskSessions: () -> Unit,
+    onSearch: (() -> Unit)?,
 ) {
+    val context = LocalContext.current
     val now = rememberNow()
-    val listed = agents.listed
-    // The chips count threads only: sessions have their own section.
-    val needsYou = remember(listed) { listed.count { ThreadFilter.NEEDS_YOU.matches(it) } }
-    val working = remember(listed) { listed.count { ThreadFilter.WORKING.matches(it) } }
-    LazyColumn(
-        modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(start = 12.dp, end = 12.dp, bottom = 16.dp),
-        verticalArrangement = Arrangement.spacedBy(2.dp),
-    ) {
-        if (catalog != null && agents.readyAgents.isEmpty()) {
-            item(key = "none_ready", contentType = "setup") {
-                Column(Modifier.padding(bottom = 8.dp)) {
-                    SetupNote(stringResource(R.string.agents_none_ready, pcName))
-                    AgentRows(catalog.agents, selected = null, onSelect = {})
+    val animate = !LocalReducedMotion.current
+    val groups = remember(agents.threads, agents.sessions, agents.sessionsAllowed, agents.sessionsUnsupported, agents.gitStrips, agents.scriptRuns) {
+        AgentProjects.groups(agents)
+    }
+    val cards = remember(agents.threads, agents.sessions, agents.sessionsAllowed, agents.sessionsUnsupported, agents.asks, agents.questions) {
+        AgentProjects.cards(agents)
+    }
+    val newest = remember(groups) { AgentProjects.newest(groups) }
+    // What the user opened and closed on this PC, kept across visits.
+    var chosen by remember(pcId) { mutableStateOf(AgentProjects.decode(Preferences.agentFolders(context, pcId))) }
+    var showingAll by remember(pcId) { mutableStateOf(emptySet<String>()) }
+    val folders = FolderControl(
+        isOpen = { group -> AgentProjects.open(group, newest, chosen) },
+        toggle = { group ->
+            chosen = AgentProjects.chose(chosen, group.folder, !AgentProjects.open(group, newest, chosen))
+            Preferences.setAgentFolders(context, pcId, AgentProjects.encode(chosen))
+        },
+        showsAll = { group -> group.folder in showingAll },
+        showAll = { group -> showingAll = showingAll + group.folder },
+    )
+    val actions = remember(rowActions, onOpenSession) { ProjectActions(rowActions, onOpenSession) }
+    val shelf = filter.shelf != Shelf.MAIN
+    Box(Modifier.fillMaxSize()) {
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            // Clear of the search button at the bottom end.
+            contentPadding = PaddingValues(start = 12.dp, end = 12.dp, bottom = if (onSearch != null) 96.dp else 16.dp),
+            // A shelf's rows keep their gap; a folder's rows join into one card.
+            verticalArrangement = if (shelf) Arrangement.spacedBy(2.dp) else Arrangement.Top,
+        ) {
+            if (catalog != null && agents.readyAgents.isEmpty()) {
+                item(key = "none_ready", contentType = "setup") {
+                    Column(Modifier.padding(bottom = 8.dp)) {
+                        SetupNote(stringResource(R.string.agents_none_ready, pcName))
+                        AgentRows(catalog.agents, selected = null, onSelect = {})
+                    }
+                }
+            } else if (catalog != null && catalog.folders.isEmpty()) {
+                item(key = "no_folders", contentType = "setup") {
+                    SetupNote(stringResource(R.string.agents_no_folders, pcName))
                 }
             }
-        } else if (catalog != null && catalog.folders.isEmpty()) {
-            item(key = "no_folders", contentType = "setup") {
-                SetupNote(stringResource(R.string.agents_no_folders, pcName))
+            if (shelf) {
+                item(key = "shelf_header", contentType = "shelf_header") { ShelfHeader(filter, onBack = { onFilter(ThreadFilter.ALL) }) }
+                threadRows(agents, filter, now, rowActions)
+                return@LazyColumn
             }
+            if (groups.isEmpty()) {
+                item(key = "empty", contentType = "empty") {
+                    Column(
+                        Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 24.dp),
+                        verticalArrangement = Arrangement.spacedBy(16.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                    ) {
+                        Text(
+                            stringResource(R.string.agents_empty),
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            textAlign = TextAlign.Center,
+                        )
+                        if (canStart) G7PrimaryButton(label = stringResource(R.string.agents_new_thread), onClick = onNewThread)
+                    }
+                }
+            } else {
+                projects(agents, groups, cards, pcName, now, folders, actions, animate)
+            }
+            // Sessions started on the PC sit in their folders once the PC lists them; until then, a way to ask (never asked unprompted).
+            if (!agents.sessionsUnsupported && agents.sessionsAllowed != true) {
+                item(key = "sessions_off", contentType = "sessions_off") {
+                    Column(Modifier.padding(top = 12.dp)) {
+                        G7SectionLabel(stringResource(R.string.agents_session_section, pcName))
+                        SessionsOff(pcName = pcName, asked = askedSessions, onAsk = onAskSessions)
+                    }
+                }
+            }
+            item(key = "shelves", contentType = "shelves") { ShelfButtons(agents, onShelf = onFilter) }
         }
-        if (agents.threads.isEmpty()) {
-            item(key = "empty", contentType = "empty") {
-                Column(
-                    Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 24.dp),
-                    verticalArrangement = Arrangement.spacedBy(16.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                ) {
-                    Text(
-                        stringResource(R.string.agents_empty),
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        textAlign = TextAlign.Center,
-                    )
-                    if (canStart) G7PrimaryButton(label = stringResource(R.string.agents_new_thread), onClick = onNewThread)
-                }
-            }
-        } else {
-            item(key = "filters", contentType = "filters") {
-                ShelfChips(selected = filter, needsYou = needsYou, working = working, onSelect = onFilter)
-            }
-            threadRows(agents, filter, now, rowActions)
-        }
-        // Sessions started on the PC outside G7: listed once the PC allows it, else a way to ask (never asked unprompted).
-        if (!agents.sessionsUnsupported && filter.shelf == Shelf.MAIN) {
-            item(key = "sessions_label", contentType = "label") {
-                G7SectionLabel(stringResource(R.string.agents_session_section, pcName), Modifier.padding(top = 8.dp))
-            }
-            when {
-                agents.sessionsAllowed != true -> item(key = "sessions_off", contentType = "sessions_off") {
-                    SessionsOff(pcName = pcName, asked = askedSessions, onAsk = onAskSessions)
-                }
-                agents.sessions.isEmpty() -> item(key = "sessions_none", contentType = "setup") {
-                    SetupNote(stringResource(R.string.agents_session_none, pcName))
-                }
-                else -> items(agents.sessions, key = { "session:${it.id}" }, contentType = { "session" }) { session ->
-                    SessionRow(
-                        session = session,
-                        agentName = agents.agentName(session.agent),
-                        pcName = pcName,
-                        now = now,
-                        onOpen = { onOpenSession(session.id) },
-                    )
-                }
-            }
-        }
+        if (onSearch != null) SearchButton(onClick = onSearch, modifier = Modifier.align(Alignment.BottomEnd).padding(16.dp))
     }
 }
 
@@ -538,41 +557,6 @@ internal fun SessionsOff(pcName: String, asked: Boolean, onAsk: () -> Unit) {
                 color = scheme.onSurfaceVariant,
                 modifier = Modifier.weight(1f),
             )
-        }
-    }
-}
-
-/** A session started on the PC: its state, title, agent and folder and where it runs, and what to do about it. */
-@Composable
-private fun SessionRow(session: AgentSession, agentName: String, pcName: String, now: Long, onOpen: () -> Unit) {
-    val scheme = MaterialTheme.colorScheme
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(8.dp))
-            .background(scheme.surfaceContainer)
-            .clickable(role = Role.Button, onClick = onOpen)
-            .padding(horizontal = 14.dp, vertical = 12.dp),
-        verticalArrangement = Arrangement.spacedBy(4.dp),
-    ) {
-        SessionStatusLine(session = session, now = now, trailing = relativeTime(session.updatedMs, now))
-        Text(session.title, style = MaterialTheme.typography.bodyLarge, maxLines = 2, overflow = TextOverflow.Ellipsis)
-        Text(
-            sessionPlace(session, agentName),
-            style = MaterialTheme.typography.bodySmall,
-            color = scheme.onSurfaceVariant,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
-        val line = when {
-            AgentsModel.needsYouExactly(session) -> stringResource(R.string.agents_session_answer_on, pcName)
-            AgentsModel.mayNeedYou(session) -> mayWait(session, agentName, pcName)
-            else -> null
-        }
-        if (line != null) {
-            Text(line, style = MaterialTheme.typography.bodySmall, color = scheme.onSurfaceVariant)
-        } else if (AgentsModel.sessionLook(session) == SessionLook.WORKING) {
-            NowLine(step = session.step, sinceMs = session.sinceMs)
         }
     }
 }

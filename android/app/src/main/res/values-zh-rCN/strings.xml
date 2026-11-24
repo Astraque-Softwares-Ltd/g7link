@@ -1355,12 +1355,33 @@
     <string name="agents_home_title">%1$s 上的智能体</string>
     <string name="agents_home_needs_you">%1$s 需要你</string>
     <string name="agents_home_asks_first">它会在修改文件或运行可能改变内容的命令前先询问。</string>
-    <string name="agents_filter_count">%1$s %2$d</string>
     <string name="agents_notify_working_public">%1$s 正在 %2$s 上工作</string>
     <string name="agents_step_now">现在：%1$s</string>
     <string name="agents_step_of">第 %1$d 步，共 %2$d 步</string>
     <string name="agents_step_thinking">正在思考</string>
     <string name="agents_session_section">在 %1$s 上启动</string>
+    <string name="agents_projects">项目</string>
+    <string name="agents_no_folder">无文件夹</string>
+    <string name="agents_needs_you_position">%1$d / %2$d</string>
+    <string name="agents_folder_expand">展开</string>
+    <string name="agents_folder_collapse">收起</string>
+    <string name="agents_open">打开</string>
+    <string name="agents_shelf_back">返回项目</string>
+    <plurals name="agents_folder_threads">
+        <item quantity="other">%1$d 个会话</item>
+    </plurals>
+    <plurals name="agents_folder_sessions">
+        <item quantity="other">%1$d 个电脑会话</item>
+    </plurals>
+    <plurals name="agents_folder_needs_you">
+        <item quantity="other">%1$d 个需要你</item>
+    </plurals>
+    <plurals name="agents_folder_running">
+        <item quantity="other">%1$d 个运行中</item>
+    </plurals>
+    <plurals name="agents_folder_more">
+        <item quantity="other">还有 %1$d 个</item>
+    </plurals>
     <string name="agents_session_off_body">你在 %1$s 上的终端或 Claude 应用中启动的 Claude 和 Codex 会话也可以显示在这里。</string>
     <string name="agents_session_ask">在 %1$s 上请求</string>
     <string name="agents_session_off_note">在那里允许之前会一直关闭。</string>

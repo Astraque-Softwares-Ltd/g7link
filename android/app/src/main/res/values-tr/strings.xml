@@ -1488,12 +1488,38 @@
     <string name="agents_home_title">%1$s üzerindeki ajanlar</string>
     <string name="agents_home_needs_you">%1$s sizi bekliyor</string>
     <string name="agents_home_asks_first">Bir dosyayı değiştirmeden veya bir şeyi değiştirebilecek bir komutu çalıştırmadan önce sorar.</string>
-    <string name="agents_filter_count">%1$s %2$d</string>
     <string name="agents_notify_working_public">%1$s, %2$s üzerinde çalışıyor</string>
     <string name="agents_step_now">Şimdi: %1$s</string>
     <string name="agents_step_of">Adım %1$d / %2$d</string>
     <string name="agents_step_thinking">Düşünüyor</string>
     <string name="agents_session_section">%1$s üzerinde başlatılanlar</string>
+    <string name="agents_projects">Projeler</string>
+    <string name="agents_no_folder">Klasör yok</string>
+    <string name="agents_needs_you_position">%1$d / %2$d</string>
+    <string name="agents_folder_expand">Genişlet</string>
+    <string name="agents_folder_collapse">Daralt</string>
+    <string name="agents_open">Aç</string>
+    <string name="agents_shelf_back">Projelere dön</string>
+    <plurals name="agents_folder_threads">
+        <item quantity="one">%1$d konuşma</item>
+        <item quantity="other">%1$d konuşma</item>
+    </plurals>
+    <plurals name="agents_folder_sessions">
+        <item quantity="one">%1$d oturum</item>
+        <item quantity="other">%1$d oturum</item>
+    </plurals>
+    <plurals name="agents_folder_needs_you">
+        <item quantity="one">%1$d sizi bekliyor</item>
+        <item quantity="other">%1$d sizi bekliyor</item>
+    </plurals>
+    <plurals name="agents_folder_running">
+        <item quantity="one">%1$d çalışıyor</item>
+        <item quantity="other">%1$d çalışıyor</item>
+    </plurals>
+    <plurals name="agents_folder_more">
+        <item quantity="one">%1$d tane daha</item>
+        <item quantity="other">%1$d tane daha</item>
+    </plurals>
     <string name="agents_session_off_body">%1$s üzerinde bir terminalde veya Claude uygulamasında başlattığınız Claude ve Codex oturumları burada da görünebilir.</string>
     <string name="agents_session_ask">%1$s üzerinde sor</string>
     <string name="agents_session_off_note">Orada izin verene kadar kapalı kalır.</string>

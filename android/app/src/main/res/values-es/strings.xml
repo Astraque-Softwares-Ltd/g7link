@@ -1347,12 +1347,43 @@
     <string name="agents_home_title">Agentes en %1$s</string>
     <string name="agents_home_needs_you">%1$s te necesita</string>
     <string name="agents_home_asks_first">Pregunta antes de cambiar un archivo o ejecutar un comando que pueda cambiar algo.</string>
-    <string name="agents_filter_count">%1$s %2$d</string>
     <string name="agents_notify_working_public">%1$s está trabajando en %2$s</string>
     <string name="agents_step_now">Ahora: %1$s</string>
     <string name="agents_step_of">Paso %1$d de %2$d</string>
     <string name="agents_step_thinking">Pensando</string>
     <string name="agents_session_section">Iniciadas en %1$s</string>
+    <string name="agents_projects">Proyectos</string>
+    <string name="agents_no_folder">Sin carpeta</string>
+    <string name="agents_needs_you_position">%1$d de %2$d</string>
+    <string name="agents_folder_expand">Expandir</string>
+    <string name="agents_folder_collapse">Contraer</string>
+    <string name="agents_open">Abrir</string>
+    <string name="agents_shelf_back">Volver a los proyectos</string>
+    <plurals name="agents_folder_threads">
+        <item quantity="one">%1$d hilo</item>
+        <item quantity="many">%1$d hilos</item>
+        <item quantity="other">%1$d hilos</item>
+    </plurals>
+    <plurals name="agents_folder_sessions">
+        <item quantity="one">%1$d sesión</item>
+        <item quantity="many">%1$d sesiones</item>
+        <item quantity="other">%1$d sesiones</item>
+    </plurals>
+    <plurals name="agents_folder_needs_you">
+        <item quantity="one">%1$d te necesita</item>
+        <item quantity="many">%1$d te necesitan</item>
+        <item quantity="other">%1$d te necesitan</item>
+    </plurals>
+    <plurals name="agents_folder_running">
+        <item quantity="one">%1$d en curso</item>
+        <item quantity="many">%1$d en curso</item>
+        <item quantity="other">%1$d en curso</item>
+    </plurals>
+    <plurals name="agents_folder_more">
+        <item quantity="one">%1$d más</item>
+        <item quantity="many">%1$d más</item>
+        <item quantity="other">%1$d más</item>
+    </plurals>
     <string name="agents_session_off_body">Las sesiones de Claude y Codex que inicies en %1$s, en una terminal o en la app de Claude, también pueden aparecer aquí.</string>
     <string name="agents_session_ask">Preguntar en %1$s</string>
     <string name="agents_session_off_note">Seguirá desactivado hasta que lo permitas allí.</string>

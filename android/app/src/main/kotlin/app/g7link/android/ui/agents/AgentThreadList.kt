@@ -4,24 +4,18 @@ package app.g7link.android.ui.agents
 import android.text.format.DateFormat
 import androidx.compose.animation.core.Animatable
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.selection.selectable
-import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -34,6 +28,7 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLocale
@@ -97,46 +92,6 @@ internal class ThreadRowActions(
     /** The end side (pin or unpin). */
     val pin: (AgentThread) -> Unit,
 )
-
-/** The filter chips, scrolling sideways at phone width; the counts are of threads that need you and work. */
-@Composable
-internal fun ShelfChips(selected: ThreadFilter, needsYou: Int, working: Int, onSelect: (ThreadFilter) -> Unit, modifier: Modifier = Modifier) {
-    val scheme = MaterialTheme.colorScheme
-    val options = listOf(
-        ThreadFilter.ALL to stringResource(R.string.agents_filter_all),
-        ThreadFilter.NEEDS_YOU to counted(stringResource(R.string.agents_state_waiting), needsYou),
-        ThreadFilter.WORKING to counted(stringResource(R.string.agents_state_working), working),
-        ThreadFilter.RECENT to stringResource(R.string.agents_filter_recent),
-        ThreadFilter.ARCHIVED to stringResource(R.string.agents_shelf_archived),
-        ThreadFilter.SNOOZED to stringResource(R.string.agents_shelf_snoozed),
-    )
-    Row(
-        modifier = modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(top = 4.dp, bottom = 8.dp).selectableGroup(),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        for ((filter, label) in options) {
-            val on = filter == selected
-            Text(
-                label,
-                style = MaterialTheme.typography.labelLarge.copy(fontWeight = if (on) FontWeight.SemiBold else FontWeight.Medium),
-                color = if (on) scheme.onSurface else scheme.onSurfaceVariant,
-                maxLines = 1,
-                modifier = Modifier
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(if (on) scheme.surfaceContainerHigh else scheme.surface)
-                    .border(1.dp, if (on) scheme.surfaceContainerHigh else scheme.outlineVariant, RoundedCornerShape(8.dp))
-                    .selectable(selected = on, role = Role.RadioButton, onClick = { onSelect(filter) })
-                    .heightIn(min = 32.dp)
-                    .padding(horizontal = 12.dp, vertical = 7.dp),
-            )
-        }
-    }
-}
-
-/** A chip's word and how many it holds, when any. */
-@Composable
-internal fun counted(word: String, count: Int): String =
-    if (count > 0) stringResource(R.string.agents_filter_count, word, count) else word
 
 /**
  * The threads of a filter: with All, the sections in their order (Needs you,
@@ -216,12 +171,13 @@ private fun ListedThread(thread: AgentThread, agents: AgentsState, now: Long, ac
  * accessibility services.
  */
 @Composable
-private fun SwipeRow(
+internal fun SwipeRow(
     startLabel: String,
     endLabel: String,
     startEnabled: Boolean,
     onStart: () -> Unit,
     onEnd: () -> Unit,
+    shape: Shape = RoundedCornerShape(8.dp),
     content: @Composable () -> Unit,
 ) {
     val scheme = MaterialTheme.colorScheme
@@ -236,7 +192,7 @@ private fun SwipeRow(
     Box(
         Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(8.dp))
+            .clip(shape)
             .semantics {
                 customActions = buildList {
                     if (startEnabled) add(CustomAccessibilityAction(startLabel) { onStart(); true })

@@ -1424,12 +1424,33 @@
 <string name="agents_home_title">Agent trên %1$s</string>
 <string name="agents_home_needs_you">%1$s cần bạn</string>
 <string name="agents_home_asks_first">Nó sẽ hỏi trước khi sửa tệp hoặc chạy lệnh có thể thay đổi điều gì đó.</string>
-<string name="agents_filter_count">%1$s %2$d</string>
 <string name="agents_notify_working_public">%1$s đang làm trên %2$s</string>
 <string name="agents_step_now">Đang: %1$s</string>
 <string name="agents_step_of">Bước %1$d/%2$d</string>
 <string name="agents_step_thinking">Đang suy nghĩ</string>
 <string name="agents_session_section">Bắt đầu trên %1$s</string>
+    <string name="agents_projects">Dự án</string>
+    <string name="agents_no_folder">Không có thư mục</string>
+    <string name="agents_needs_you_position">%1$d/%2$d</string>
+    <string name="agents_folder_expand">Mở rộng</string>
+    <string name="agents_folder_collapse">Thu gọn</string>
+    <string name="agents_open">Mở</string>
+    <string name="agents_shelf_back">Quay lại dự án</string>
+    <plurals name="agents_folder_threads">
+        <item quantity="other">%1$d luồng</item>
+    </plurals>
+    <plurals name="agents_folder_sessions">
+        <item quantity="other">%1$d phiên</item>
+    </plurals>
+    <plurals name="agents_folder_needs_you">
+        <item quantity="other">%1$d cần bạn</item>
+    </plurals>
+    <plurals name="agents_folder_running">
+        <item quantity="other">%1$d đang chạy</item>
+    </plurals>
+    <plurals name="agents_folder_more">
+        <item quantity="other">Thêm %1$d</item>
+    </plurals>
 <string name="agents_session_off_body">Các phiên Claude và Codex bạn bắt đầu trên %1$s, trong terminal hoặc ứng dụng Claude, cũng có thể hiện ở đây.</string>
 <string name="agents_session_ask">Hỏi trên %1$s</string>
 <string name="agents_session_off_note">Tính năng này tắt cho đến khi bạn cho phép ở đó.</string>

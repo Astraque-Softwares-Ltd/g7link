@@ -1488,12 +1488,38 @@
     <string name="agents_home_title">Agenten auf %1$s</string>
     <string name="agents_home_needs_you">%1$s braucht dich</string>
     <string name="agents_home_asks_first">Er fragt, bevor er eine Datei ändert oder einen Befehl ausführt, der etwas ändern könnte.</string>
-    <string name="agents_filter_count">%1$s %2$d</string>
     <string name="agents_notify_working_public">%1$s arbeitet auf %2$s</string>
     <string name="agents_step_now">Jetzt: %1$s</string>
     <string name="agents_step_of">Schritt %1$d von %2$d</string>
     <string name="agents_step_thinking">Denkt nach</string>
     <string name="agents_session_section">Auf %1$s gestartet</string>
+    <string name="agents_projects">Projekte</string>
+    <string name="agents_no_folder">Kein Ordner</string>
+    <string name="agents_needs_you_position">%1$d von %2$d</string>
+    <string name="agents_folder_expand">Aufklappen</string>
+    <string name="agents_folder_collapse">Zuklappen</string>
+    <string name="agents_open">Öffnen</string>
+    <string name="agents_shelf_back">Zurück zu den Projekten</string>
+    <plurals name="agents_folder_threads">
+        <item quantity="one">%1$d Thread</item>
+        <item quantity="other">%1$d Threads</item>
+    </plurals>
+    <plurals name="agents_folder_sessions">
+        <item quantity="one">%1$d Sitzung</item>
+        <item quantity="other">%1$d Sitzungen</item>
+    </plurals>
+    <plurals name="agents_folder_needs_you">
+        <item quantity="one">%1$d braucht dich</item>
+        <item quantity="other">%1$d brauchen dich</item>
+    </plurals>
+    <plurals name="agents_folder_running">
+        <item quantity="one">%1$d läuft</item>
+        <item quantity="other">%1$d laufen</item>
+    </plurals>
+    <plurals name="agents_folder_more">
+        <item quantity="one">%1$d weitere</item>
+        <item quantity="other">%1$d weitere</item>
+    </plurals>
     <string name="agents_session_off_body">Claude- und Codex-Sitzungen, die du auf %1$s in einem Terminal oder der Claude-App startest, können auch hier erscheinen.</string>
     <string name="agents_session_ask">Auf %1$s fragen</string>
     <string name="agents_session_off_note">Es bleibt aus, bis du es dort erlaubst.</string>
