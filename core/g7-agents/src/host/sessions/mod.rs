@@ -15,6 +15,7 @@
 //! [`FoundStore`], which the host attaches with [`Sessions::attach_store`].
 
 pub mod claude_files;
+pub mod close;
 pub mod codex_files;
 pub mod import;
 pub mod paths;
@@ -60,6 +61,9 @@ const MAX_META_LINE: u64 = 1_048_576;
 const MAX_COLLECT: u64 = 8 * 1024 * 1024;
 /// Our own process may write the rollout this long after the turn's end.
 const OWN_WRITE_SLACK_MS: u64 = 3000;
+/// A session no live process holds, whose file says it works or may need
+/// you, reads as idle once the file has been quiet this long.
+const UNHELD_QUIET_MS: u64 = 10 * 60_000;
 
 /// `seq` for block `index` of the line at `offset`: unique, growing with
 /// the file, the same on every read.
@@ -301,6 +305,11 @@ struct Ctx {
     uuid: String,
     path: PathBuf,
     open: bool,
+    /// A live process runs the session now. Claude: a live status file names
+    /// it, or a `claude` whose command line names it that neither forks it
+    /// nor has a live status file naming another session (it moved on, as
+    /// `session.place` finds). Codex: the same as `open`.
+    held: bool,
     /// Claude's live status file: its `status`, `waitingFor`, and when it changed.
     live: Option<(Option<String>, Option<String>, u64)>,
     title_hint: Option<String>,
@@ -329,6 +338,31 @@ struct Cached {
 /// A watch to start: the session's id and what the scan knows of it.
 type NewWatch = (String, Ctx);
 
+/// Where `session.continue` puts a session: its agent folder, and the
+/// folder under it.
+struct ContinueTarget {
+    folder_id: String,
+    subdir: Option<String>,
+}
+
+/// What stops `session.continue` besides something having the session open.
+enum Unable {
+    /// [`ContinueBlock::Folder`]: `DENIED`.
+    Folder(RpcError),
+    /// [`ContinueBlock::Agent`]: `UNAVAILABLE`.
+    Agent(RpcError),
+    /// The check itself failed.
+    Failed(RpcError),
+}
+
+impl Unable {
+    fn into_error(self) -> RpcError {
+        match self {
+            Unable::Folder(e) | Unable::Agent(e) | Unable::Failed(e) => e,
+        }
+    }
+}
+
 /// A session some connection watches.
 #[derive(Debug)]
 struct Watch {
@@ -342,9 +376,18 @@ struct Watch {
 /// A turn the usage limit stopped (the tail's last entry) reads as idle with
 /// `limit`, over a live status written no later than that entry; a newer
 /// "busy" or "waiting" means the session went on.
+///
+/// A guess of working or needing you for a session no live process holds
+/// (its process went on to another session) turns idle after
+/// [`UNHELD_QUIET_MS`] of quiet: nothing will end that turn in the file.
 fn build(id: &str, ctx: &Ctx, reader: &Tail, mtime_ms: u64, now: u64) -> (Session, u64) {
     let quiet = now.saturating_sub(mtime_ms);
-    let guessed = || (reader.guess(quiet), true, None, mtime_ms);
+    let guessed = || match reader.guess(quiet) {
+        SessionState::Working | SessionState::NeedsYouGuess if !ctx.held && quiet >= UNHELD_QUIET_MS => {
+            (SessionState::Idle, true, None, mtime_ms)
+        }
+        state => (state, true, None, mtime_ms),
+    };
     let stopped = reader.limit().filter(|_| ctx.open);
     let live_after = |limit_at: u64| ctx.live.as_ref().filter(|(_, _, at)| *at > limit_at);
     let (state, state_guess, waiting_for, since_hint) = if !ctx.open {
@@ -511,6 +554,8 @@ fn scan_blocking(job: ScanJob) -> ScanDone {
     let statuses = procs::statuses(&roots, &scan);
     let oldest = now.saturating_sub(SESSION_WINDOW_MS);
     let live: HashSet<&str> = statuses.values().filter(|s| s.live).map(|s| s.uuid.as_str()).collect();
+    let live_by_pid: HashMap<u32, &str> =
+        statuses.values().filter(|s| s.live).map(|s| (s.pid, s.uuid.as_str())).collect();
     let mut found: HashMap<String, (AgentId, String, PathBuf, Stamp)> = HashMap::new();
     let mut keep = |agent: AgentId, uuid: &str, path: PathBuf, stamp: Stamp| {
         let Some(id) = paths::session_id(agent, uuid) else { return };
@@ -592,17 +637,24 @@ fn scan_blocking(job: ScanJob) -> ScanDone {
             }
         };
         let mtime = stamp.mtime_ms();
-        let (ctx_open, cwd, source, title_hint, meta) = match agent {
+        let (ctx_open, held, cwd, source, title_hint, meta) = match agent {
             AgentId::Claude => {
                 let argv =
                     scan.procs.values().find(|p| p.comm == Comm::Claude && p.names_claude_session(&uuid));
                 let open = live_status.is_some() || argv.is_some();
+                let held = live_status.is_some()
+                    || scan.procs.values().any(|p| {
+                        p.comm == Comm::Claude
+                            && p.names_claude_session(&uuid)
+                            && !p.forks_session()
+                            && live_by_pid.get(&p.pid).is_none_or(|named| *named == uuid)
+                    });
                 let cwd =
                     live_status.and_then(|s| s.cwd.clone()).or_else(|| reader.line_cwd().map(str::to_owned));
                 let exe =
                     live_status.and_then(|s| scan.procs.get(&s.pid)).or(argv).and_then(|p| p.exe.as_deref());
                 let source = claude_source(status, exe, argv.is_some(), &roots);
-                (open, cwd, source, live_status.and_then(|s| s.name.clone()), None)
+                (open, held, cwd, source, live_status.and_then(|s| s.name.clone()), None)
             }
             AgentId::Codex => {
                 let meta = codex_meta(&path, &stamp, &reader, old_meta);
@@ -610,7 +662,7 @@ fn scan_blocking(job: ScanJob) -> ScanDone {
                 let open = codex_open(&scan, &uuid, &locks, now, mtime, cwd.as_deref(), None);
                 let source = meta.as_ref().map_or(SessionSource::Other, CodexMeta::source);
                 let title = index.as_ref().and_then(|(_, t)| t.get(&uuid).cloned());
-                (open, cwd, source, title, meta)
+                (open, open, cwd, source, title, meta)
             }
         };
         let Some(cwd) = cwd.filter(|c| c.starts_with('/')) else {
@@ -633,6 +685,7 @@ fn scan_blocking(job: ScanJob) -> ScanDone {
             uuid,
             path,
             open: ctx_open,
+            held,
             live: live_status.map(|s| (s.status.clone(), s.waiting_for.clone(), s.updated_ms)),
             title_hint,
             folder_id: folder.map(|f| f.0.clone()),
@@ -784,6 +837,8 @@ pub struct Sessions {
     found_scan: scan::ScanState,
     /// The import job: one at a time.
     job: Mutex<Option<import::JobSlot>>,
+    /// Processes `session.close` sent SIGTERM: none gets a second.
+    signalled: close::Signalled,
 }
 
 impl Sessions {
@@ -797,6 +852,7 @@ impl Sessions {
             store: OnceLock::new(),
             found_scan: scan::ScanState::default(),
             job: Mutex::new(None),
+            signalled: close::Signalled::default(),
         }
     }
 
@@ -1202,6 +1258,53 @@ impl Host {
         .flatten()
     }
 
+    /// The checks `session.continue` makes once nothing has the session
+    /// open: its folder, then its agent. `session.place` answers them as
+    /// `continue_block` (Move to G7), so the two can't drift.
+    async fn continue_target(self: &Arc<Self>, agent: AgentId, cwd: &str) -> Result<ContinueTarget, Unable> {
+        let (canonical, folder) = {
+            let cwd = cwd.to_owned();
+            let folders = self.session_folders();
+            tokio::task::spawn_blocking(move || {
+                let (canonical, folder) = folder_of(&cwd, &folders);
+                (canonical, folder.cloned())
+            })
+            .await
+            .map_err(|_| Unable::Failed(RpcError::new(ErrorCode::Internal, "The check failed.")))?
+        };
+        let Some((folder_id, _, folder_path)) = folder else {
+            return Err(Unable::Folder(RpcError::new(
+                ErrorCode::Denied,
+                format!("Add {} to your agent folders first.", last_component(cwd)),
+            )));
+        };
+        let subdir = subdir_of(&canonical, &folder_path)
+            .map_err(|()| Unable::Folder(RpcError::new(ErrorCode::Denied, "That folder isn't allowed.")))?;
+        let probe = self.probe(false).await[agent as usize].clone();
+        if probe.bin.is_none() || !probe.info.ready() {
+            return Err(Unable::Agent(Self::unavailable(&probe)));
+        }
+        if let Some(message) = self.lock_reg().login_blocked.get(&agent) {
+            return Err(Unable::Agent(RpcError::new(ErrorCode::Unavailable, message)));
+        }
+        Ok(ContinueTarget { folder_id, subdir })
+    }
+
+    /// `SessionPlace.continue_block` for the listed session `ctx`: what would
+    /// still stop `session.continue` once its process is gone.
+    async fn continue_block(self: &Arc<Self>, ctx: &Ctx) -> Result<Option<ContinueBlock>, RpcError> {
+        // The Codex app's own server may keep it open with no trace.
+        if codex_app(ctx.agent, ctx.source) {
+            return Ok(Some(ContinueBlock::Open));
+        }
+        match self.continue_target(ctx.agent, &ctx.cwd).await {
+            Ok(_) => Ok(None),
+            Err(Unable::Folder(_)) => Ok(Some(ContinueBlock::Folder)),
+            Err(Unable::Agent(_)) => Ok(Some(ContinueBlock::Agent)),
+            Err(Unable::Failed(e)) => Err(e),
+        }
+    }
+
     /// `session.continue` (§A2.9).
     pub async fn session_continue(
         self: &Arc<Self>,
@@ -1246,32 +1349,8 @@ impl Host {
         if let Some(source) = open {
             return Err(RpcError::new(ErrorCode::Busy, still_open_message(agent, source)));
         }
-        let folders = self.session_folders();
-        let (canonical, folder) = {
-            let cwd = ctx.cwd.clone();
-            let folders = folders.clone();
-            tokio::task::spawn_blocking(move || {
-                let (canonical, folder) = folder_of(&cwd, &folders);
-                (canonical, folder.cloned())
-            })
-            .await
-            .map_err(|_| RpcError::new(ErrorCode::Internal, "The check failed."))?
-        };
-        let Some((folder_id, _, folder_path)) = folder else {
-            return Err(RpcError::new(
-                ErrorCode::Denied,
-                format!("Add {} to your agent folders first.", last_component(&ctx.cwd)),
-            ));
-        };
-        let subdir = subdir_of(&canonical, &folder_path)
-            .map_err(|()| RpcError::new(ErrorCode::Denied, "That folder isn't allowed."))?;
-        let probe = self.probe(false).await[agent as usize].clone();
-        if probe.bin.is_none() || !probe.info.ready() {
-            return Err(Self::unavailable(&probe));
-        }
-        if let Some(message) = self.lock_reg().login_blocked.get(&agent) {
-            return Err(RpcError::new(ErrorCode::Unavailable, message));
-        }
+        let ContinueTarget { folder_id, subdir } =
+            self.continue_target(agent, &ctx.cwd).await.map_err(Unable::into_error)?;
         let read_ctx = ctx.clone();
         let items = tokio::task::spawn_blocking(move || {
             collect(read_ctx.agent, &read_ctx.path, Some(PathBuf::from(&read_ctx.cwd)), None, CONTINUE_ITEMS)
@@ -1471,6 +1550,7 @@ pub(crate) mod tests {
             uuid: "11111111-2222-4333-8444-555555555555".into(),
             path: PathBuf::from("/x"),
             open,
+            held: open,
             live: live.map(|(s, w)| (Some(s.to_owned()), w.map(str::to_owned), 5)),
             title_hint: None,
             cwd: "/home/me/code/app".into(),
@@ -1539,6 +1619,77 @@ pub(crate) mod tests {
         assert!(s.summary.unwrap().starts_with("There are two"));
         assert_eq!(s.title, "Tidy the readme");
         assert!(!s.can_continue);
+    }
+
+    #[test]
+    fn a_guess_nothing_holds_stops_working_after_a_quiet_spell() {
+        let now = 100 * UNHELD_QUIET_MS;
+        let mid_turn = tail_of("claude-denied.jsonl", AgentId::Claude);
+        let open_tool = tail_of("claude-open-tool.jsonl", AgentId::Claude);
+        let state = |c: &Ctx, t: &Tail, quiet: u64| {
+            let (s, since) = build("sc1", c, t, now - quiet, now);
+            (s.state, s.state_guess, s.step.is_some(), since)
+        };
+        let moved_on = Ctx { held: false, ..ctx(AgentId::Claude, true, None) };
+        let held = ctx(AgentId::Claude, true, None);
+        let long = UNHELD_QUIET_MS;
+        // Its process went on to another session: the turn won't end in this file.
+        assert_eq!(
+            state(&moved_on, &mid_turn, long - 1),
+            (SessionState::Working, true, false, now - long + 1)
+        );
+        assert_eq!(state(&moved_on, &mid_turn, long), (SessionState::Idle, true, false, now - long));
+        assert_eq!(state(&moved_on, &open_tool, long - 1).0, SessionState::NeedsYouGuess);
+        assert_eq!(state(&moved_on, &open_tool, 10 * long).0, SessionState::Idle);
+        // A process that has the session keeps a long quiet call working.
+        assert_eq!(state(&held, &mid_turn, 10 * long), (SessionState::Working, true, false, now - 10 * long));
+        assert_eq!(state(&held, &open_tool, 10 * long).0, SessionState::NeedsYouGuess);
+        // A live status file is never second-guessed.
+        let busy = Ctx { held: false, ..ctx(AgentId::Claude, true, Some(("busy", None))) };
+        assert_eq!(state(&busy, &mid_turn, 10 * long).0, SessionState::Working);
+        // Ended stays ended.
+        assert_eq!(state(&ctx(AgentId::Claude, false, None), &mid_turn, 10 * long).0, SessionState::Ended);
+    }
+
+    #[test]
+    fn a_process_that_moved_on_or_forks_does_not_hold_the_session_it_names() {
+        use crate::host::sessions::place::tests::{Fake, U, U2};
+        const HELD: &str = "33333333-4444-4555-8666-777777777777";
+        const FORKED: &str = "44444444-5555-4666-8777-888888888888";
+        let fake = Fake::new();
+        let now = now_ms();
+        let hours_ago = |path: &Path| {
+            let file = std::fs::File::options().write(true).open(path).unwrap();
+            file.set_modified(std::time::UNIX_EPOCH + Duration::from_millis(now - 2 * 3_600_000)).unwrap();
+        };
+        // The Claude app's CLI was started on U and now runs U2.
+        let resume = format!("--resume={U}");
+        fake.proc(300, "claude", 1, 300, &["claude", "--input-format", "stream-json", &resume]);
+        fake.status(300, 300, U2, "busy", "claude-desktop");
+        // A terminal's CLI on HELD, with no status file; one forking FORKED.
+        fake.proc(400, "claude", 1, 400, &["claude", "--resume", HELD]);
+        fake.proc(500, "claude", 1, 500, &["claude", "--resume", FORKED, "--fork-session"]);
+        for uuid in [U, HELD, FORKED] {
+            hours_ago(fake.transcript(uuid, &[("user", "Run the slow suite.")]).as_path());
+        }
+        let done = scan_blocking(ScanJob {
+            roots: fake.roots.clone(),
+            euid: crate::client::euid(),
+            host_pid: 999_999,
+            now,
+            ours: HashSet::new(),
+            folders: Vec::new(),
+            ready: [None, None],
+            cache: HashMap::new(),
+            index: None,
+        });
+        let of = |uuid: &str| {
+            let l = done.list.iter().find(|l| l.ctx.uuid == uuid).unwrap();
+            (l.ctx.held, l.session.open, l.session.state, l.session.state_guess)
+        };
+        assert_eq!(of(U), (false, true, SessionState::Idle, true), "still listed as open there, not working");
+        assert_eq!(of(FORKED), (false, true, SessionState::Idle, true));
+        assert_eq!(of(HELD), (true, true, SessionState::Working, true));
     }
 
     #[test]

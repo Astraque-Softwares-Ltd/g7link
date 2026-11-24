@@ -885,6 +885,16 @@ pub mod calls {
         Call::new(method::SESSION_PLACE, &SessionPlaceParams { session_id }, parse_as)
     }
 
+    // ---- Move to G7: only to a host that offers `cap::MOVE` ----
+
+    /// Ends the process a followed session runs in with one SIGTERM, if it
+    /// is still `pid` started at `start_ticks`, in a terminal, idle, and the
+    /// session could be continued afterwards; waits up to [`CLOSE_WAIT_MS`]
+    /// for it to exit. G7 Link on this PC only (`DENIED` to anyone else).
+    pub fn session_close(params: SessionCloseParams) -> Call<SessionCloseResult> {
+        Call::new(method::SESSION_CLOSE, &params, parse_as)
+    }
+
     // ---- Hand-off and the phone's camera (phase 5, wave 2) ----
 
     /// Asks G7 Link to continue a thread on a phone (a launcher or G7 Link;
@@ -1057,6 +1067,7 @@ macro_rules! with_calls {
             pr_methods(thread_id: String) -> PrMethodsResult;
             pr_list(params: PrListParams) -> PrListResult;
             session_place(session_id: String) -> SessionPlaceResult;
+            session_close(params: SessionCloseParams) -> SessionCloseResult;
             ui_handoff(params: UiHandoffParams) -> u32;
             ui_photo(by: By) -> UiPhotoResult;
             ui_photo_done(params: UiPhotoDoneParams) -> ();

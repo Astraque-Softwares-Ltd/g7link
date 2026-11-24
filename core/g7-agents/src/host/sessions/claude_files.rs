@@ -6,6 +6,10 @@
 //! Only `user`, `assistant`, `system` and `custom-title` lines are looked
 //! at; every other type (requests, copies of messages, bookkeeping) is
 //! ignored by its `type` alone. Side-chain and meta lines are skipped.
+//! The entry Claude writes as the user's when a turn is stopped
+//! (`[Request interrupted by user]`) ends the turn: it is no prompt. So does
+//! the answer Claude makes up for such a turn when the session is resumed
+//! ("No response requested."): it is no answer.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -19,10 +23,21 @@ use crate::host::sessions::tail::Line;
 use crate::host::sessions::{
     MAX_BLOCKS, MAX_OPEN_TOOLS, block_seq, epoch_ms, first_line, is_wrapper, text_item,
 };
-use crate::host::threads::tool_item;
+use crate::host::threads::{UNFINISHED_OUTPUT, tool_item};
 
 /// Tools whose call, left open and quiet, is most likely a permission prompt.
 const ASKING_TOOLS: &[&str] = &["Bash", "Write", "Edit", "MultiEdit", "NotebookEdit"];
+
+/// The whole text of the user entry Claude writes when the user stops a
+/// turn, or stops it at a tool call.
+const INTERRUPT_MARKERS: [&str; 2] =
+    ["[Request interrupted by user]", "[Request interrupted by user for tool use]"];
+/// The `model` of an assistant entry Claude wrote itself: an API error, or
+/// [`NO_RESPONSE`].
+const SYNTHETIC_MODEL: &str = "<synthetic>";
+/// The whole text of the answer Claude writes, on resume, for a turn that
+/// got none.
+const NO_RESPONSE: &str = "No response requested.";
 
 /// The last conversational line seen.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -41,6 +56,9 @@ enum Last {
         after_end_turn: bool,
     },
     ApiError,
+    /// The turn ended unanswered: the user stopped it, or Claude closed it
+    /// on resume.
+    Stopped,
     /// The usage limit stopped the turn (an assistant entry marked as an API
     /// error with `error: "rate_limit"`): when the entry says it resets
     /// (Unix ms, unchecked) and the entry's time. Only a later user or
@@ -57,6 +75,16 @@ enum ApiError {
     /// The usage limit, and when it resets as the entry says.
     Limit(Option<u64>),
     Other,
+}
+
+/// Claude's own stand-in answer for a turn that got none ([`NO_RESPONSE`]).
+fn is_no_response(message: &Value) -> bool {
+    let only_it = |blocks: &Vec<Value>| match blocks.as_slice() {
+        [block] => str_of(block, "type") == Some("text") && str_of(block, "text") == Some(NO_RESPONSE),
+        _ => false,
+    };
+    str_of(message, "model") == Some(SYNTHETIC_MODEL)
+        && message.get("content").and_then(Value::as_array).is_some_and(only_it)
 }
 
 fn api_error(v: &Value) -> Option<ApiError> {
@@ -165,7 +193,8 @@ impl ClaudeTail {
             }
             _ => None,
         };
-        if let Some(text) = text.filter(|t| !t.trim().is_empty() && !is_wrapper(t)) {
+        let stopped = text.as_deref().is_some_and(|t| INTERRUPT_MARKERS.contains(&t));
+        if let Some(text) = text.filter(|t| !stopped && !t.trim().is_empty() && !is_wrapper(t)) {
             if self.first_user_text.is_none() {
                 self.first_user_text = Some(text.clone());
                 self.entrypoint = str_of(v, "entrypoint").map(|e| api::cut(e, MAX_ENTRYPOINT).to_owned());
@@ -208,7 +237,30 @@ impl ClaudeTail {
             }
             out.push(item);
         }
+        if stopped {
+            out.extend(self.stop_turn());
+        }
         out
+    }
+
+    /// Ends the turn unanswered; returns the steps it left running, closed
+    /// as threads close them.
+    fn stop_turn(&mut self) -> Vec<Item> {
+        self.last = Last::Stopped;
+        let mut stopped: Vec<Item> = self
+            .open_tools
+            .drain()
+            .map(|(_, (mut item, _))| {
+                item.rev += 1;
+                if let Some(tool) = item.tool.as_mut() {
+                    tool.status = ToolStatus::Error;
+                    tool.output = Some(UNFINISHED_OUTPUT.to_owned());
+                }
+                item
+            })
+            .collect();
+        stopped.sort_by_key(|i| i.seq);
+        stopped
     }
 
     fn assistant(&mut self, v: &Value, offset: u64, ts: u64) -> Vec<Item> {
@@ -220,6 +272,9 @@ impl ClaudeTail {
             }
             return out;
         };
+        if error.is_none() && is_no_response(message) {
+            return self.stop_turn();
+        }
         let message_id = str_of(message, "id").unwrap_or("message");
         let block_index = v.get("apiBlockIndex").and_then(Value::as_u64);
         let end_turn = str_of(message, "stop_reason") == Some("end_turn");
@@ -277,7 +332,9 @@ impl ClaudeTail {
             Some("stop_hook_summary") => {
                 let after_end_turn = matches!(
                     self.last,
-                    Last::Assistant { end_turn: true, .. } | Last::StopHook { after_end_turn: true }
+                    Last::Assistant { end_turn: true, .. }
+                        | Last::StopHook { after_end_turn: true }
+                        | Last::Stopped
                 );
                 self.last = Last::StopHook { after_end_turn };
             }
@@ -299,6 +356,7 @@ impl ClaudeTail {
             }
             Last::Assistant { end_turn: true, .. }
             | Last::StopHook { after_end_turn: true }
+            | Last::Stopped
             | Last::Limited { .. } => SessionState::Idle,
             _ => SessionState::Working,
         }
@@ -336,6 +394,8 @@ impl ClaudeTail {
 
 #[cfg(test)]
 mod tests {
+    use serde_json::json;
+
     use super::*;
     use crate::host::sessions::tests::{feed_fixture, fixture_lines, fixture_path};
 
@@ -415,6 +475,80 @@ mod tests {
             1,
         );
         assert_eq!((tail.limit(), tail.guess(0)), (None, SessionState::Working));
+    }
+
+    #[test]
+    fn a_stopped_turn_ends_without_a_prompt() {
+        let (tail, items) = run("claude-stopped.jsonl");
+        let shown: Vec<(ItemKind, Option<&str>)> =
+            items.iter().map(|i| (i.kind, i.text.as_deref())).collect();
+        assert_eq!(
+            shown,
+            [
+                (ItemKind::User, Some("Run the slow suite.")),
+                (ItemKind::Tool, None),
+                (ItemKind::User, Some("Just run the fast one.")),
+                (ItemKind::Assistant, Some("Running the fast suite.")),
+                (ItemKind::Tool, None),
+            ],
+            "no bubble for either marker or for Claude's stand-in answer"
+        );
+        let slow = items[1].tool.as_ref().unwrap();
+        assert_eq!((slow.status, slow.output.as_deref()), (ToolStatus::Error, Some("Interrupted by user")));
+        let fast = items[4].tool.as_ref().unwrap();
+        assert_eq!(
+            (fast.status, fast.output.as_deref(), items[4].rev),
+            (ToolStatus::Error, Some(UNFINISHED_OUTPUT), 1),
+            "the step the stop left running is closed"
+        );
+        assert_eq!((tail.guess(0), tail.guess(u64::MAX)), (SessionState::Idle, SessionState::Idle));
+        assert_eq!((tail.step(), tail.open_tool_count()), (None, 0));
+        assert_eq!(tail.last_assistant_text.as_deref(), Some("Running the fast suite."));
+        assert_eq!(tail.first_user_text.as_deref(), Some("Run the slow suite."));
+    }
+
+    #[test]
+    fn each_marker_form_stops_the_turn_and_a_prompt_starts_one() {
+        let line = |offset: u64, text: &str| Line { offset, bytes: text.as_bytes().to_vec() };
+        let call = r#"{"type":"assistant","message":{"id":"m","content":[{"type":"tool_use","id":"t1","name":"Task","input":{}}],"stop_reason":"tool_use"}}"#;
+        for marker in INTERRUPT_MARKERS {
+            let as_string =
+                json!({"type": "user", "uuid": "s", "message": {"role": "user", "content": marker}});
+            let as_block = json!({"type": "user", "uuid": "b", "message": {"role": "user",
+                                  "content": [{"type": "text", "text": marker}]}});
+            for entry in [as_string, as_block] {
+                let mut tail = ClaudeTail::new(None);
+                tail.feed(&line(0, call), 1);
+                assert_eq!(tail.guess(u64::MAX), SessionState::Working, "a long quiet call works on");
+                let made = tail.feed(&line(100, &entry.to_string()), 2);
+                assert!(made.iter().all(|i| i.kind == ItemKind::Tool), "{marker}: {made:?}");
+                assert_eq!((tail.guess(0), tail.step()), (SessionState::Idle, None), "{marker}");
+                // A stop hook after it changes nothing.
+                tail.feed(&line(200, r#"{"type":"system","subtype":"stop_hook_summary"}"#), 3);
+                assert_eq!(tail.guess(0), SessionState::Idle);
+                // The next prompt starts a turn.
+                let made = tail.feed(
+                    &line(300, r#"{"type":"user","uuid":"u2","message":{"role":"user","content":"Go on."}}"#),
+                    4,
+                );
+                assert_eq!(made.len(), 1);
+                assert_eq!((made[0].kind, made[0].text.as_deref()), (ItemKind::User, Some("Go on.")));
+                assert_eq!(tail.guess(0), SessionState::Working);
+            }
+        }
+        // Only the whole text is a marker.
+        let mut tail = ClaudeTail::new(None);
+        let made = tail.feed(
+            &line(0, r#"{"type":"user","uuid":"u","message":{"role":"user","content":"[Request interrupted by user] then try again"}}"#),
+            1,
+        );
+        assert_eq!(made.len(), 1);
+        assert_eq!(tail.guess(0), SessionState::Working);
+        // A stand-in answer with other words, or not Claude's own, is an answer.
+        let other = r#"{"type":"assistant","message":{"id":"m2","model":"<synthetic>","content":[{"type":"text","text":"Something else."}],"stop_reason":"stop_sequence"}}"#;
+        assert_eq!(tail.feed(&line(100, other), 2).len(), 1);
+        let real = r#"{"type":"assistant","message":{"id":"m3","model":"claude-opus-5-5","content":[{"type":"text","text":"No response requested."}],"stop_reason":"stop_sequence"}}"#;
+        assert_eq!(tail.feed(&line(200, real), 3).len(), 1);
     }
 
     #[test]

@@ -1620,6 +1620,11 @@ impl Host {
                 let p: SessionPlaceParams = parse(params)?;
                 to_value(&self.session_place(&p.session_id).await?)
             }
+            // Move to G7.
+            method::SESSION_CLOSE => {
+                let p: SessionCloseParams = parse(params)?;
+                to_value(&self.session_close(kind, p).await?)
+            }
             // Hand-off and the phone's camera (phase 5, wave 2).
             method::UI_HANDOFF => {
                 let p: UiHandoffParams = parse(params)?;

@@ -224,6 +224,26 @@ impl TestHost {
         std::fs::remove_dir_all(self.proc_root.join(pid.to_string())).unwrap();
     }
 
+    /// `pid`, a real process of the test's own, as a `claude` in the fake
+    /// `/proc` started at `start`, its live status file saying `status` for
+    /// session `uuid`.
+    fn claude_process(&self, pid: u32, start: u64, uuid: &str, cwd: &Path, status: &str) {
+        let dir = self.proc_root.join(pid.to_string());
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("comm"), "claude\n").unwrap();
+        std::fs::write(
+            dir.join("stat"),
+            format!(
+                "{pid} (claude) S 1 {pid} {pid} 0 -1 4194560 1 0 0 0 0 0 0 0 20 0 1 0 {start} 1000 100 0"
+            ),
+        )
+        .unwrap();
+        std::fs::write(dir.join("cmdline"), b"claude\0").unwrap();
+        let file = json!({"pid": pid, "sessionId": uuid, "cwd": cwd, "procStart": start.to_string(),
+                          "entrypoint": "cli", "status": status, "updatedAt": now_ms()});
+        std::fs::write(self.claude.join(format!("sessions/{pid}.json")), file.to_string()).unwrap();
+    }
+
     fn log(&self) -> String {
         std::fs::read_to_string(&self.log).unwrap_or_default()
     }
@@ -285,6 +305,28 @@ fn code(e: &ClientError) -> Option<ErrorCode> {
 
 fn continue_params(id: &str, mode: Mode, origin: Origin) -> SessionContinueParams {
     SessionContinueParams { session_id: id.to_owned(), mode, origin }
+}
+
+/// The fake CLI waiting on its input, run as `claude` (its process name),
+/// and its start time from the real `/proc`. It is the test's own child: the
+/// only process `session.close` may reach here.
+fn own_claude(dir: &Path) -> (std::process::Child, u64) {
+    let exe = dir.join("bin/claude");
+    std::fs::create_dir_all(exe.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_g7-agents-fake-cli"), &exe).unwrap();
+    let child = std::process::Command::new(&exe)
+        .args(["claude", "--no-session-persistence"])
+        .env_remove("FAKE_CLI_SCRIPT")
+        .env_remove("FAKE_CLI_LOG")
+        .env_remove("FAKE_CLI_INITIALIZE")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let stat = std::fs::read_to_string(format!("/proc/{}/stat", child.id())).unwrap();
+    let start = stat[stat.rfind(')').unwrap() + 1..].split_whitespace().nth(19).unwrap().parse().unwrap();
+    (child, start)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -662,5 +704,65 @@ async fn status_files_give_exact_states_and_following_can_be_turned_off() {
     assert!(!other.settings_get().await.unwrap().follow_sessions);
     client.sessions_set_following(true).await.unwrap();
     assert_eq!(client.sessions_list(None).await.unwrap().len(), 1);
+    host.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn moving_a_session_ends_its_process_with_one_signal_then_continues_it() {
+    use std::os::unix::process::ExitStatusExt;
+
+    let host = TestHost::start().await;
+    let (client, _events) = host.client().await;
+    let (link, _link_events) =
+        Client::connect(&host.socket, HelloParams::new(ClientKind::Link, &[])).await.unwrap();
+    assert!(link.host().caps.iter().any(|c| c == cap::MOVE));
+    let id = uuid(7);
+    host.claude_session(&id, &host.work, "Tidy the build");
+    let (mut child, start) = own_claude(host.dir.path());
+    let pid = child.id();
+    host.claude_process(pid, start, &id, &host.work, "idle");
+    let close = |start_ticks| SessionCloseParams { session_id: sc(&id), pid, start_ticks };
+    let refused = |reason| SessionCloseResult { result: CloseOutcome::Refused, reason: Some(reason) };
+
+    // Not in an agent folder yet: it couldn't be continued, so it isn't closed.
+    let SessionPlaceResult::Place(place) = link.session_place(sc(&id)).await.unwrap() else {
+        panic!("refused")
+    };
+    assert_eq!(
+        (place.pid, place.start_ticks, place.state, place.state_exact),
+        (pid, start, SessionState::Idle, true)
+    );
+    assert_eq!(place.continue_block, Some(ContinueBlock::Folder));
+    assert_eq!(link.session_close(close(start)).await.unwrap(), refused(CloseRefusal::Folder));
+    host.folder(&client).await;
+    let SessionPlaceResult::Place(place) = link.session_place(sc(&id)).await.unwrap() else {
+        panic!("refused")
+    };
+    assert_eq!(place.continue_block, None);
+
+    // Only G7 Link, only the process it names, only while idle.
+    let denied = client.session_close(close(start)).await.unwrap_err();
+    assert_eq!(code(&denied), Some(ErrorCode::Denied));
+    assert_eq!(link.session_close(close(start + 1)).await.unwrap(), refused(CloseRefusal::NoProcess));
+    host.claude_process(pid, start, &id, &host.work, "busy");
+    assert_eq!(link.session_close(close(start)).await.unwrap(), refused(CloseRefusal::Busy));
+    host.claude_process(pid, start, &id, &host.work, "waiting");
+    assert_eq!(link.session_close(close(start)).await.unwrap(), refused(CloseRefusal::NeedsYou));
+    assert!(child.try_wait().unwrap().is_none(), "nothing was sent");
+
+    // Idle: one SIGTERM, and it exits.
+    host.claude_process(pid, start, &id, &host.work, "idle");
+    let closed = link.session_close(close(start)).await.unwrap();
+    assert_eq!(closed, SessionCloseResult { result: CloseOutcome::Closed, reason: None });
+    assert_eq!(child.wait().unwrap().signal(), Some(15));
+
+    // The host's own check still decides: open while its `/proc` shows it.
+    let busy = link.session_continue(continue_params(&sc(&id), Mode::Supervised, Origin::launcher())).await;
+    assert_eq!(code(&busy.unwrap_err()), Some(ErrorCode::Busy));
+    host.end_process(pid);
+    let thread =
+        link.session_continue(continue_params(&sc(&id), Mode::Supervised, Origin::launcher())).await.unwrap();
+    assert!(thread.continued);
+    assert_eq!(thread.native_id.as_deref(), Some(id.as_str()));
     host.stop().await;
 }

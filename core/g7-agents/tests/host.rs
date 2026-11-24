@@ -791,7 +791,8 @@ async fn hello_says_what_the_host_offers() {
             cap::PHOTO,
             cap::BESIDE,
             cap::SCRIPTS,
-            cap::PR_DETAIL
+            cap::PR_DETAIL,
+            cap::MOVE
         ]
     );
     let too_many = HelloParams::new(ClientKind::Test, &["x"; MAX_CAPS + 1]);

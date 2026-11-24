@@ -1230,6 +1230,24 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_stopped_turn_brings_in_no_prompt_or_turn_of_its_own() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = crate::host::sessions::tests::fixture_path("claude-stopped.jsonl");
+        let mut segments = Segments::new(store(dir.path()));
+        let found = row(AgentId::Claude, THREAD, vec![file(&path, "")]);
+        let reading = read_session(&found, &mut segments, Keep::import(), &AtomicBool::new(false)).unwrap();
+        let b = brought_in(&found, reading, &[], Origin::launcher(), false);
+        assert_eq!(
+            texts(&b.items),
+            ["Run the slow suite.", "", "Just run the fast one.", "Running the fast suite.", ""]
+        );
+        assert_eq!(b.turns.len(), 2, "one turn per prompt");
+        assert_eq!(b.items[4].turn, Some(2));
+        let tool = b.items[4].tool.as_ref().unwrap();
+        assert_eq!((tool.status, tool.output.as_deref()), (ToolStatus::Error, Some(UNFINISHED_OUTPUT)));
+    }
+
+    #[test]
     fn a_running_tool_is_finished_as_stopped() {
         let found = row(AgentId::Claude, THREAD, Vec::new());
         let mut tool = Item::new(5, "t", ItemKind::Tool, 9);

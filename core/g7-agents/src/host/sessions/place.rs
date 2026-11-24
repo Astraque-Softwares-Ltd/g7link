@@ -14,6 +14,10 @@
 //! - Claude's working and waiting states come from its status file only,
 //!   never from the transcript (spike S5); without one the state is a guess.
 //!
+//! - With Move to G7, a place also says what would still stop
+//!   `session.continue` once the process is gone (`continue_block`): the
+//!   same checks, in the same helper, as `session.continue` makes.
+//!
 //! Reads `stat`, `cmdline`, `comm` and the `exe` link of processes, Claude's
 //! status files and the session's own file, as the session list does; never
 //! `environ`. Blocking: called from `spawn_blocking`.
@@ -36,14 +40,20 @@ const MARK_VARIETY: usize = 8;
 
 impl Host {
     /// `session.place`. `NOT_FOUND` for a session that isn't listed or
-    /// whose file can't be read.
+    /// whose file can't be read. A place carries `continue_block`: what
+    /// `session.continue` would still refuse once the process is gone.
     pub async fn session_place(self: &Arc<Self>, session_id: &str) -> Result<SessionPlaceResult, RpcError> {
         let listed = self.listed(session_id).await.ok_or_else(not_found)?;
         let roots = self.sessions.roots.clone();
         let (euid, host_pid) = (crate::client::euid(), std::process::id());
-        tokio::task::spawn_blocking(move || find(&roots, euid, host_pid, &listed.ctx, now_ms()))
+        let ctx = listed.ctx.clone();
+        let mut found = tokio::task::spawn_blocking(move || find(&roots, euid, host_pid, &ctx, now_ms()))
             .await
-            .map_err(|_| RpcError::new(ErrorCode::Internal, "The check failed."))?
+            .map_err(|_| RpcError::new(ErrorCode::Internal, "The check failed."))??;
+        if let SessionPlaceResult::Place(place) = &mut found {
+            place.continue_block = self.continue_block(&listed.ctx).await?;
+        }
+        Ok(found)
     }
 }
 
@@ -113,6 +123,7 @@ fn find_with(
         foreground: agent.foreground(),
         chain: chain(&roots.proc_root, euid, agent, &tree, owner),
         marks: marks(newest_texts(&items)),
+        continue_block: None,
     }))
 }
 
@@ -367,7 +378,7 @@ fn pieces(text: &str) -> Vec<Vec<char>> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::time::{Duration, SystemTime};
 
     use serde_json::json;
@@ -377,25 +388,26 @@ mod tests {
     use crate::host::sessions::procs::tests::{fake_proc, fake_terminal};
     use crate::host::{Caps, Role, test_host};
 
-    const U: &str = "11111111-2222-4333-8444-555555555555";
-    const U2: &str = "22222222-3333-4444-8555-666666666666";
+    pub(crate) const U: &str = "11111111-2222-4333-8444-555555555555";
+    pub(crate) const U2: &str = "22222222-3333-4444-8555-666666666666";
     /// A host pid no fake process has as its parent.
     const NOT_PARENT: u32 = 999_999;
-    const PTS0: u32 = 34816;
-    const LONG_ASK: &str = "Please find out why the integration tests time out on the second run only";
-    const LONG_ANSWER: &str = "The second run reuses the socket the first one left behind, so every client waits for a host that already exited";
+    pub(crate) const PTS0: u32 = 34816;
+    pub(crate) const LONG_ASK: &str =
+        "Please find out why the integration tests time out on the second run only";
+    pub(crate) const LONG_ANSWER: &str = "The second run reuses the socket the first one left behind, so every client waits for a host that already exited";
 
     fn euid() -> u32 {
         crate::client::euid()
     }
 
-    struct Fake {
-        dir: tempfile::TempDir,
-        roots: Roots,
+    pub(crate) struct Fake {
+        pub(crate) dir: tempfile::TempDir,
+        pub(crate) roots: Roots,
     }
 
     impl Fake {
-        fn new() -> Fake {
+        pub(crate) fn new() -> Fake {
             let dir = tempfile::tempdir().unwrap();
             let roots = Roots {
                 claude_home: dir.path().join("claude"),
@@ -408,11 +420,11 @@ mod tests {
             Fake { dir, roots }
         }
 
-        fn proc(&self, pid: u32, comm: &str, ppid: u32, start: u64, argv: &[&str]) {
+        pub(crate) fn proc(&self, pid: u32, comm: &str, ppid: u32, start: u64, argv: &[&str]) {
             fake_proc(&self.roots.proc_root, pid, comm, ppid, start, argv, Path::new("/w"));
         }
 
-        fn term(&self, pid: u32, pgrp: u32, tty: u32, tpgid: i32) {
+        pub(crate) fn term(&self, pid: u32, pgrp: u32, tty: u32, tpgid: i32) {
             fake_terminal(&self.roots.proc_root, pid, pgrp, tty, tpgid);
         }
 
@@ -424,7 +436,7 @@ mod tests {
 
         /// systemd --user (50) above `emulator` (100), above a shell (101) on
         /// pts/0, running `agent` (102) as the terminal's foreground job.
-        fn terminal(&self, emulator: &str, agent: &str, argv: &[&str]) {
+        pub(crate) fn terminal(&self, emulator: &str, agent: &str, argv: &[&str]) {
             self.proc(50, "systemd", 1, 10, &["/usr/lib/systemd/systemd", "--user"]);
             self.proc(100, emulator, 50, 100, &[emulator]);
             self.proc(101, "bash", 100, 101, &["bash"]);
@@ -433,7 +445,7 @@ mod tests {
             self.term(102, 102, PTS0, 102);
         }
 
-        fn status(&self, pid: u32, start: u64, uuid: &str, status: &str, entrypoint: &str) {
+        pub(crate) fn status(&self, pid: u32, start: u64, uuid: &str, status: &str, entrypoint: &str) {
             let dir = self.roots.claude_status_dir();
             std::fs::create_dir_all(&dir).unwrap();
             let file = json!({"pid": pid, "sessionId": uuid, "cwd": "/w", "procStart": start.to_string(),
@@ -442,7 +454,7 @@ mod tests {
         }
 
         /// A Claude transcript of `(role, text)` turns; an assistant text ends its turn.
-        fn transcript(&self, uuid: &str, turns: &[(&str, &str)]) -> PathBuf {
+        pub(crate) fn transcript(&self, uuid: &str, turns: &[(&str, &str)]) -> PathBuf {
             let dir = self.roots.claude_projects().join("-w");
             std::fs::create_dir_all(&dir).unwrap();
             let lines: Vec<String> = turns
@@ -469,7 +481,7 @@ mod tests {
         }
 
         /// A Codex rollout with one exchange, its turn done or not.
-        fn rollout(&self, uuid: &str, originator: &str, done: bool) -> PathBuf {
+        pub(crate) fn rollout(&self, uuid: &str, originator: &str, done: bool) -> PathBuf {
             let mut lines = vec![
                 json!({"timestamp": "2026-11-21T09:00:00Z", "type": "session_meta", "payload": {"id": uuid, "cwd": "/w", "originator": originator}}),
                 json!({"timestamp": "2026-11-21T09:00:01Z", "type": "event_msg", "payload": {"type": "task_started", "turn_id": "t"}}),
@@ -482,6 +494,26 @@ mod tests {
             let path = self.dir.path().join(format!("rollout-2026-11-21T09-00-00-{uuid}.jsonl"));
             let body: String = lines.iter().map(|l| format!("{l}\n")).collect();
             std::fs::write(&path, body).unwrap();
+            path
+        }
+
+        /// A host following sessions, and a fake whose homes and `/proc` are the host's.
+        pub(crate) fn hosted() -> (tempfile::TempDir, Arc<Host>, Fake) {
+            let dir = tempfile::tempdir().unwrap();
+            let host = test_host(dir.path(), APPROVAL_LIFETIME_MS);
+            let fake = Fake { roots: host.sessions.roots.clone(), dir: tempfile::tempdir().unwrap() };
+            std::fs::create_dir_all(&fake.roots.proc_root).unwrap();
+            std::fs::write(fake.roots.proc_root.join("stat"), "cpu 1\nbtime 1795000000\n").unwrap();
+            (dir, host, fake)
+        }
+
+        /// [`Fake::rollout`], in today's folder, where the session list looks.
+        pub(crate) fn listed_rollout(&self, uuid: &str, originator: &str, done: bool) -> PathBuf {
+            let written = self.rollout(uuid, originator, done);
+            let day = self.roots.codex_day(paths::codex_days(now_ms())[1]);
+            std::fs::create_dir_all(&day).unwrap();
+            let path = day.join(written.file_name().unwrap());
+            std::fs::copy(&written, &path).unwrap();
             path
         }
 
@@ -510,6 +542,7 @@ mod tests {
             uuid: uuid.into(),
             path,
             open: true,
+            held: true,
             live: None,
             title_hint: None,
             cwd: "/w".into(),
@@ -521,11 +554,25 @@ mod tests {
     }
 
     /// A Claude session in a terminal, its status file saying `status`.
-    fn claude_in(fake: &Fake, emulator: &str, status: &str) -> Ctx {
+    pub(in crate::host::sessions) fn claude_in(fake: &Fake, emulator: &str, status: &str) -> Ctx {
         fake.terminal(emulator, "claude", &["claude"]);
         fake.status(102, 102, U, status, "cli");
         let path = fake.transcript(U, &[("user", LONG_ASK), ("assistant", LONG_ANSWER)]);
         ctx(AgentId::Claude, U, path, SessionSource::Terminal)
+    }
+
+    /// Claude (signed in or not) and Codex installed and signed in, for the next minute.
+    pub(crate) async fn agents_ready(host: &Host, claude_signed_in: bool) {
+        let info = |id, signed_in| AgentInfo { installed: true, signed_in, ..AgentInfo::missing(id) };
+        host.test_agents(info(AgentId::Claude, claude_signed_in), info(AgentId::Codex, true)).await;
+    }
+
+    /// What `session.place` says would stop continuing the session `id`.
+    pub(crate) async fn continue_block(host: &Arc<Host>, id: &str) -> Option<ContinueBlock> {
+        match host.session_place(id).await.unwrap() {
+            SessionPlaceResult::Place(place) => place.continue_block,
+            refused => panic!("refused: {refused:?}"),
+        }
     }
 
     fn comms(place: &SessionPlace) -> Vec<&str> {
@@ -963,5 +1010,60 @@ mod tests {
         }
         let err = host.dispatch(&role, 1, method::SESSION_PLACE, json!({})).await.unwrap_err();
         assert_eq!(err.code, ErrorCode::BadRequest);
+    }
+
+    #[tokio::test]
+    async fn a_place_says_what_would_still_stop_continuing_it() {
+        let (_dir, host, fake) = Fake::hosted();
+        claude_in(&fake, "ptyxis", "idle");
+        let id = paths::session_id(AgentId::Claude, U).unwrap();
+        // Neither in an agent folder nor runnable: the folder is said first,
+        // as `session.continue` checks it first.
+        agents_ready(&host, false).await;
+        assert_eq!(continue_block(&host, &id).await, Some(ContinueBlock::Folder));
+        host.test_folder(Path::new("/w"));
+        assert_eq!(continue_block(&host, &id).await, Some(ContinueBlock::Agent), "not signed in");
+        agents_ready(&host, true).await;
+        assert_eq!(continue_block(&host, &id).await, None, "nothing would stop it");
+        host.lock_reg().login_blocked.insert(AgentId::Claude, "Sign in to Claude again.".into());
+        assert_eq!(continue_block(&host, &id).await, Some(ContinueBlock::Agent), "its login is blocked");
+        host.lock_reg().login_blocked.clear();
+        assert_eq!(continue_block(&host, &id).await, None);
+        // It travels in the answer; a refusal has none.
+        let role = Role::Client(ClientKind::Link, Caps::default());
+        host.test_agents(AgentInfo::missing(AgentId::Claude), AgentInfo::missing(AgentId::Codex)).await;
+        let answer = host.dispatch(&role, 1, method::SESSION_PLACE, json!({"session_id": id})).await.unwrap();
+        assert_eq!(answer["place"]["continue_block"], json!("agent"));
+        std::fs::remove_dir_all(fake.roots.proc_root.join("102")).unwrap();
+        let answer = host.dispatch(&role, 1, method::SESSION_PLACE, json!({"session_id": id})).await.unwrap();
+        assert_eq!(answer["refused"]["reason"], json!("ended"));
+        assert!(answer["refused"].get("continue_block").is_none());
+    }
+
+    #[tokio::test]
+    async fn a_codex_app_session_resumed_in_a_terminal_would_still_be_open() {
+        let (_dir, host, fake) = Fake::hosted();
+        host.test_folder(Path::new("/w"));
+        agents_ready(&host, true).await;
+        fake.terminal("ptyxis", "codex", &["codex", "resume", U]);
+        fake.listed_rollout(U, "codex-tui", true);
+        let tui = paths::session_id(AgentId::Codex, U).unwrap();
+        assert_eq!(continue_block(&host, &tui).await, None);
+
+        // The Codex app's server may keep it with no trace (`session.continue`
+        // refuses it): never offered as continuable.
+        let (_dir, host, fake) = Fake::hosted();
+        host.test_folder(Path::new("/w"));
+        agents_ready(&host, true).await;
+        fake.terminal("ptyxis", "codex", &["codex", "resume", U2]);
+        fake.listed_rollout(U2, "Codex Desktop", true);
+        let app = paths::session_id(AgentId::Codex, U2).unwrap();
+        let SessionPlaceResult::Place(place) = host.session_place(&app).await.unwrap() else {
+            panic!("refused")
+        };
+        assert_eq!(
+            (place.source, place.continue_block),
+            (SessionSource::Terminal, Some(ContinueBlock::Open))
+        );
     }
 }

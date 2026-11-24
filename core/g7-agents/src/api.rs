@@ -146,6 +146,15 @@ pub const PLACE_MARK_CHARS: usize = 32;
 /// `session.place`: an ancestor's `comm` and `exe_name` are cut to this.
 pub const MAX_PLACE_NAME: usize = 64;
 
+// ---- Move to G7 ----
+
+/// `session.close`: how long the host waits for the process to exit after
+/// its one SIGTERM before it answers `open`.
+pub const CLOSE_WAIT_MS: u64 = 4000;
+/// `session.close`: processes the host remembers it sent SIGTERM, so none
+/// is sent a second one.
+pub const MAX_CLOSED_PROCS: usize = 64;
+
 // ---- Control (phase 2) ----
 
 /// Models an agent lists, and each one's fields.
@@ -540,6 +549,9 @@ pub mod method {
     pub const PR_LIST: &str = "pr.list";
     // Reply on the PC (0.1.21): only to a host that offers `cap::PLACE`.
     pub const SESSION_PLACE: &str = "session.place";
+    /// G7 Link ends the process a followed session runs in, to continue the
+    /// session here (Move to G7); only to a host that offers `cap::MOVE`.
+    pub const SESSION_CLOSE: &str = "session.close";
     /// A launcher or G7 Link asks G7 Link to continue a thread on a phone
     /// (phase 5); only to a host that offers `cap::HANDOFF`.
     pub const UI_HANDOFF: &str = "ui.handoff";
@@ -610,8 +622,11 @@ pub mod cap {
     pub const SCRIPTS: &str = "scripts";
     /// Host: it has `pr.detail` and `pr.diff`, and `purpose: review`.
     pub const PR_DETAIL: &str = "pr_detail";
+    /// Host: Move to G7. `session.place` fills `SessionPlace.continue_block`,
+    /// and `session.close` ends the session's process for G7 Link.
+    pub const MOVE: &str = "move";
     /// What this host offers.
-    pub const HOST: [&str; 13] = [
+    pub const HOST: [&str; 14] = [
         ITEMS2,
         DENY_MESSAGE,
         CONTROL,
@@ -625,6 +640,7 @@ pub mod cap {
         BESIDE,
         SCRIPTS,
         PR_DETAIL,
+        MOVE,
     ];
 }
 
@@ -4444,6 +4460,14 @@ pub struct SessionPlace {
     /// it has no such text. Compared in memory, never logged or stored.
     #[serde(default)]
     pub marks: Vec<String>,
+    /// What would still stop `session.continue` once this process is gone:
+    /// `folder` (the session's folder isn't an agent folder, or isn't
+    /// allowed under one) or `agent` (it isn't installed or signed in);
+    /// absent: nothing would. `open` only for a session from the Codex app,
+    /// whose own server may keep it open with no trace. From a host that
+    /// offers [`cap::MOVE`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continue_block: Option<ContinueBlock>,
 }
 
 impl std::fmt::Debug for SessionPlace {
@@ -4460,6 +4484,7 @@ impl std::fmt::Debug for SessionPlace {
             .field("foreground", &self.foreground)
             .field("chain", &self.chain)
             .field("marks", &self.marks.len())
+            .field("continue_block", &self.continue_block)
             .finish()
     }
 }
@@ -4480,6 +4505,78 @@ pub struct Ancestor {
     /// count would be a lower bound, which proves nothing).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ptys_under: Option<u32>,
+}
+
+// ---- Move to G7: only to a host that offers `cap::MOVE` ----
+//
+// `session.close` is host-local: G7 Link on this PC asks it when a phone
+// moves a session here, then continues the session (`session.continue`),
+// whose own check of what has it open still decides.
+
+/// `session.close`: the process `session.place` answered, by pid and start
+/// time. The host places the session again and ends only that process.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionCloseParams {
+    /// A `sessions.list` id.
+    pub session_id: String,
+    /// `SessionPlace.pid`.
+    pub pid: u32,
+    /// `SessionPlace.start_ticks`.
+    pub start_ticks: u64,
+}
+
+/// `session.close`'s answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionCloseResult {
+    pub result: CloseOutcome,
+    /// With `refused`: why nothing was sent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<CloseRefusal>,
+}
+
+/// What `session.close` did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CloseOutcome {
+    /// It was sent SIGTERM and exited within [`CLOSE_WAIT_MS`].
+    Closed,
+    /// Nothing was sent: see `reason`.
+    Refused,
+    /// It was sent SIGTERM, by this request or an earlier one, and still
+    /// runs after [`CLOSE_WAIT_MS`]. Nothing more is ever sent to it.
+    Open,
+    /// A word this version doesn't know.
+    #[serde(other)]
+    Unknown,
+}
+
+/// Why `session.close` sent nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CloseRefusal {
+    /// No process has the session.
+    Ended,
+    /// Two or more processes have it.
+    Ambiguous,
+    /// It doesn't run where it can be closed: an app, not a terminal; a
+    /// stopped process; a Claude whose state isn't known from its status
+    /// file; a session from the Codex app.
+    Place,
+    /// Another process has it now, not the one asked for.
+    NoProcess,
+    /// It is in the middle of a turn.
+    Busy,
+    /// It waits for its user, or may.
+    NeedsYou,
+    /// It couldn't be continued afterwards: its folder isn't an agent
+    /// folder (`ContinueBlock::Folder`).
+    Folder,
+    /// It couldn't be continued afterwards: the agent isn't installed or
+    /// signed in (`ContinueBlock::Agent`).
+    Agent,
+    /// A word this version doesn't know.
+    #[serde(other)]
+    Unknown,
 }
 
 // ---- Source control (phase 4, §SC7.2): only to a host that offers `cap::GIT` ----
@@ -6520,6 +6617,7 @@ mod tests {
                 ptys_under: Some(1),
             }],
             marks: vec!["Thebuildfailedbecausethelinkerco".into()],
+            continue_block: None,
         };
         let found = SessionPlaceResult::Place(place.clone());
         round_trip(&found);
@@ -6550,6 +6648,69 @@ mod tests {
         assert!(plain.get("tty").is_none());
         let debug = format!("{:?}", SessionPlaceResult::Place(place));
         assert!(!debug.contains("Thebuild") && debug.contains("marks: 1"), "{debug}");
+    }
+
+    #[test]
+    fn move_is_named_on_the_wire_and_its_place_field_is_additive() {
+        assert!(cap::HOST.contains(&cap::MOVE));
+        assert_eq!((cap::MOVE, method::SESSION_CLOSE), ("move", "session.close"));
+        let place = SessionPlace {
+            agent: AgentId::Codex,
+            source: SessionSource::Terminal,
+            state: SessionState::Idle,
+            state_exact: false,
+            pid: 4242,
+            start_ticks: 98765,
+            pgrp: 4242,
+            tty: Some(34816),
+            foreground: true,
+            chain: vec![],
+            marks: vec![],
+            continue_block: Some(ContinueBlock::Folder),
+        };
+        let found = SessionPlaceResult::Place(place.clone());
+        round_trip(&found);
+        let value = serde_json::to_value(&found).unwrap();
+        assert_eq!(value["place"]["continue_block"], json!("folder"));
+        let agent = SessionPlace { continue_block: Some(ContinueBlock::Agent), ..place.clone() };
+        assert_eq!(serde_json::to_value(&agent).unwrap()["continue_block"], json!("agent"));
+        // Nothing would stop it: left out, as an older host sends it.
+        let free = SessionPlace { continue_block: None, ..place.clone() };
+        let plain = serde_json::to_value(&free).unwrap();
+        assert!(plain.get("continue_block").is_none());
+        let older: SessionPlace = serde_json::from_value(plain).unwrap();
+        assert_eq!(older.continue_block, None);
+        assert!(format!("{place:?}").contains("continue_block: Some(Folder)"));
+
+        let params =
+            SessionCloseParams { session_id: format!("sx{}", "b".repeat(32)), pid: 7, start_ticks: 9 };
+        round_trip(&params);
+        assert_eq!(
+            serde_json::to_value(&params).unwrap(),
+            json!({"session_id": format!("sx{}", "b".repeat(32)), "pid": 7, "start_ticks": 9})
+        );
+        let closed = SessionCloseResult { result: CloseOutcome::Closed, reason: None };
+        assert_eq!(serde_json::to_value(closed).unwrap(), json!({"result": "closed"}));
+        round_trip(&closed);
+        let open = SessionCloseResult { result: CloseOutcome::Open, reason: None };
+        assert_eq!(serde_json::to_value(open).unwrap(), json!({"result": "open"}));
+        for (reason, word) in [
+            (CloseRefusal::Ended, "ended"),
+            (CloseRefusal::Ambiguous, "ambiguous"),
+            (CloseRefusal::Place, "place"),
+            (CloseRefusal::NoProcess, "no_process"),
+            (CloseRefusal::Busy, "busy"),
+            (CloseRefusal::NeedsYou, "needs_you"),
+            (CloseRefusal::Folder, "folder"),
+            (CloseRefusal::Agent, "agent"),
+        ] {
+            let refused = SessionCloseResult { result: CloseOutcome::Refused, reason: Some(reason) };
+            assert_eq!(serde_json::to_value(refused).unwrap(), json!({"result": "refused", "reason": word}));
+            round_trip(&refused);
+        }
+        let later: SessionCloseResult =
+            serde_json::from_value(json!({"result": "later", "reason": "later"})).unwrap();
+        assert_eq!((later.result, later.reason), (CloseOutcome::Unknown, Some(CloseRefusal::Unknown)));
     }
 
     #[test]
@@ -6619,7 +6780,7 @@ mod tests {
 
     #[test]
     fn scripts_and_pull_request_detail_are_additive_and_named_on_the_wire() {
-        assert_eq!(cap::HOST.len(), 13);
+        assert_eq!(cap::HOST.len(), 14);
         assert!(cap::HOST.contains(&cap::SCRIPTS) && cap::HOST.contains(&cap::PR_DETAIL));
         assert_eq!((cap::SCRIPTS, cap::PR_DETAIL), ("scripts", "pr_detail"));
         assert_eq!(
