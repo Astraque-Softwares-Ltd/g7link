@@ -164,7 +164,7 @@ import app.g7link.android.core.PHONE_SPEAKER_OUTPUT
 import app.g7link.android.ui.theme.G7IconButton
 import app.g7link.android.ui.theme.FirstLineIcon
 import app.g7link.android.ui.theme.G7Icons
-import app.g7link.android.ui.capture.PcCaptureRows
+import app.g7link.android.ui.capture.screenshotLabel
 import app.g7link.android.core.PcCaptureState
 import app.g7link.android.ui.theme.G7Mark
 import app.g7link.android.ui.theme.G7Row
@@ -624,43 +624,59 @@ fun HomeScreen(
                         pc = pc,
                         core = core,
                         onOpenAgents = { onAgents(pc.id) },
-                        modifier = Modifier.padding(top = 8.dp),
+                        // On a plate, as wide as the tiles under it.
+                        modifier = Modifier
+                            .padding(start = 2.dp, top = 8.dp, end = 2.dp)
+                            .clip(androidx.compose.foundation.shape.RoundedCornerShape(10.dp))
+                            .background(MaterialTheme.colorScheme.surfaceContainer),
                     )
                 }
             }
             g7Item(key = "pc_send", contentType = "group") {
                 val pulsing = pulsingTarget == GuideHighlightTarget.HOME_PC_CARD
+                val filesLabel = stringResource(R.string.home_files)
+                val folderLabel = stringResource(R.string.home_folder)
+                val clipboardLabel = stringResource(R.string.home_tile_clipboard)
+                val linkLabel = stringResource(R.string.home_link)
                 Column {
                     G7SectionLabel(stringResource(R.string.home_send_to, pc.name))
-                    G7Row(
-                        label = stringResource(R.string.home_files),
-                        icon = G7Icons.upload,
-                        tint = tints.amber,
-                        enabled = !online || pc.has("files.send"),
-                        highlighted = pulsing,
-                        onClick = { pickFiles.launch(arrayOf("*/*")) },
-                    )
-                    G7Row(
-                        label = stringResource(R.string.home_folder),
-                        icon = G7Icons.folder,
-                        tint = tints.amber,
-                        enabled = !online || pc.has("files.send"),
-                        onClick = { pickFolder.launch(null) },
-                    )
-                    G7Row(
-                        label = stringResource(R.string.action_send_clipboard),
-                        icon = G7Icons.clipboard,
-                        tint = tints.lavender,
-                        // Offline, the clip waits in the send queue.
-                        enabled = !online || pc.usable("clipboard.auto_phone_to_pc"),
-                        onClick = { context.startActivity(SendActivity.sendClipboardIntent(context, pc.id, preview = true)) },
-                    )
-                    G7Row(
-                        label = stringResource(R.string.home_link),
-                        icon = G7Icons.link,
-                        tint = tints.blue,
-                        enabled = !online || pc.has("device.links_to_pc"),
-                        onClick = { linkPcId = pc.id },
+                    HomeTileGrid(
+                        listOf(
+                            HomeTileSpec(
+                                id = "files",
+                                label = filesLabel,
+                                icon = G7Icons.upload,
+                                tint = tints.amber,
+                                enabled = !online || pc.has("files.send"),
+                                highlighted = pulsing,
+                                onClick = { pickFiles.launch(arrayOf("*/*")) },
+                            ),
+                            HomeTileSpec(
+                                id = "folder",
+                                label = folderLabel,
+                                icon = G7Icons.folder,
+                                tint = tints.amber,
+                                enabled = !online || pc.has("files.send"),
+                                onClick = { pickFolder.launch(null) },
+                            ),
+                            HomeTileSpec(
+                                id = "clipboard",
+                                label = clipboardLabel,
+                                icon = G7Icons.clipboard,
+                                tint = tints.lavender,
+                                // Offline, the clip waits in the send queue.
+                                enabled = !online || pc.usable("clipboard.auto_phone_to_pc"),
+                                onClick = { context.startActivity(SendActivity.sendClipboardIntent(context, pc.id, preview = true)) },
+                            ),
+                            HomeTileSpec(
+                                id = "link",
+                                label = linkLabel,
+                                icon = G7Icons.link,
+                                tint = tints.blue,
+                                enabled = !online || pc.has("device.links_to_pc"),
+                                onClick = { linkPcId = pc.id },
+                            ),
+                        ),
                     )
                 }
             }
@@ -682,112 +698,184 @@ fun HomeScreen(
                             onClick = { onWake(pc.id) },
                         )
                     }
-                    G7Row(
-                        label = stringResource(R.string.home_trackpad),
-                        icon = G7Icons.pointer,
-                        tint = tints.teal,
-                        enabled = online,
-                        onClick = { onRemote(pc.id) },
+                    val capture = pcCapture[pc.id] ?: PcCaptureState()
+                    val canCapture = pc.has("device.pc_capture")
+                    val screenshotTileLabel = stringResource(screenshotLabel(capture))
+                    val recordText = if (canCapture) recordTileLabel(capture) else ""
+                    val inFlight = powering[pc.id]
+                    val trackpadLabel = stringResource(R.string.home_tile_trackpad)
+                    val deckLabel = stringResource(R.string.action_deck_pc)
+                    val pcFilesLabel = stringResource(R.string.home_tile_pc_files)
+                    val ringLabel = stringResource(if (ringing) R.string.action_stop_ringing else R.string.action_ring_device)
+                    val lockLabel = stringResource(if (inFlight == false) R.string.locking else R.string.home_lock)
+                    val sleepLabel = stringResource(if (inFlight == true) R.string.sleeping else R.string.action_sleep_pc)
+                    HomeTileGrid(
+                        buildList {
+                            add(
+                                HomeTileSpec(
+                                    id = "trackpad",
+                                    label = trackpadLabel,
+                                    icon = G7Icons.pointer,
+                                    tint = tints.teal,
+                                    enabled = online,
+                                    onClick = { onRemote(pc.id) },
+                                ),
+                            )
+                            add(
+                                HomeTileSpec(
+                                    id = "deck",
+                                    label = deckLabel,
+                                    icon = G7Icons.deck,
+                                    tint = tints.green,
+                                    enabled = online,
+                                    onClick = { onDeck(pc.id) },
+                                ),
+                            )
+                            add(
+                                HomeTileSpec(
+                                    id = "pc_files",
+                                    label = pcFilesLabel,
+                                    icon = G7Icons.folder,
+                                    tint = tints.amber,
+                                    enabled = online,
+                                    onClick = { browseFilesPcId = pc.id },
+                                ),
+                            )
+                            if (canCapture) {
+                                add(
+                                    HomeTileSpec(
+                                        id = "screenshot",
+                                        label = screenshotTileLabel,
+                                        icon = G7Icons.screenshot,
+                                        tint = tints.blue,
+                                        enabled = online,
+                                        busy = capture.shooting,
+                                        onClick = { onPcScreenshot(pc.id) },
+                                    ),
+                                )
+                                add(
+                                    HomeTileSpec(
+                                        id = "record",
+                                        label = recordText,
+                                        icon = G7Icons.video,
+                                        tint = tints.red,
+                                        enabled = online,
+                                        active = capture.recordingSince != null,
+                                        busy = capture.recordingBusy,
+                                        onClick = { onPcRecord(pc.id) },
+                                    ),
+                                )
+                            }
+                            add(
+                                HomeTileSpec(
+                                    id = "ring",
+                                    label = ringLabel,
+                                    icon = G7Icons.bell,
+                                    tint = tints.blue,
+                                    enabled = online,
+                                    active = ringing,
+                                    onClick = { onRing(pc.id, !ringing) },
+                                ),
+                            )
+                            if (pc.has("device.pc_actions")) {
+                                add(
+                                    HomeTileSpec(
+                                        id = "lock",
+                                        label = lockLabel,
+                                        icon = G7Icons.lock,
+                                        tint = tints.teal,
+                                        enabled = online,
+                                        busy = inFlight == false,
+                                        onClick = { power(pc.id, false) },
+                                    ),
+                                )
+                                add(
+                                    HomeTileSpec(
+                                        id = "sleep",
+                                        label = sleepLabel,
+                                        icon = G7Icons.moon,
+                                        tint = tints.red,
+                                        enabled = online,
+                                        busy = inFlight == true,
+                                        onClick = { power(pc.id, true) },
+                                    ),
+                                )
+                            }
+                        },
                     )
-                    G7Row(
-                        label = stringResource(R.string.action_deck_pc),
-                        icon = G7Icons.deck,
-                        tint = tints.green,
-                        enabled = online,
-                        onClick = { onDeck(pc.id) },
-                    )
-                    G7Row(
-                        label = stringResource(R.string.action_browse_pc_files),
-                        icon = G7Icons.folder,
-                        tint = tints.amber,
-                        enabled = online,
-                        onClick = { browseFilesPcId = pc.id },
-                    )
-                    if (pc.has("device.pc_capture")) {
-                        PcCaptureRows(
-                            online = online,
-                            capture = pcCapture[pc.id] ?: PcCaptureState(),
-                            onScreenshot = { onPcScreenshot(pc.id) },
-                            onRecord = { onPcRecord(pc.id) },
-                        )
-                    }
-                    G7Row(
-                        label = stringResource(if (ringing) R.string.action_stop_ringing else R.string.action_ring_device),
-                        icon = G7Icons.bell,
-                        tint = tints.blue,
-                        enabled = online,
-                        active = ringing,
-                        onClick = { onRing(pc.id, !ringing) },
-                    )
-                    if (pc.has("device.pc_actions")) {
-                        val inFlight = powering[pc.id]
-                        G7Row(
-                            label = stringResource(if (inFlight == false) R.string.locking else R.string.home_lock),
-                            icon = G7Icons.lock,
-                            tint = tints.teal,
-                            enabled = online,
-                            busy = inFlight == false,
-                            onClick = { power(pc.id, false) },
-                        )
-                        G7Row(
-                            label = stringResource(if (inFlight == true) R.string.sleeping else R.string.action_sleep_pc),
-                            icon = G7Icons.moon,
-                            tint = tints.red,
-                            enabled = online,
-                            busy = inFlight == true,
-                            onClick = { power(pc.id, true) },
-                        )
-                    }
                     val deckState = pc.deckState
                     if (online && deckState != null) {
-                        PcSoundRows(
+                        HomeSoundCard(
                             pcId = pc.id,
                             pcName = pc.name,
                             deckState = deckState,
-                            highlighted = pulsingTarget == GuideHighlightTarget.HOME_PC_AUDIO,
                             onSetPcAudio = { volume, muted -> onSetPcAudio(pc.id, volume, muted) },
+                            highlighted = pulsingTarget == GuideHighlightTarget.HOME_PC_AUDIO,
                             btMedia = pc.btMedia,
                             onSetBtMedia = { on -> onSetBtMedia(pc.id, on) },
+                            modifier = Modifier.padding(top = 8.dp),
                         )
                     }
                 }
             }
             g7Item(key = "pc_phone", contentType = "group") {
                 val micOn = micStreamingTo == pc.id
+                val webcamLabel = stringResource(R.string.action_webcam_pc)
+                val voiceNoteLabel = stringResource(R.string.home_voice_note)
+                val deskLabel = stringResource(R.string.home_desk_mode)
+                val micLabel = stringResource(R.string.home_tile_microphone)
                 Column {
                     G7SectionLabel(stringResource(R.string.home_this_phone))
-                    G7Row(
-                        label = stringResource(R.string.action_webcam_pc),
-                        icon = G7Icons.camera,
-                        tint = tints.coral,
-                        enabled = online,
-                        active = webcamSession.active,
-                        onClick = { onWebcam(pc.id) },
+                    HomeTileGrid(
+                        buildList {
+                            add(
+                                HomeTileSpec(
+                                    id = "webcam",
+                                    label = webcamLabel,
+                                    icon = G7Icons.camera,
+                                    tint = tints.coral,
+                                    enabled = online,
+                                    active = webcamSession.active,
+                                    onClick = { onWebcam(pc.id) },
+                                ),
+                            )
+                            add(
+                                HomeTileSpec(
+                                    id = "voice_note",
+                                    label = voiceNoteLabel,
+                                    icon = G7Icons.mic,
+                                    tint = tints.red,
+                                    enabled = online,
+                                    active = recorderSession.active,
+                                    onClick = { onRecord(pc.id) },
+                                ),
+                            )
+                            add(
+                                HomeTileSpec(
+                                    id = "desk",
+                                    label = deskLabel,
+                                    icon = G7Icons.clock,
+                                    tint = tints.lavender,
+                                    enabled = online,
+                                    onClick = { onDesk(pc.id) },
+                                ),
+                            )
+                            if (online && (micOn || pc.has("media.phone_mic"))) {
+                                // The phone as the PC's microphone, a switch.
+                                add(
+                                    HomeTileSpec(
+                                        id = "microphone",
+                                        label = micLabel,
+                                        icon = G7Icons.mic,
+                                        tint = tints.pink,
+                                        active = micOn,
+                                        toggle = true,
+                                        onClick = { if (micOn) onStopMic() else onStartMic(pc.id) },
+                                    ),
+                                )
+                            }
+                        },
                     )
-                    G7Row(
-                        label = stringResource(R.string.home_voice_note),
-                        icon = G7Icons.mic,
-                        tint = tints.red,
-                        enabled = online,
-                        active = recorderSession.active,
-                        onClick = { onRecord(pc.id) },
-                    )
-                    G7Row(
-                        label = stringResource(R.string.home_desk_mode),
-                        icon = G7Icons.clock,
-                        tint = tints.lavender,
-                        enabled = online,
-                        onClick = { onDesk(pc.id) },
-                    )
-                    if (online && (micOn || pc.has("media.phone_mic"))) {
-                        G7SwitchRow(
-                            label = stringResource(R.string.pc_audio_use_phone_mic),
-                            checked = micOn,
-                            onCheckedChange = { on -> if (on) onStartMic(pc.id) else onStopMic() },
-                            icon = G7Icons.mic,
-                            tint = tints.pink,
-                        )
-                    }
                 }
             }
         }
@@ -866,25 +954,34 @@ fun HomeScreen(
             g7Item(key = "activity", contentType = "group") {
                 Column {
                     G7SectionLabel(stringResource(R.string.home_activity))
-                    if (showClipRow) {
-                        G7Row(
-                            label = stringResource(R.string.clipboard_history_title),
-                            icon = G7Icons.clipboard,
-                            tint = tints.lavender,
-                            note = state.clipboardHistory.size.toString(),
-                            highlighted = pulsingTarget == GuideHighlightTarget.HOME_CLIPBOARD_HISTORY,
-                            onClick = { showClipboardHistory = true },
-                        )
-                    }
-                    if (showTimelineRow) {
-                        G7Row(
-                            label = stringResource(R.string.timeline_title),
-                            icon = G7Icons.history,
-                            tint = tints.blue,
-                            note = state.timelineTotal.takeIf { it > 0u }?.toString(),
-                            highlighted = pulsingTarget == GuideHighlightTarget.HOME_TIMELINE,
-                            onClick = { showTimeline = true },
-                        )
+                    if (showClipRow || showTimelineRow) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 2.dp),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            if (showClipRow) {
+                                HomeWideTile(
+                                    label = stringResource(R.string.clipboard_history_title),
+                                    icon = G7Icons.clipboard,
+                                    tint = tints.lavender,
+                                    note = state.clipboardHistory.size.toString(),
+                                    highlighted = pulsingTarget == GuideHighlightTarget.HOME_CLIPBOARD_HISTORY,
+                                    onClick = { showClipboardHistory = true },
+                                    modifier = Modifier.weight(1f),
+                                )
+                            }
+                            if (showTimelineRow) {
+                                HomeWideTile(
+                                    label = stringResource(R.string.timeline_title),
+                                    icon = G7Icons.history,
+                                    tint = tints.blue,
+                                    note = state.timelineTotal.takeIf { it > 0u }?.toString(),
+                                    highlighted = pulsingTarget == GuideHighlightTarget.HOME_TIMELINE,
+                                    onClick = { showTimeline = true },
+                                    modifier = Modifier.weight(1f),
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -1148,29 +1245,39 @@ private fun PeerRows(
             stringResource(R.string.battery_level, it.level.toInt())
         }
     }
+    val filesLabel = stringResource(R.string.home_files)
+    val clipboardLabel = stringResource(R.string.home_tile_clipboard)
+    val ringLabel = stringResource(if (ringing) R.string.action_stop_ringing else R.string.action_ring_device)
     Column {
         G7SectionLabel(listOfNotNull(device.name, kind, linkText(device.link), battery).joinToString(" · "))
-        G7Row(
-            label = stringResource(R.string.home_files),
-            icon = G7Icons.upload,
-            tint = tints.amber,
-            enabled = !device.online || device.has("pair.files"),
-            onClick = { pickFiles.launch(arrayOf("*/*")) },
-        )
-        G7Row(
-            label = stringResource(R.string.action_send_clipboard),
-            icon = G7Icons.clipboard,
-            tint = tints.lavender,
-            enabled = !device.online || device.has("pair.clipboard"),
-            onClick = { context.startActivity(SendActivity.sendClipboardIntent(context, device.id, preview = true)) },
-        )
-        G7Row(
-            label = stringResource(if (ringing) R.string.action_stop_ringing else R.string.action_ring_device),
-            icon = G7Icons.ring,
-            tint = tints.blue,
-            enabled = device.online && device.has("pair.ring"),
-            active = ringing,
-            onClick = { onRing(device.id, !ringing) },
+        HomeTileGrid(
+            listOf(
+                HomeTileSpec(
+                    id = "files",
+                    label = filesLabel,
+                    icon = G7Icons.upload,
+                    tint = tints.amber,
+                    enabled = !device.online || device.has("pair.files"),
+                    onClick = { pickFiles.launch(arrayOf("*/*")) },
+                ),
+                HomeTileSpec(
+                    id = "clipboard",
+                    label = clipboardLabel,
+                    icon = G7Icons.clipboard,
+                    tint = tints.lavender,
+                    enabled = !device.online || device.has("pair.clipboard"),
+                    onClick = { context.startActivity(SendActivity.sendClipboardIntent(context, device.id, preview = true)) },
+                ),
+                HomeTileSpec(
+                    id = "ring",
+                    label = ringLabel,
+                    icon = G7Icons.ring,
+                    tint = tints.blue,
+                    enabled = device.online && device.has("pair.ring"),
+                    active = ringing,
+                    onClick = { onRing(device.id, !ringing) },
+                ),
+            ),
         )
     }
 }
@@ -1217,8 +1324,9 @@ private fun LinkDialog(pcName: String, onOpen: (String) -> Unit, onDismiss: () -
 }
 
 /**
- * The PC's sound under its controls: the volume, where it plays, and whether
- * it plays on this phone instead. What plays is the mini player's (ui/player).
+ * The PC's sound as rows, on the remote's Media tab: the volume, where it plays,
+ * and whether it plays on this phone instead. Home shows the same as one card
+ * ([HomeSoundCard]). What plays is the mini player's (ui/player).
  */
 @Composable
 internal fun PcSoundRows(
@@ -1232,20 +1340,86 @@ internal fun PcSoundRows(
 ) {
     val context = LocalContext.current
     val tints = g7Tints()
+    var showOutputs by remember { mutableStateOf(false) }
+    val outputs = rememberPcOutputs(deckState)
+    val streamingToPhone = outputs.streamingToPhone
+    val hardwareOutputs = outputs.hardware
+    val defaultOutput = outputs.default
+
+    PcVolumeRow(deckState = deckState, onSetPcAudio = onSetPcAudio, highlighted = highlighted)
+    if (defaultOutput != null) {
+        G7Row(
+            label = stringResource(R.string.pc_audio_output, defaultOutput.name),
+            icon = G7Icons.volume,
+            tint = tints.muted,
+            note = hardwareOutputs.size.takeIf { it > 1 }?.toString(),
+            onClick = { showOutputs = true },
+        )
+    }
+    G7SwitchRow(
+        label = stringResource(R.string.pc_audio_use_phone_speaker),
+        checked = streamingToPhone,
+        onCheckedChange = { on -> onSetPcAudio(if (on) 201 else 200, null) },
+        icon = G7Icons.speaker,
+        tint = tints.teal,
+    )
+    if (btMedia != null) {
+        // The other way round: this phone's media on the PC over Bluetooth (off by default).
+        G7SwitchRow(
+            label = stringResource(R.string.bt_media_pc_toggle, pcName),
+            sublabel = stringResource(R.string.bt_media_pc_hint),
+            checked = btMedia,
+            onCheckedChange = onSetBtMedia,
+            icon = G7Icons.bluetooth,
+            tint = tints.blue,
+        )
+    }
+
+    if (showOutputs && hardwareOutputs.isNotEmpty()) {
+        PcAudioOutputsDialog(
+            pcName = pcName,
+            devices = hardwareOutputs,
+            onPick = { output ->
+                (context.applicationContext as? G7LinkApplication)?.core?.setPcAudioOutput(pcId, output)
+                showOutputs = false
+            },
+            onDismiss = { showOutputs = false },
+        )
+    }
+}
+
+/** Where the PC's sound goes: to this phone or not, the PC's own outputs, and the one in use. */
+internal class PcOutputs(
+    val streamingToPhone: Boolean,
+    val hardware: List<AudioOutputDevice>,
+    val default: AudioOutputDevice?,
+)
+
+@Composable
+internal fun rememberPcOutputs(deckState: DeckState): PcOutputs = remember(deckState.outputDevices) {
+    val hardware = deckState.outputDevices.filterNot { it.id == PHONE_SPEAKER_OUTPUT }
+    PcOutputs(
+        streamingToPhone = deckState.outputDevices.any { it.id == PHONE_SPEAKER_OUTPUT },
+        hardware = hardware,
+        default = hardware.firstOrNull { it.isDefault } ?: hardware.firstOrNull(),
+    )
+}
+
+/** The PC's volume: the glyph mutes, the slider sets it, and the level or "Muted" after it. */
+@Composable
+internal fun PcVolumeRow(
+    deckState: DeckState,
+    onSetPcAudio: (volume: Int?, muted: Boolean?) -> Unit,
+    highlighted: Boolean = false,
+) {
+    val tints = g7Tints()
     val scheme = MaterialTheme.colorScheme
     var draggingVolume by remember { mutableStateOf<Float?>(null) }
     var lastSentVolume by remember { mutableStateOf(deckState.volume.toInt()) }
     if (draggingVolume == null) {
         lastSentVolume = deckState.volume.toInt()
     }
-    var showOutputs by remember { mutableStateOf(false) }
     val shownVolume = draggingVolume?.roundToInt() ?: deckState.volume.toInt()
-    val (streamingToPhone, hardwareOutputs, defaultOutput) = remember(deckState.outputDevices) {
-        val streaming = deckState.outputDevices.any { it.id == PHONE_SPEAKER_OUTPUT }
-        val hw = deckState.outputDevices.filterNot { it.id == PHONE_SPEAKER_OUTPUT }
-        val def = hw.firstOrNull { it.isDefault } ?: hw.firstOrNull()
-        Triple(streaming, hw, def)
-    }
     val volumeLabel = stringResource(R.string.pc_audio_volume)
 
     Row(
@@ -1289,45 +1463,6 @@ internal fun PcSoundRows(
             if (deckState.muted) stringResource(R.string.pc_audio_muted) else shownVolume.toString(),
             style = MaterialTheme.typography.bodyMedium,
             color = scheme.onSurfaceVariant,
-        )
-    }
-    if (defaultOutput != null) {
-        G7Row(
-            label = stringResource(R.string.pc_audio_output, defaultOutput.name),
-            icon = G7Icons.volume,
-            tint = tints.muted,
-            note = hardwareOutputs.size.takeIf { it > 1 }?.toString(),
-            onClick = { showOutputs = true },
-        )
-    }
-    G7SwitchRow(
-        label = stringResource(R.string.pc_audio_use_phone_speaker),
-        checked = streamingToPhone,
-        onCheckedChange = { on -> onSetPcAudio(if (on) 201 else 200, null) },
-        icon = G7Icons.speaker,
-        tint = tints.teal,
-    )
-    if (btMedia != null) {
-        // The other way round: this phone's media on the PC over Bluetooth (off by default).
-        G7SwitchRow(
-            label = stringResource(R.string.bt_media_pc_toggle, pcName),
-            sublabel = stringResource(R.string.bt_media_pc_hint),
-            checked = btMedia,
-            onCheckedChange = onSetBtMedia,
-            icon = G7Icons.bluetooth,
-            tint = tints.blue,
-        )
-    }
-
-    if (showOutputs && hardwareOutputs.isNotEmpty()) {
-        PcAudioOutputsDialog(
-            pcName = pcName,
-            devices = hardwareOutputs,
-            onPick = { output ->
-                (context.applicationContext as? G7LinkApplication)?.core?.setPcAudioOutput(pcId, output)
-                showOutputs = false
-            },
-            onDismiss = { showOutputs = false },
         )
     }
 }

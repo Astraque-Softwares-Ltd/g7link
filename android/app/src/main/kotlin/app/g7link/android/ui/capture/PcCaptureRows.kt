@@ -12,33 +12,7 @@ import androidx.compose.ui.res.stringResource
 import app.g7link.android.R
 import app.g7link.android.core.PcCaptureFormat
 import app.g7link.android.core.PcCaptureState
-import app.g7link.android.ui.theme.G7Icons
-import app.g7link.android.ui.theme.G7Row
-import app.g7link.android.ui.theme.g7Tints
 import kotlinx.coroutines.delay
-
-/** Screenshot and Record screen, for the PC's section on Home. */
-@Composable
-fun PcCaptureRows(online: Boolean, capture: PcCaptureState, onScreenshot: () -> Unit, onRecord: () -> Unit) {
-    val tints = g7Tints()
-    G7Row(
-        label = stringResource(screenshotLabel(capture)),
-        icon = G7Icons.screenshot,
-        tint = tints.blue,
-        enabled = online,
-        busy = capture.shooting,
-        onClick = onScreenshot,
-    )
-    G7Row(
-        label = recordLabel(capture),
-        icon = G7Icons.video,
-        tint = tints.red,
-        enabled = online,
-        active = capture.recordingSince != null,
-        busy = capture.recordingBusy,
-        onClick = onRecord,
-    )
-}
 
 /** "Screenshot", or "Approve on your PC" while the PC asks. */
 fun screenshotLabel(capture: PcCaptureState): Int =

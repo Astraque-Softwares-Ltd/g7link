@@ -519,7 +519,6 @@
     <string name="pc_audio_default_badge">Padrão</string>
     <string name="pc_audio_outputs_hint">Toque em um para tocar o som de %1$s nele.</string>
     <string name="pc_audio_use_phone_speaker">Usar o celular como alto-falante</string>
-    <string name="pc_audio_use_phone_mic">Usar o celular como microfone</string>
 
     <!-- Phone storage in File Explorer -->
     <string name="storage_all_files_title">Acesso a todos os arquivos</string>
@@ -746,7 +745,6 @@
     <!-- PC notifications & Browse PC files -->
     <string name="channel_pc_notifications">Notificações do PC</string>
     <string name="channel_peer_notifications">Notificações do outro celular ou tablet</string>
-    <string name="action_browse_pc_files">Explorar arquivos do PC</string>
     <string name="pc_files_title">Arquivos em %1$s</string>
     <string name="pc_files_root">Início</string>
     <string name="pc_files_up">Subir um nível</string>
@@ -1314,10 +1312,17 @@
     <string name="home_files">Arquivos</string>
     <string name="home_folder">Pasta</string>
     <string name="home_link">Link</string>
-    <string name="home_trackpad">Touchpad e teclado</string>
     <string name="home_lock">Bloquear</string>
     <string name="home_voice_note">Nota de voz</string>
     <string name="home_desk_mode">Modo mesa</string>
+    <string name="home_tile_clipboard">Área de transferência</string>
+    <string name="home_tile_trackpad">Touchpad</string>
+    <string name="home_tile_pc_files">Arquivos do PC</string>
+    <string name="home_tile_record">Gravar</string>
+    <string name="home_tile_stop_recording">Parar · %1$s</string>
+    <string name="home_tile_microphone">Microfone</string>
+    <string name="home_tile_phone_speaker">Celular como alto-falante</string>
+    <string name="home_tile_phone_audio">Áudio do celular em %1$s</string>
     <string name="home_access">Permitir acesso</string>
     <string name="home_activity">Atividade</string>
     <string name="home_switch_pc">Trocar de PC</string>

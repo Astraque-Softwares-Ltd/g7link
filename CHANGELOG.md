@@ -6,6 +6,12 @@ change things that need a step from you, and its notes say so.
 
 ## 0.1.27 (unreleased)
 
+### Changed
+
+- The phone's Home is a grid of tiles instead of a long list: what you
+  send to the PC, control on it and use this phone for each fit in a row
+  or two, with the PC's volume, output and speaker switches in one card.
+
 ### Fixed
 
 - The touchpad's connection sheet says Auto "uses the fastest connection"
