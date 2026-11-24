@@ -6,16 +6,40 @@ change things that need a step from you, and its notes say so.
 
 ## 0.1.27 (unreleased)
 
+**Update both together** for replies on the PC to wait and switch tabs.
+
 ### Changed
 
 - The phone's Home is a grid of tiles instead of a long list: what you
   send to the PC, control on it and use this phone for each fit in a row
   or two, with the PC's volume, output and speaker switches in one card.
+- **Agents on the phone** are listed by project, with the sessions started
+  on the PC beside their threads by time, instead of a separate section
+  that old threads pushed down.
+- **Replying to a session on the PC switches to its tab.** In Ptyxis and
+  GNOME Terminal, G7 now brings the session's tab forward itself instead
+  of asking you to.
+- **A reply waits while you use the PC.** If the PC's keyboard or trackpad
+  was just used, the phone shows "Waiting until it's free…" and sends by
+  itself once nobody has touched the PC for 5 seconds, for up to a minute,
+  with Cancel.
+
+### Added
+
+- After you send in an Agents conversation it scrolls to your message, and
+  when you've scrolled up a button takes you back to the latest.
 
 ### Fixed
 
 - The touchpad's connection sheet says Auto "uses the fastest connection"
   instead of "the faster of the two", now that it lists more than two.
+- Typing in an Agents reply box keeps it above the keyboard.
+- **Replies to a new session are no longer refused** as "in a background
+  tab" when the session had said too little to be recognised. G7 now
+  proves the terminal by briefly setting its tab's title to a one-time
+  code. When it can't prove it, the phone says so, and nothing is typed.
+- A reply could be typed into a shell whose scrollback still showed an
+  ended session's text; the title proof closes that.
 
 ## 0.1.26 (2026-11-22)
 

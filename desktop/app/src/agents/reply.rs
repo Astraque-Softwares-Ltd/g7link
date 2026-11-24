@@ -1,14 +1,20 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! A phone's reply entered into a session started on this PC
-//! (`plans/reply-on-pc.md`, docs/protocol/agents.md §8): the PC finds the
-//! one window the session runs in, brings it forward, proves that the
-//! terminal in front is the session's, pastes the text as one bracketed
-//! paste (PRIMARY and Shift+Insert) and presses Enter.
+//! (`plans/reply-on-pc.md`, `plans/reply-tabs-idle.md`, docs/protocol/agents.md
+//! §9): the PC finds the session's terminal, brings its window and tab
+//! forward, proves that the terminal in front is the session's, pastes the
+//! text as one bracketed paste (PRIMARY and Shift+Insert) and presses Enter.
 //!
 //! Refusing is the default: each step is a check that must pass, and what
 //! isn't known is a refusal with a reason the phone can show. Nothing is
 //! typed before the proof; nothing but the paste chord and Enter is ever
-//! pressed. G7 never switches tabs, clicks, or types a probe.
+//! pressed, and nothing is clicked or typed as a probe. When the terminal
+//! may show another tab or window, G7 writes a one-time title to the
+//! session's own terminal device (the output side: the agent never reads
+//! it), finds the window or tab showing that title, and selects that tab
+//! through the accessibility bus. The title is put back on every way out.
+//! Someone at the PC is `in_use` with how long to wait, so a phone can send
+//! the reply again once the PC is free.
 //!
 //! The sequence runs over four small traits ([`Host`], [`Windows`],
 //! [`Keys`], [`Desk`]) so every refusal is tested on fakes; the live ones
@@ -25,6 +31,8 @@ use g7_agents::{
 };
 use g7link_core::{AgentFailure, AgentReply, AgentReplyTarget, AgentSessionReplied, DeviceId};
 
+use crate::sys::text_focus::{MAX_TABS, TabError, TabRoute, TabSpot};
+
 /// Most bytes in a reply, after it's cleaned.
 pub(crate) const MAX_TEXT: usize = 8192;
 /// How long the window has to come forward.
@@ -33,11 +41,26 @@ const FOCUS_POLL: Duration = Duration::from_millis(50);
 /// Between the paste and the checks before Enter (S5: Claude's status file
 /// says `waiting` within about 50 ms of a question).
 const SETTLE: Duration = Duration::from_millis(250);
+/// A title G7 wrote has this long to show on a window or a tab (S6).
+const TITLE_WAIT: Duration = Duration::from_millis(600);
+/// The window in front has this long to show the title once its tab is selected.
+const TAB_WAIT: Duration = Duration::from_millis(800);
+/// From the checks before bringing anything forward to the proof's end.
+const BEFORE_PASTE: Duration = Duration::from_secs(6);
+/// Bytes of a window title the window backend keeps.
+const WINDOW_TITLE_BYTES: usize = 256;
 /// Input at the PC this recent is someone there (§3.2).
 pub(crate) const OWNER_AWAY: Duration = Duration::from_secs(5);
+/// `retry_ms` with `in_use`: past the owner's [`OWNER_AWAY`], while a
+/// phone's input is typed, and behind a fullscreen window; within these.
+const IN_USE_MARGIN: Duration = Duration::from_millis(100);
+const PHONE_TYPING_WAIT: Duration = Duration::from_secs(1);
+const FULLSCREEN_WAIT: Duration = Duration::from_secs(5);
+const MIN_IN_USE_MS: u128 = 250;
+const MAX_IN_USE_MS: u128 = 5000;
 /// A confirmation nonce works once, this long.
 const NONCE_LIFE: Duration = Duration::from_secs(120);
-/// A confirmed window is remembered this long.
+/// A confirmation is remembered this long.
 const CONFIRMED_FOR: Duration = Duration::from_secs(24 * 60 * 60);
 const MAX_NONCES: usize = 32;
 const MAX_CONFIRMED: usize = 256;
@@ -100,7 +123,10 @@ pub(crate) enum Refused {
     NoProcess,
     NoWindow,
     Ambiguous,
+    /// In a background tab G7 couldn't bring forward.
     Tab,
+    /// G7 couldn't make sure which terminal is the session's.
+    Unproven,
     Place,
     Text,
     Rate,
@@ -120,6 +146,7 @@ impl Refused {
             Refused::NoWindow => "no_window",
             Refused::Ambiguous => "ambiguous",
             Refused::Tab => "tab",
+            Refused::Unproven => "unproven",
             Refused::Place => "place",
             Refused::Text => "text",
             Refused::Rate => "rate",
@@ -186,11 +213,23 @@ pub(crate) struct Answer {
     pub retry_ms: Option<u32>,
     /// The terminal's executable, for the log line only.
     pub emulator: Option<String>,
+    pub trail: Trail,
+}
+
+/// How a reply was proven and brought forward, for the log line only.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct Trail {
+    /// `structural`, `title`, `title_text`, or empty before a proof began.
+    pub proof: &'static str,
+    /// `front` (its tab was in front), `switched`, or empty.
+    pub tab: &'static str,
+    /// Tabs moved past when switching.
+    pub steps: usize,
 }
 
 impl Answer {
     fn of(outcome: Outcome) -> Self {
-        Answer { outcome, target: None, nonce: None, retry_ms: None, emulator: None }
+        Answer { outcome, target: None, nonce: None, retry_ms: None, emulator: None, trail: Trail::default() }
     }
 
     fn refused(reason: Refused) -> Self {
@@ -360,22 +399,8 @@ impl std::fmt::Debug for Win {
     }
 }
 
-/// A window of a terminal app on the accessibility bus, and the text of the
-/// one terminal it shows (Ptyxis: the selected tab's).
-#[derive(Clone, PartialEq, Eq)]
-pub(crate) struct Frame {
-    pub title: String,
-    pub active: bool,
-    pub text: String,
-}
-
-impl std::fmt::Debug for Frame {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Frame").field("active", &self.active).field("text_len", &self.text.len()).finish()
-    }
-}
-
-/// The window backend: windows, focus, PRIMARY and terminal text.
+/// The window backend: windows, focus, PRIMARY, a terminal's title, its
+/// tabs and its text.
 pub(crate) trait Windows {
     /// Lists windows with `fullscreen` and `minimized`, and writes PRIMARY
     /// alone (the companion extension's additions).
@@ -389,10 +414,21 @@ pub(crate) trait Windows {
     /// The text of the focused terminal in the active window of the app
     /// with `pid`; `None` when there's no such terminal or it can't be read.
     fn terminal_text(&self, pid: u32) -> Option<String>;
-    /// Each window of the app with `pid` that shows one terminal.
-    fn terminal_frames(&self, pid: u32) -> Option<Vec<Frame>>;
     /// The app's name from its desktop entry.
     fn app_name(&self, class: &str, pid: u32) -> Option<String>;
+    /// Sets `title` on the terminal `tty` (written to its device, the output
+    /// side), pushing the old one; false when it couldn't.
+    fn title_mark(&self, tty: u32, title: &str) -> bool;
+    /// Puts back the title [`Windows::title_mark`] pushed.
+    fn title_unmark(&self, tty: u32);
+    /// Where tabs titled with `mark` are among the windows of the app with
+    /// `pid`, read without changing anything; `None` when it can't be read.
+    fn tab_titled(&self, pid: u32, mark: &str, route: TabRoute) -> Option<Vec<TabSpot>>;
+    /// In the app's active window, selects the tab titled with `mark`;
+    /// `Ok` holds the tab selected before.
+    fn select_tab(&self, pid: u32, mark: &str, route: TabRoute) -> Result<usize, TabError>;
+    /// Selects tab `at` again in the window whose tab is titled with `mark`.
+    fn select_tab_at(&self, pid: u32, mark: &str, at: usize, route: TabRoute) -> bool;
 }
 
 /// The keys a reply presses.
@@ -408,12 +444,15 @@ pub(crate) trait Keys {
 pub(crate) trait Desk {
     /// `None` when logind didn't say.
     fn locked(&self) -> Option<bool>;
-    /// Someone used this PC's keyboard or mouse in the last [`OWNER_AWAY`],
-    /// not counting a phone's own input; `None` when the desktop didn't say.
-    fn owner_active(&self) -> Option<bool>;
+    /// How long until nobody will have used this PC's keyboard or mouse for
+    /// [`OWNER_AWAY`], if nobody touches them: zero when nobody has (a
+    /// phone's own input doesn't count); `None` when the desktop didn't say.
+    fn free_in(&self) -> Option<Duration>;
     /// A phone's input is being typed now.
     fn phone_typing(&self) -> bool;
     fn wait(&self, how_long: Duration);
+    /// The clock a reply's deadline runs on.
+    fn now(&self) -> Instant;
 }
 
 /// The four, together.
@@ -453,13 +492,16 @@ fn is_bidi_control(c: char) -> bool {
 
 // ---- Rate and confirmations (§3.3, §3.5) ----
 
-/// What a confirmation holds for: this phone, this session, this window of
-/// this run of this terminal.
+/// What a confirmation holds for: this phone, this session, this run of
+/// the agent in this run of this terminal. Not the window: none is chosen
+/// before the phone's user confirms, and a tab moved to another window of
+/// the same terminal is still the session's.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Bound {
     phone: String,
     session: String,
-    window: u64,
+    agent: u32,
+    agent_start: u64,
     emulator: u32,
     emulator_start: u64,
 }
@@ -479,8 +521,8 @@ struct Pace {
     entered: VecDeque<(Instant, String)>,
 }
 
-/// The PC's memory of replies: nonces, confirmed windows and the pace of
-/// each phone. In memory only: a restart asks again.
+/// The PC's memory of replies: nonces, confirmations and the pace of each
+/// phone. In memory only: a restart asks again.
 #[derive(Debug, Default)]
 pub(crate) struct Ledger {
     nonces: VecDeque<Nonce>,
@@ -579,7 +621,7 @@ impl Ledger {
     }
 
     /// Whether `nonce` is live for this phone and session (it may not match
-    /// the window: that's for [`Ledger::redeem`] to say).
+    /// the process: that's for [`Ledger::redeem`] to say).
     fn holds(&mut self, phone: &str, session: &str, nonce: &str, now: Instant) -> bool {
         self.prune(now);
         self.nonces.iter().any(|n| n.value == nonce && n.bound.phone == phone && n.bound.session == session)
@@ -619,12 +661,14 @@ impl Replies {
 // ---- Finding the window (§1.3, §1.4, §1.5, §2.2) ----
 
 /// A terminal G7 knows how to paste into: its executable, its window
-/// classes, and the name shown when its desktop entry can't be read.
+/// classes, the name shown when its desktop entry can't be read, and how
+/// its tabs are switched.
 #[derive(Debug)]
 struct Terminal {
     exe: &'static str,
     classes: &'static [&'static str],
     name: &'static str,
+    tabs: TabRoute,
 }
 
 /// v1 (§9.1): the VTE terminals, where Shift+Insert pastes PRIMARY.
@@ -633,11 +677,13 @@ const TERMINALS: [Terminal; 2] = [
         exe: "ptyxis",
         classes: &["org.gnome.Ptyxis", "org.gnome.Ptyxis.Devel", "ptyxis"],
         name: "Ptyxis",
+        tabs: TabRoute::AdwPages,
     },
     Terminal {
         exe: "gnome-terminal-server",
         classes: &["org.gnome.Terminal", "gnome-terminal", "gnome-terminal-server"],
         name: "Terminal",
+        tabs: TabRoute::Notebook,
     },
 ];
 
@@ -697,15 +743,23 @@ pub(crate) fn shows_a_mark(screen: &str, marks: &[String]) -> bool {
     })
 }
 
-/// The terminal that holds the session, and the window it's entered in.
+/// The terminal that holds the session, and when it can only be showing
+/// the session's terminal (§1.4), its one window.
 #[derive(Debug, Clone)]
 struct Resolved {
-    window: u64,
+    /// `Some` only for the structural proof; else the title finds it.
+    window: Option<u64>,
+    /// Its first window's class.
     class: String,
     emulator: Ancestor,
-    /// The window can only be showing this session's terminal (§1.4).
-    structural: bool,
+    terminal: &'static Terminal,
     target: Target,
+}
+
+/// Claude with a live status file: the host found the session exactly,
+/// not by a command line that may have switched sessions inside.
+fn by_status_file(place: &Place) -> bool {
+    place.agent == Agent::Claude && place.state_exact
 }
 
 fn cut(text: &str, max: usize) -> String {
@@ -754,21 +808,32 @@ fn placed<H: Host>(host: &H, session: &str) -> Result<Result<Place, Answer>, Err
     })
 }
 
-/// Step 3: nobody at the PC, nothing in front that mustn't be covered.
-fn pc_allows<D: Desk>(desk: &D, windows: &[Win], target_pid: Option<u32>) -> Result<(), Refused> {
-    if desk.phone_typing() || desk.owner_active() != Some(false) {
-        return Err(Refused::InUse);
+/// Nobody at the PC, nothing in front that mustn't be covered. `Err` is
+/// `in_use` with how long until waiting may help; `None`: it won't.
+fn pc_allows<D: Desk>(desk: &D, windows: &[Win], target_pid: Option<u32>) -> Result<(), Option<Duration>> {
+    if desk.phone_typing() {
+        return Err(Some(PHONE_TYPING_WAIT));
+    }
+    match desk.free_in() {
+        None => return Err(None),
+        Some(free) if !free.is_zero() => return Err(Some(free + IN_USE_MARGIN)),
+        Some(_) => {}
     }
     // A film, a presentation or a call; a fullscreen terminal holding the
     // session is fine.
     if windows.iter().any(|w| w.focused && w.fullscreen && Some(w.pid) != target_pid) {
-        return Err(Refused::InUse);
+        return Err(Some(FULLSCREEN_WAIT));
     }
     Ok(())
 }
 
-/// Step 4: the emulator above the agent, a terminal G7 knows, and the one
-/// window of it to enter the reply in.
+/// `retry_ms` for an `in_use` that waiting may end.
+fn in_use_ms(wait: Duration) -> u32 {
+    u32::try_from(wait.as_millis().clamp(MIN_IN_USE_MS, MAX_IN_USE_MS)).unwrap_or(u32::MAX)
+}
+
+/// The emulator above the agent, a terminal G7 knows, and its one window
+/// when that can only be showing the session. Reads nothing from the screen.
 fn resolve<W: Windows>(windows: &W, place: &Place, listed: &[Win]) -> Result<Resolved, Refused> {
     let mut emulator = None;
     for ancestor in &place.chain {
@@ -789,18 +854,16 @@ fn resolve<W: Windows>(windows: &W, place: &Place, listed: &[Win]) -> Result<Res
     }
     let ptys = place.ptys_under.iter().find(|(pid, _)| *pid == emulator.pid).map(|(_, n)| *n);
     // A process found by its command line may have switched sessions inside
-    // (Codex's `/resume`, a Claude without its status file): only the
-    // screen can say which one it shows.
-    let by_status_file = place.agent == Agent::Claude && place.state_exact;
-    let structural = by_status_file && own.len() == 1 && ptys == Some(1);
-    let window = if structural { first.id } else { pick_window(windows, emulator.pid, &own, &place.marks)? };
-    let class = own.iter().find(|w| w.id == window).map(|w| w.class.clone()).unwrap_or_default();
+    // (Codex's `/resume`, a Claude without its status file): the title says
+    // which terminal, and only the screen which session it shows.
+    let structural = by_status_file(place) && own.len() == 1 && ptys == Some(1);
+    let class = first.class.clone();
     let app = windows
         .app_name(&class, emulator.pid)
         .filter(|name| !name.trim().is_empty())
         .unwrap_or_else(|| terminal.name.to_owned());
     let target = target(place, &app, "terminal");
-    Ok(Resolved { window, class, emulator, structural, target })
+    Ok(Resolved { window: structural.then_some(first.id), class, emulator, terminal, target })
 }
 
 fn target(place: &Place, app: &str, kind: &'static str) -> Target {
@@ -844,38 +907,113 @@ fn place_target<W: Windows>(windows: &W, place: &Place, listed: &[Win]) -> Optio
     Some(target(place, program_name(program), kind))
 }
 
-/// Of a terminal's windows, the one showing the session: the one in front
-/// if it does, else the single one whose terminal shows a mark. Read from
-/// the accessibility bus without bringing any forward.
-fn pick_window<W: Windows>(windows: &W, pid: u32, own: &[&Win], marks: &[String]) -> Result<u64, Refused> {
-    let frames = windows.terminal_frames(pid).filter(|f| !f.is_empty()).ok_or(Refused::Ambiguous)?;
-    let showing: Vec<&Frame> = frames.iter().filter(|f| shows_a_mark(&f.text, marks)).collect();
-    if let [only] = own {
-        // One window, several tabs: it's in front only if its selected tab is.
-        return if showing.is_empty() { Err(Refused::Tab) } else { Ok(only.id) };
-    }
-    if let Some(front) = own.iter().find(|w| w.focused)
-        && showing.iter().any(|f| f.active && f.title == front.title)
-    {
-        return Ok(front.id);
-    }
-    let [frame] = showing.as_slice() else { return Err(Refused::Ambiguous) };
-    let titled: Vec<&&Win> = own.iter().filter(|w| w.title == frame.title).collect();
-    match titled.as_slice() {
-        [window] => Ok(window.id),
-        _ => Err(Refused::Ambiguous),
+/// The window a reply goes into.
+#[derive(Debug, Clone)]
+struct Front {
+    id: u64,
+    pid: u32,
+    class: String,
+}
+
+/// Whether `front` has the focus, and, when G7 wrote a title, shows it.
+fn focused_on<W: Windows>(windows: &W, front: &Front, mark: Option<&str>) -> bool {
+    windows.list().is_some_and(|list| {
+        list.iter().any(|w| {
+            w.id == front.id
+                && w.focused
+                && w.pid == front.pid
+                && w.class == front.class
+                && mark.is_none_or(|mark| w.title.contains(mark))
+        })
+    })
+}
+
+/// Puts the terminal's title back on the way out, whichever way that is.
+struct Titled<'a, W: Windows> {
+    windows: &'a W,
+    tty: u32,
+}
+
+impl<W: Windows> Drop for Titled<'_, W> {
+    fn drop(&mut self) {
+        self.windows.title_unmark(self.tty);
     }
 }
 
-fn focused_on<W: Windows>(windows: &W, resolved: &Resolved) -> bool {
-    windows.list().is_some_and(|list| {
-        list.iter().any(|w| {
-            w.id == resolved.window
-                && w.focused
-                && w.pid == resolved.emulator.pid
-                && w.class == resolved.class
-        })
-    })
+impl<W: Windows> std::fmt::Debug for Titled<'_, W> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Titled").finish_non_exhaustive()
+    }
+}
+
+/// After G7 switched tabs, selects the tab that was selected before on the
+/// way out, unless the reply was pasted: then the pasted text stays in view
+/// (§3.3). Once, best effort.
+struct Back<'a, W: Windows> {
+    windows: &'a W,
+    pid: u32,
+    mark: String,
+    at: usize,
+    route: TabRoute,
+    armed: std::cell::Cell<bool>,
+}
+
+impl<W: Windows> Back<'_, W> {
+    /// The tab stays: the reply is being pasted into it.
+    fn keep(&self) {
+        self.armed.set(false);
+    }
+}
+
+impl<W: Windows> Drop for Back<'_, W> {
+    fn drop(&mut self) {
+        if self.armed.get() {
+            self.windows.select_tab_at(self.pid, &self.mark, self.at, self.route);
+        }
+    }
+}
+
+impl<W: Windows> std::fmt::Debug for Back<'_, W> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Back").field("at", &self.at).field("armed", &self.armed.get()).finish_non_exhaustive()
+    }
+}
+
+/// What the title proof leaves until the reply is entered. Fields drop in
+/// order: the old tab is selected again while its title still names it,
+/// then the title is put back.
+struct Proven<'a, W: Windows> {
+    front: Front,
+    mark: String,
+    back: Option<Back<'a, W>>,
+    _titled: Titled<'a, W>,
+}
+
+impl<W: Windows> std::fmt::Debug for Proven<'_, W> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Proven")
+            .field("front", &self.front)
+            .field("back", &self.back)
+            .field("titled", &self._titled)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Where a title G7 wrote showed up.
+#[derive(Debug)]
+enum Seen {
+    /// On this window: its selected tab is the session's.
+    Window(Win),
+    /// On a tab of a window, maybe in the background.
+    Tab(TabSpot),
+    /// On more than one.
+    Several,
+    Nowhere,
+}
+
+/// A one-time title: "G7 " and 16 hex digits, never logged.
+fn new_mark() -> String {
+    format!("G7 {}", data_encoding::HEXLOWER.encode(&rand::random::<[u8; 8]>()))
 }
 
 /// Clears PRIMARY on the way out, if it still holds the reply.
@@ -896,7 +1034,7 @@ impl<W: Windows> std::fmt::Debug for Primary<'_, W> {
     }
 }
 
-// ---- The sequence (§2.4) ----
+// ---- The sequence (§2.4, `plans/reply-tabs-idle.md` §5) ----
 
 /// Answers a phone's reply or check. `phone` is the asking phone's id.
 pub(crate) fn answer<H: Host, W: Windows, K: Keys, D: Desk>(
@@ -916,6 +1054,9 @@ pub(crate) fn answer<H: Host, W: Windows, K: Keys, D: Desk>(
         result = answer.outcome.result(),
         reason = answer.outcome.reason().unwrap_or_default(),
         emulator = answer.emulator.as_deref().unwrap_or_default(),
+        proof = answer.trail.proof,
+        tab = answer.trail.tab,
+        steps = answer.trail.steps,
         "a phone's reply into a session"
     );
     Ok(answer)
@@ -925,7 +1066,9 @@ fn rate(wait: Duration) -> Answer {
     Answer { retry_ms: Some(wait_ms(wait)), ..Answer::refused(Refused::Rate) }
 }
 
-/// Steps 1 to 4 without bringing anything forward: `ready`, or why not.
+/// The host, the session and its terminal, without bringing anything
+/// forward, writing a title or reading the screen: `ready`, or why not.
+/// Someone at the PC isn't a reason: a reply waits for them.
 fn check<H: Host, W: Windows, K: Keys, D: Desk>(
     pc: &Pc<'_, H, W, K, D>,
     replies: &Replies,
@@ -945,7 +1088,7 @@ fn check<H: Host, W: Windows, K: Keys, D: Desk>(
     })
 }
 
-/// Steps 2 (the session's state), 3 and 4.
+/// The session's state, the lock, the window backend and the terminal.
 fn ready<H: Host, W: Windows, K: Keys, D: Desk>(
     pc: &Pc<'_, H, W, K, D>,
     place: &Place,
@@ -963,10 +1106,6 @@ fn ready<H: Host, W: Windows, K: Keys, D: Desk>(
         return Err(refused(Refused::Setup));
     }
     let listed = pc.windows.list().ok_or_else(|| refused(Refused::Setup))?;
-    // Step 3 before 4: nothing is read from the screen while someone's there.
-    let in_chain = |pid: u32| place.chain.iter().any(|a| a.pid == pid);
-    let front_pid = listed.iter().find(|w| w.focused).map(|w| w.pid).filter(|pid| in_chain(*pid));
-    pc_allows(pc.desk, &listed, front_pid).map_err(refused)?;
     resolve(pc.windows, place, &listed).map_err(|reason| match reason {
         Refused::Place => Box::new(refused_place(pc.windows, place, Some(&listed))),
         reason => refused(reason),
@@ -995,20 +1134,21 @@ fn send<H: Host, W: Windows, K: Keys, D: Desk>(
     }
     let Ok(_entering) = replies.entering.try_lock() else { return Err(Error::Busy) };
 
-    // Step 2: the host.
+    // Step 2: the host, the session and its terminal.
     let place = match placed(pc.host, &ask.session)? {
         Ok(place) => place,
         Err(answer) => return Ok(answer),
     };
-    // Steps 3 and 4.
     let resolved = match ready(pc, &place) {
         Ok(resolved) => resolved,
         Err(answer) => return Ok(*answer),
     };
+    // The confirmation, before anything waits for someone at the PC.
     let bound = Bound {
         phone: phone.to_owned(),
         session: ask.session.clone(),
-        window: resolved.window,
+        agent: place.pid,
+        agent_start: place.start_ticks,
         emulator: resolved.emulator.pid,
         emulator_start: resolved.emulator.start_ticks,
     };
@@ -1024,64 +1164,303 @@ fn send<H: Host, W: Windows, K: Keys, D: Desk>(
     if !pc.keys.ready() {
         return Ok(Answer::refused(Refused::Setup).at(&resolved));
     }
+    let entry =
+        Entry { replies, phone, session: &ask.session, text: &text, place: &place, resolved: &resolved };
+    let mut trail = Trail::default();
+    let answer = enter(pc, &entry, &mut trail);
+    Ok(Answer { trail, ..answer.at(&resolved) })
+}
 
-    // Step 5: bring it forward, never while locked.
-    if pc.desk.locked() != Some(false) {
-        return Ok(Answer::refused(Refused::Locked).at(&resolved));
+/// One reply being entered: who for, what, and where.
+struct Entry<'r> {
+    replies: &'r Replies,
+    phone: &'r str,
+    session: &'r str,
+    text: &'r str,
+    place: &'r Place,
+    resolved: &'r Resolved,
+}
+
+impl std::fmt::Debug for Entry<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Entry").field("session", &self.session).finish_non_exhaustive()
     }
-    if !pc.windows.activate(resolved.window) {
-        return Ok(Answer::failed(Failed::Focus).at(&resolved));
+}
+
+/// After the confirmation: nobody at the PC, the window and its tab in
+/// front and proven, the same process again, then the paste and Enter.
+fn enter<H: Host, W: Windows, K: Keys, D: Desk>(
+    pc: &Pc<'_, H, W, K, D>,
+    entry: &Entry<'_>,
+    trail: &mut Trail,
+) -> Answer {
+    let place = entry.place;
+    let resolved = entry.resolved;
+    // Nobody at the PC: nothing has been brought forward, titled or read yet.
+    let Some(listed) = pc.windows.list() else { return Answer::refused(Refused::Setup) };
+    let in_chain = |pid: u32| place.chain.iter().any(|a| a.pid == pid);
+    let front_pid = listed.iter().find(|w| w.focused).map(|w| w.pid).filter(|pid| in_chain(*pid));
+    if let Err(wait) = pc_allows(pc.desk, &listed, front_pid) {
+        return Answer { retry_ms: wait.map(in_use_ms), ..Answer::refused(Refused::InUse) };
+    }
+    // Never brought forward on the lock screen.
+    if pc.desk.locked() != Some(false) {
+        return Answer::refused(Refused::Locked);
+    }
+    let Some(tty) = place.tty else { return Answer::refused(Refused::Place) };
+    let deadline = pc.desk.now() + BEFORE_PASTE;
+
+    // The window, and its tab, in front and proven.
+    let (front, proven) = match resolved.window {
+        Some(id) => {
+            trail.proof = "structural";
+            let front = Front { id, pid: resolved.emulator.pid, class: resolved.class.clone() };
+            if let Err(outcome) = bring_forward(pc, &front) {
+                return Answer::of(outcome);
+            }
+            (front, None)
+        }
+        None => {
+            trail.proof = if by_status_file(place) { "title" } else { "title_text" };
+            match title_proof(pc, place, resolved, tty, deadline, trail) {
+                Ok(proven) => (proven.front.clone(), Some(proven)),
+                Err(outcome) => return Answer::of(outcome),
+            }
+        }
+    };
+    let mark = proven.as_ref().map(|p| p.mark.as_str());
+
+    // The same run of the agent, on the same terminal, still at a prompt:
+    // the terminal shown is the one the agent reads.
+    match pc.host.place(entry.session) {
+        Ok(Found::Place(again)) if same_run(&again, place) => {
+            if let Err(reason) = session_allows(&again) {
+                return Answer::refused(reason);
+            }
+        }
+        _ => return Answer::refused(Refused::NoProcess),
+    }
+
+    // PRIMARY, still in front, the chord.
+    if !pc.windows.set_primary(entry.text) {
+        return Answer::refused(Refused::Setup);
+    }
+    let _primary = Primary { windows: pc.windows, text: entry.text };
+    if !focused_on(pc.windows, &front, mark) {
+        return Answer::failed(Failed::Focus);
+    }
+    if let Some(back) = proven.as_ref().and_then(|p| p.back.as_ref()) {
+        back.keep();
+    }
+    entry.replies.ledger().entered(entry.phone, entry.session, Instant::now());
+    if !pc.keys.paste() {
+        return Answer::failed(Failed::Input);
+    }
+
+    // Settle, then everything that can have changed.
+    pc.desk.wait(SETTLE);
+    let interrupted = Answer::failed(Failed::Interrupted);
+    if !focused_on(pc.windows, &front, mark) || pc.desk.locked() != Some(false) {
+        return interrupted;
+    }
+    match pc.host.place(entry.session) {
+        Ok(Found::Place(again)) if same_run(&again, place) && session_allows(&again).is_ok() => {}
+        _ => return interrupted,
+    }
+
+    // Enter.
+    if !pc.keys.enter() {
+        return Answer::failed(Failed::Input);
+    }
+    Answer::of(Outcome::Sent)
+}
+
+/// The same run of the agent on the same terminal: a pty freed and reused
+/// in between would have another process on it.
+fn same_run(again: &Place, place: &Place) -> bool {
+    again.pid == place.pid && again.start_ticks == place.start_ticks && again.tty == place.tty
+}
+
+/// Brings `front` forward and waits for it to have the focus.
+fn bring_forward<H: Host, W: Windows, K: Keys, D: Desk>(
+    pc: &Pc<'_, H, W, K, D>,
+    front: &Front,
+) -> Result<(), Outcome> {
+    if !pc.windows.activate(front.id) {
+        return Err(Outcome::Failed(Failed::Focus));
     }
     let mut waited = Duration::ZERO;
-    while !focused_on(pc.windows, &resolved) {
+    while !focused_on(pc.windows, front, None) {
         if waited >= FOCUS_WAIT {
-            return Ok(Answer::failed(Failed::Focus).at(&resolved));
+            return Err(Outcome::Failed(Failed::Focus));
+        }
+        pc.desk.wait(FOCUS_POLL);
+        waited += FOCUS_POLL;
+    }
+    Ok(())
+}
+
+/// The title proof: a one-time title on the session's terminal, the window
+/// or tab showing it brought forward, and, for a session found by its
+/// command line, its newest text on the screen. Past `deadline`, the
+/// refusal of the step it's in.
+fn title_proof<'a, H: Host, W: Windows, K: Keys, D: Desk>(
+    pc: &Pc<'a, H, W, K, D>,
+    place: &Place,
+    resolved: &Resolved,
+    tty: u32,
+    deadline: Instant,
+    trail: &mut Trail,
+) -> Result<Proven<'a, W>, Outcome> {
+    let refused = Outcome::Refused;
+    let pid = resolved.emulator.pid;
+    let route = resolved.terminal.tabs;
+
+    // The title, and where it shows. Once more with a new one when it
+    // showed nowhere: the agent may have set its own title just then.
+    let mut second = false;
+    let (titled, mark, seen) = loop {
+        let mark = new_mark();
+        if !pc.windows.title_mark(tty, &mark) {
+            return Err(refused(Refused::Unproven));
+        }
+        let titled = Titled { windows: pc.windows, tty };
+        match seen_where(pc, pid, &mark, route, deadline) {
+            Seen::Nowhere if !second && pc.desk.now() <= deadline => second = true,
+            Seen::Nowhere => return Err(refused(Refused::Unproven)),
+            Seen::Several => return Err(refused(Refused::Ambiguous)),
+            seen => break (titled, mark, seen),
+        }
+    };
+
+    // Its window forward, and its tab selected. G7 moves only to the tab it
+    // knows has the title; it never steps through tabs to look.
+    let mut back = None;
+    let front = match seen {
+        Seen::Window(window) => {
+            trail.tab = "front";
+            let front = Front { id: window.id, pid, class: window.class };
+            bring_forward(pc, &front)?;
+            front
+        }
+        Seen::Tab(spot) => {
+            if spot.tabs > MAX_TABS {
+                return Err(refused(Refused::Tab));
+            }
+            let window = spot_window(pc.windows, pid, &spot)?;
+            let front = Front { id: window.id, pid, class: window.class };
+            bring_forward(pc, &front)?;
+            if spot.at == spot.selected {
+                trail.tab = "front";
+            } else {
+                // Armed first: a switch that stopped half-way goes back too.
+                let going_back = back.insert(Back {
+                    windows: pc.windows,
+                    pid,
+                    mark: mark.clone(),
+                    at: spot.selected,
+                    route,
+                    armed: std::cell::Cell::new(true),
+                });
+                let before = pc.windows.select_tab(pid, &mark, route).map_err(|_| refused(Refused::Tab))?;
+                going_back.at = before;
+                trail.tab = "switched";
+                trail.steps = spot.at.abs_diff(before);
+                if pc.desk.now() > deadline {
+                    return Err(refused(Refused::Tab));
+                }
+            }
+            front
+        }
+        Seen::Several | Seen::Nowhere => return Err(refused(Refused::Unproven)),
+    };
+
+    // The gate: the window in front shows the title, so its selected tab is
+    // the session's terminal.
+    if pc.desk.locked() != Some(false) {
+        return Err(refused(Refused::Locked));
+    }
+    let not_shown = refused(if back.is_some() { Refused::Tab } else { Refused::Unproven });
+    let mut waited = Duration::ZERO;
+    while !focused_on(pc.windows, &front, Some(&mark)) {
+        if waited >= TAB_WAIT || pc.desk.now() > deadline {
+            return Err(not_shown);
         }
         pc.desk.wait(FOCUS_POLL);
         waited += FOCUS_POLL;
     }
 
-    // Step 6: the proof, now that it's in front.
-    if !resolved.structural {
-        match pc.windows.terminal_text(resolved.emulator.pid) {
+    // A process found by its command line may have switched sessions inside
+    // (Codex's `/resume`): the terminal must show the session's newest text.
+    if !by_status_file(place) {
+        if pc.desk.now() > deadline {
+            return Err(refused(Refused::Unproven));
+        }
+        match pc.windows.terminal_text(pid) {
             Some(screen) if shows_a_mark(&screen, &place.marks) => {}
-            Some(_) => return Ok(Answer::refused(Refused::Tab).at(&resolved)),
-            None => return Ok(Answer::refused(Refused::Ambiguous).at(&resolved)),
+            Some(_) => return Err(refused(Refused::Unproven)),
+            None => return Err(refused(Refused::Ambiguous)),
         }
     }
+    Ok(Proven { front, mark, back, _titled: titled })
+}
 
-    // Step 7: PRIMARY, still in front, the chord.
-    if !pc.windows.set_primary(&text) {
-        return Ok(Answer::refused(Refused::Setup).at(&resolved));
+/// Where the title `mark` shows: on the terminal's windows, looked at for
+/// [`TITLE_WAIT`] (a window's title is its selected tab's), else on one of
+/// their tabs.
+fn seen_where<H: Host, W: Windows, K: Keys, D: Desk>(
+    pc: &Pc<'_, H, W, K, D>,
+    pid: u32,
+    mark: &str,
+    route: TabRoute,
+    deadline: Instant,
+) -> Seen {
+    let mut waited = Duration::ZERO;
+    loop {
+        let mut showing: Vec<Win> = pc
+            .windows
+            .list()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|w| w.pid == pid && w.normal && w.title.contains(mark))
+            .collect();
+        match showing.len() {
+            0 => {}
+            1 => return Seen::Window(showing.remove(0)),
+            _ => return Seen::Several,
+        }
+        if pc.desk.now() > deadline {
+            return Seen::Nowhere;
+        }
+        if waited >= TITLE_WAIT {
+            break;
+        }
+        pc.desk.wait(FOCUS_POLL);
+        waited += FOCUS_POLL;
     }
-    let _primary = Primary { windows: pc.windows, text: &text };
-    if !focused_on(pc.windows, &resolved) {
-        return Ok(Answer::failed(Failed::Focus).at(&resolved));
+    match pc.windows.tab_titled(pid, mark, route) {
+        Some(mut spots) if spots.len() == 1 => Seen::Tab(spots.remove(0)),
+        Some(spots) if spots.len() > 1 => Seen::Several,
+        _ => Seen::Nowhere,
     }
-    replies.ledger().entered(phone, &ask.session, Instant::now());
-    if !pc.keys.paste() {
-        return Ok(Answer::failed(Failed::Input).at(&resolved));
-    }
+}
 
-    // Step 8: settle, then everything that can have changed.
-    pc.desk.wait(SETTLE);
-    let interrupted = Answer::failed(Failed::Interrupted).at(&resolved);
-    if !focused_on(pc.windows, &resolved) || pc.desk.locked() != Some(false) {
-        return Ok(interrupted);
+/// The window a tab is in: the terminal's only window, else the one whose
+/// title is that of the tab's window.
+fn spot_window<W: Windows>(windows: &W, pid: u32, spot: &TabSpot) -> Result<Win, Outcome> {
+    let listed = windows.list().ok_or(Outcome::Refused(Refused::Setup))?;
+    let mut own: Vec<Win> = listed.into_iter().filter(|w| w.pid == pid && w.normal).collect();
+    if own.is_empty() {
+        return Err(Outcome::Refused(Refused::NoWindow));
     }
-    match pc.host.place(&ask.session) {
-        Ok(Found::Place(again))
-            if again.pid == place.pid
-                && again.start_ticks == place.start_ticks
-                && session_allows(&again).is_ok() => {}
-        _ => return Ok(interrupted),
+    if own.len() > 1 {
+        let title = cut(&spot.frame_title, WINDOW_TITLE_BYTES);
+        own.retain(|w| w.title == title);
     }
-
-    // Step 9: Enter.
-    if !pc.keys.enter() {
-        return Ok(Answer::failed(Failed::Input).at(&resolved));
+    match own.len() {
+        1 => Ok(own.remove(0)),
+        _ => Err(Outcome::Refused(Refused::Ambiguous)),
     }
-    Ok(Answer::of(Outcome::Sent).at(&resolved))
 }
 
 // ---- This PC ----
@@ -1258,8 +1637,8 @@ pub(crate) fn replies() -> &'static Replies {
     REPLIES.get_or_init(Replies::default)
 }
 
-/// GNOME Shell's companion extension, the accessibility bus and the
-/// desktop entries.
+/// GNOME Shell's companion extension, the accessibility bus, the session's
+/// terminal device and the desktop entries.
 #[derive(Debug)]
 pub(crate) struct LiveWindows;
 
@@ -1303,13 +1682,30 @@ impl Windows for LiveWindows {
         crate::sys::text_focus::focused_terminal_text(pid)
     }
 
-    fn terminal_frames(&self, pid: u32) -> Option<Vec<Frame>> {
-        let frames = crate::sys::text_focus::terminal_frames(pid)?;
-        Some(frames.into_iter().map(|f| Frame { title: f.title, active: f.active, text: f.text }).collect())
-    }
-
     fn app_name(&self, class: &str, pid: u32) -> Option<String> {
         crate::sys::app_entry::identify(class, pid).map(|app| app.name.clone())
+    }
+
+    fn title_mark(&self, tty: u32, title: &str) -> bool {
+        crate::sys::tty_title::mark(tty, title)
+    }
+
+    fn title_unmark(&self, tty: u32) {
+        if !crate::sys::tty_title::unmark(tty) {
+            tracing::info!("a terminal's title couldn't be put back after a phone's reply");
+        }
+    }
+
+    fn tab_titled(&self, pid: u32, mark: &str, route: TabRoute) -> Option<Vec<TabSpot>> {
+        crate::sys::text_focus::tab_titled(pid, mark, route)
+    }
+
+    fn select_tab(&self, pid: u32, mark: &str, route: TabRoute) -> Result<usize, TabError> {
+        crate::sys::text_focus::select_tab(pid, mark, route)
+    }
+
+    fn select_tab_at(&self, pid: u32, mark: &str, at: usize, route: TabRoute) -> bool {
+        crate::sys::text_focus::select_tab_at(pid, mark, at, route)
     }
 }
 
@@ -1343,8 +1739,8 @@ impl Desk for LiveDesk {
         crate::sys::input::lock_state()
     }
 
-    fn owner_active(&self) -> Option<bool> {
-        crate::sys::text_focus::someone_at_pc(OWNER_AWAY)
+    fn free_in(&self) -> Option<Duration> {
+        crate::sys::text_focus::free_in(OWNER_AWAY)
     }
 
     fn phone_typing(&self) -> bool {
@@ -1353,6 +1749,10 @@ impl Desk for LiveDesk {
 
     fn wait(&self, how_long: Duration) {
         std::thread::sleep(how_long);
+    }
+
+    fn now(&self) -> Instant {
+        Instant::now()
     }
 }
 

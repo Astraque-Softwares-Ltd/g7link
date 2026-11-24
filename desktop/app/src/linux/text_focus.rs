@@ -15,10 +15,12 @@
 //! the rest only when asked: while a phone watches, the app that has the
 //! focus is asked once ([`wake`]), unless the user turned that off.
 //!
-//! For a phone's reply into a session (`agents::reply`), it also reads the
-//! text of a terminal app's one exposed terminal per window, bounded in
-//! size and time, to prove which session is on screen. That text is
-//! compared and dropped: never kept, logged or sent.
+//! For a phone's reply into a session (`agents::reply`), it also finds a
+//! terminal app's tab by a title G7 wrote on it and selects that tab (by the
+//! window's `page.next` / `page.previous` actions, or a tab list's
+//! `Selection`; never a key or a click), and reads the text of the focused
+//! terminal, bounded in size and time, to prove which session is on screen.
+//! Titles and text are compared and dropped: never kept, logged or sent.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -35,6 +37,8 @@ use super::shell_windows::{self, Window};
 const REGISTRY: &str = "org.a11y.atspi.Registry";
 const REGISTRY_PATH: &str = "/org/a11y/atspi/registry";
 const ACCESSIBLE: &str = "org.a11y.atspi.Accessible";
+const ACTION: &str = "org.a11y.atspi.Action";
+const SELECTION: &str = "org.a11y.atspi.Selection";
 const TEXT: &str = "org.a11y.atspi.Text";
 const HYPERTEXT: &str = "org.a11y.atspi.Hypertext";
 const HYPERLINK: &str = "org.a11y.atspi.Hyperlink";
@@ -53,11 +57,16 @@ const STATE_ACTIVE: u32 = 1;
 const STATE_EDITABLE: u32 = 7;
 const STATE_FOCUSED: u32 = 12;
 const STATE_MULTI_LINE: u32 = 17;
+const STATE_SELECTED: u32 = 23;
 const STATE_SHOWING: u32 = 25;
 /// `ATSPI_ROLE_PASSWORD_TEXT`, `ATSPI_ROLE_TERMINAL` (VTE terminals such as
 /// GNOME Terminal and Ptyxis publish it), `ATSPI_ROLE_PARAGRAPH`,
 /// `ATSPI_ROLE_APPLICATION` and `ATSPI_ROLE_DOCUMENT_WEB`.
 const ROLE_PASSWORD_TEXT: u32 = 40;
+/// `ATSPI_ROLE_PAGE_TAB`, `ATSPI_ROLE_PAGE_TAB_LIST` and `ATSPI_ROLE_PANEL`.
+const ROLE_PAGE_TAB: u32 = 37;
+const ROLE_PAGE_TAB_LIST: u32 = 38;
+const ROLE_PANEL: u32 = 39;
 const ROLE_TERMINAL: u32 = 60;
 const ROLE_PARAGRAPH: u32 = 73;
 const ROLE_APPLICATION: u32 = 75;
@@ -119,6 +128,16 @@ const TERMINAL_CALL: Duration = Duration::from_millis(150);
 const TERMINALS_SEEN: usize = 32;
 /// Between looks for the focused terminal of a window just brought forward.
 const TERMINAL_RETRY: Duration = Duration::from_millis(100);
+/// Finding or switching a terminal's tab: how long one of those may take,
+/// the most tabs a window may have, how long one step has to show, and the
+/// most actions a window may list.
+const TAB_TIME: Duration = Duration::from_millis(1500);
+pub const MAX_TABS: usize = 16;
+const TAB_STEP: Duration = Duration::from_millis(150);
+/// How long a window just brought forward has to say it's the active one.
+const TAB_ACTIVE: Duration = Duration::from_millis(500);
+const TAB_POLL: Duration = Duration::from_millis(25);
+const MAX_ACTIONS: i32 = 64;
 
 /// The object that has the focus.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -265,17 +284,22 @@ impl Bursts {
     }
 }
 
-/// Whether someone used this PC's own keyboard or mouse within `within`,
-/// not counting a phone's input; `None` when the desktop doesn't say how
+/// How long until nobody will have used this PC's own keyboard or mouse
+/// for `within`, if nobody touches them meanwhile: zero when nobody has (a
+/// phone's input doesn't count); `None` when the desktop doesn't say how
 /// long it has been idle.
-pub fn someone_at_pc(within: Duration) -> Option<bool> {
+pub fn free_in(within: Duration) -> Option<Duration> {
     let idle = Duration::from_millis(super::input::idle_ms()?);
-    if idle >= within {
-        return Some(false);
-    }
-    let Some(activity) = Instant::now().checked_sub(idle) else { return Some(true) };
-    let bursts = *BURSTS.lock().unwrap_or_else(|e| e.into_inner());
-    Some(!bursts.holds(activity))
+    let ours = idle < within
+        && Instant::now()
+            .checked_sub(idle)
+            .is_some_and(|activity| BURSTS.lock().unwrap_or_else(|e| e.into_inner()).holds(activity));
+    Some(free_after(idle, within, ours))
+}
+
+/// [`free_in`] for input `idle` ago, which was the phone's own when `ours`.
+fn free_after(idle: Duration, within: Duration, ours: bool) -> Duration {
+    if ours { Duration::ZERO } else { within.saturating_sub(idle) }
 }
 
 /// Whether a phone's input is being typed now.
@@ -1257,48 +1281,6 @@ fn property<T: TryFrom<OwnedValue>>(
     T::try_from(value).ok()
 }
 
-/// A window of a terminal app with one exposed terminal (in Ptyxis, the
-/// selected tab's): its title, whether it's the app's active window, and
-/// the end of the terminal's text. Compared, then dropped; never logged.
-#[derive(Clone, PartialEq, Eq)]
-pub struct TerminalFrame {
-    pub title: String,
-    pub active: bool,
-    pub text: String,
-}
-
-impl std::fmt::Debug for TerminalFrame {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("TerminalFrame")
-            .field("active", &self.active)
-            .field("text_len", &self.text.len())
-            .finish()
-    }
-}
-
-/// Each window of the app with `pid` that shows exactly one terminal, read
-/// without bringing any forward. `None` when the app isn't on the
-/// accessibility bus or the look ran out of time.
-pub fn terminal_frames(pid: u32) -> Option<Vec<TerminalFrame>> {
-    let deadline = Instant::now() + TERMINAL_TIME;
-    super::non_tokio(move || {
-        let conn = a11y_bus_waiting(TERMINAL_CALL)?;
-        let app = app_of(&conn, pid)?;
-        let mut frames = Vec::new();
-        for frame in children(&conn, &app)?.into_iter().take(TERMINAL_FRAMES) {
-            if Instant::now() > deadline {
-                return None;
-            }
-            let Some(found) = one_terminal(&conn, &frame, deadline) else { continue };
-            let states = call::<Vec<u32>>(&conn, &frame, ACCESSIBLE, "GetState", &()).unwrap_or_default();
-            let Some(text) = terminal_tail(&conn, &found.terminal) else { continue };
-            let title = property::<String>(&conn, &frame, ACCESSIBLE, "Name").unwrap_or_default();
-            frames.push(TerminalFrame { title, active: has_state(&states, STATE_ACTIVE), text });
-        }
-        Some(frames)
-    })
-}
-
 /// The end of the text of the focused terminal in the active window of the
 /// app with `pid`, at most 64 KiB, within 500 ms. `None` when no window of
 /// it is active, the active one doesn't show exactly one terminal, the
@@ -1398,6 +1380,434 @@ fn terminal_tail(conn: &zbus::blocking::Connection, terminal: &Object) -> Option
     Some(cut_front(&text, TERMINAL_TEXT_BYTES).0)
 }
 
+// ---- A terminal's tabs, for a reply (`plans/reply-tabs-idle.md` §3) ----
+
+/// How a terminal app's tabs are found and switched on the accessibility bus.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TabRoute {
+    /// Ptyxis (libadwaita): one panel per tab in the tab view, named by the
+    /// tab's title, and the window's `page.next` / `page.previous` actions.
+    AdwPages,
+    /// GNOME Terminal (GTK 3): the notebook's page tab list and its `Selection`.
+    Notebook,
+}
+
+/// Why a tab wasn't selected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TabError {
+    /// The app's active window has no tab with the title, or several.
+    NotFound,
+    /// The window has more than [`MAX_TABS`] tabs.
+    TooMany,
+    /// The window doesn't offer the way, or didn't move as asked.
+    CantSwitch,
+    /// It took longer than [`TAB_TIME`].
+    TimedOut,
+}
+
+/// Where a tab titled with a mark is: its window's title (compared, never
+/// logged), its index, the selected tab's index, and how many tabs there are.
+#[derive(Clone, PartialEq, Eq)]
+pub struct TabSpot {
+    pub frame_title: String,
+    pub at: usize,
+    pub selected: usize,
+    pub tabs: usize,
+}
+
+impl std::fmt::Debug for TabSpot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TabSpot")
+            .field("at", &self.at)
+            .field("selected", &self.selected)
+            .field("tabs", &self.tabs)
+            .finish_non_exhaustive()
+    }
+}
+
+/// A window's tab actions: the only accessibility actions G7 ever runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Page {
+    Next,
+    Previous,
+}
+
+impl Page {
+    fn name(self) -> &'static str {
+        match self {
+            Page::Next => "page.next",
+            Page::Previous => "page.previous",
+        }
+    }
+
+    /// The step from tab `from` toward tab `to`; `None` once it's there.
+    fn toward(from: usize, to: usize) -> Option<Page> {
+        match to.cmp(&from) {
+            std::cmp::Ordering::Greater => Some(Page::Next),
+            std::cmp::Ordering::Less => Some(Page::Previous),
+            std::cmp::Ordering::Equal => None,
+        }
+    }
+
+    /// The tab one step from `from` this way. G7 never steps past either
+    /// end, so whether a window wraps around doesn't matter.
+    fn after(self, from: usize) -> Option<usize> {
+        match self {
+            Page::Next => from.checked_add(1),
+            Page::Previous => from.checked_sub(1),
+        }
+    }
+}
+
+/// The index of `page`'s action among a window's action `names`, when they
+/// hold exactly one `page.next` and one `page.previous`: a list with none or
+/// duplicates isn't one G7 acts on.
+fn pick_action(names: &[String], page: Page) -> Option<usize> {
+    let count = |name: &str| names.iter().filter(|n| *n == name).count();
+    if count(Page::Next.name()) != 1 || count(Page::Previous.name()) != 1 {
+        return None;
+    }
+    names.iter().position(|n| n == page.name())
+}
+
+/// The one tab of several that is selected, by a flag each; `None` for
+/// none or more than one.
+fn selected_among(flags: &[bool]) -> Option<usize> {
+    let mut on = flags.iter().enumerate().filter(|(_, on)| **on).map(|(i, _)| i);
+    match (on.next(), on.next()) {
+        (Some(only), None) => Some(only),
+        _ => None,
+    }
+}
+
+/// A tab titled with a mark in one window: the object that holds the
+/// window's tabs, the tab's index among them, the selected one's, and how
+/// many there are.
+#[derive(Debug)]
+struct TabNode {
+    list: Object,
+    at: usize,
+    selected: usize,
+    tabs: usize,
+}
+
+/// Where tabs titled with `mark` are among the windows of the app with
+/// `pid`, read without changing anything. `None` when the app isn't on the
+/// accessibility bus, or the look failed or ran out of time.
+pub fn tab_titled(pid: u32, mark: &str, route: TabRoute) -> Option<Vec<TabSpot>> {
+    if mark.is_empty() {
+        return None;
+    }
+    let deadline = Instant::now() + TAB_TIME;
+    super::non_tokio(move || {
+        let conn = a11y_bus_waiting(TERMINAL_CALL)?;
+        let app = app_of(&conn, pid)?;
+        let mut spots = Vec::new();
+        for frame in children(&conn, &app)?.into_iter().take(TERMINAL_FRAMES) {
+            let nodes = tabs_titled(&conn, &frame, mark, route, deadline)?;
+            if nodes.is_empty() {
+                continue;
+            }
+            let frame_title = property::<String>(&conn, &frame, ACCESSIBLE, "Name").unwrap_or_default();
+            spots.extend(nodes.into_iter().map(|node| TabSpot {
+                frame_title: frame_title.clone(),
+                at: node.at,
+                selected: node.selected,
+                tabs: node.tabs,
+            }));
+        }
+        Some(spots)
+    })
+}
+
+/// In the app's active window, selects the tab titled with `mark`. Returns
+/// the index of the tab that was selected before, to go back to.
+pub fn select_tab(pid: u32, mark: &str, route: TabRoute) -> Result<usize, TabError> {
+    if mark.is_empty() {
+        return Err(TabError::NotFound);
+    }
+    let deadline = Instant::now() + TAB_TIME;
+    super::non_tokio(move || {
+        let conn = a11y_bus_waiting(TERMINAL_CALL).ok_or(TabError::NotFound)?;
+        let app = app_of(&conn, pid).ok_or(TabError::NotFound)?;
+        let frame = active_frame(&conn, &app, deadline)?;
+        let nodes = tabs_titled(&conn, &frame, mark, route, deadline).ok_or(TabError::TimedOut)?;
+        let [node] = nodes.as_slice() else { return Err(TabError::NotFound) };
+        if node.tabs > MAX_TABS {
+            return Err(TabError::TooMany);
+        }
+        move_tab(&conn, &frame, node, node.at, route, deadline)?;
+        Ok(node.selected)
+    })
+}
+
+/// The app's one active window. A window just brought forward tells its
+/// toolkit a moment later, so it's looked for again until [`TAB_ACTIVE`].
+fn active_frame(
+    conn: &zbus::blocking::Connection,
+    app: &Object,
+    deadline: Instant,
+) -> Result<Object, TabError> {
+    let until = (Instant::now() + TAB_ACTIVE).min(deadline);
+    loop {
+        let frames = children(conn, app).ok_or(TabError::NotFound)?;
+        let mut active: Vec<Object> =
+            frames.into_iter().take(TERMINAL_FRAMES).filter(|frame| is_active(conn, frame)).collect();
+        match active.len() {
+            1 => return Ok(active.remove(0)),
+            0 if Instant::now() + TERMINAL_RETRY <= until => std::thread::sleep(TERMINAL_RETRY),
+            _ => return Err(TabError::NotFound),
+        }
+    }
+}
+
+/// Selects tab `at` again in the one window that has a tab titled with
+/// `mark`: going back when a reply wasn't pasted. Best effort.
+pub fn select_tab_at(pid: u32, mark: &str, at: usize, route: TabRoute) -> bool {
+    if mark.is_empty() {
+        return false;
+    }
+    let deadline = Instant::now() + TAB_TIME;
+    super::non_tokio(move || {
+        let Some(conn) = a11y_bus_waiting(TERMINAL_CALL) else { return false };
+        let Some(app) = app_of(&conn, pid) else { return false };
+        let Some(frames) = children(&conn, &app) else { return false };
+        let mut holding = Vec::new();
+        for frame in frames.into_iter().take(TERMINAL_FRAMES) {
+            let Some(nodes) = tabs_titled(&conn, &frame, mark, route, deadline) else { return false };
+            holding.extend(nodes.into_iter().map(|node| (frame.clone(), node)));
+        }
+        let [(frame, node)] = holding.as_slice() else { return false };
+        node.tabs <= MAX_TABS && move_tab(&conn, frame, node, at, route, deadline).is_ok()
+    })
+}
+
+fn is_active(conn: &zbus::blocking::Connection, frame: &Object) -> bool {
+    call::<Vec<u32>>(conn, frame, ACCESSIBLE, "GetState", &())
+        .is_some_and(|states| has_state(&states, STATE_ACTIVE))
+}
+
+/// The tabs in `frame` titled with `mark`, built the way `route` says.
+/// `None` when the walk failed or ran out of objects or time.
+fn tabs_titled(
+    conn: &zbus::blocking::Connection,
+    frame: &Object,
+    mark: &str,
+    route: TabRoute,
+    deadline: Instant,
+) -> Option<Vec<TabNode>> {
+    /// An object to look at, how deep it is, and its parent with the parent's role.
+    struct Visit {
+        object: Object,
+        depth: usize,
+        up: Option<(Object, u32)>,
+    }
+    let mut found = Vec::new();
+    let mut stack = vec![Visit { object: frame.clone(), depth: 0, up: None }];
+    let mut seen = 0;
+    while let Some(Visit { object, depth, up }) = stack.pop() {
+        seen += 1;
+        if seen > TERMINAL_NODES || Instant::now() > deadline {
+            return None;
+        }
+        let Some(role) = role(conn, &object) else { continue };
+        let up_role = up.as_ref().map(|(_, role)| *role);
+        let a_tab = match route {
+            TabRoute::AdwPages => role == ROLE_PANEL && up_role.is_some_and(|r| r != ROLE_PAGE_TAB_LIST),
+            TabRoute::Notebook => role == ROLE_PAGE_TAB && up_role == Some(ROLE_PAGE_TAB_LIST),
+        };
+        if a_tab
+            && let Some((list, _)) = &up
+            && property::<String>(conn, &object, ACCESSIBLE, "Name").is_some_and(|name| name.contains(mark))
+            && let Some(node) = tab_in(conn, list, &object, route, deadline)
+        {
+            found.push(node);
+            continue;
+        }
+        // A terminal holds no tabs, nor does a notebook's page.
+        let leaf = role == ROLE_TERMINAL || (route == TabRoute::Notebook && role == ROLE_PAGE_TAB);
+        if leaf || depth >= TERMINAL_DEPTH {
+            continue;
+        }
+        if let Some(kids) = children(conn, &object) {
+            stack.extend(kids.into_iter().rev().map(|kid| Visit {
+                object: kid,
+                depth: depth + 1,
+                up: Some((object.clone(), role)),
+            }));
+        }
+    }
+    Some(found)
+}
+
+/// `tab` as one of the tabs of `list`; `None` when `list` isn't a tab list
+/// the way `route` builds one, or not exactly one tab of it is selected.
+fn tab_in(
+    conn: &zbus::blocking::Connection,
+    list: &Object,
+    tab: &Object,
+    route: TabRoute,
+    deadline: Instant,
+) -> Option<TabNode> {
+    let siblings = children(conn, list)?;
+    let at = siblings.iter().position(|sibling| sibling == tab)?;
+    let selected = match route {
+        TabRoute::AdwPages => selected_page(conn, &siblings, deadline)?,
+        TabRoute::Notebook => {
+            let interfaces = call::<Vec<String>>(conn, list, ACCESSIBLE, "GetInterfaces", &())?;
+            if !interfaces.iter().any(|i| i == SELECTION) {
+                return None;
+            }
+            selected_tab(conn, &siblings, deadline)?
+        }
+    };
+    Some(TabNode { list: list.clone(), at, selected, tabs: siblings.len() })
+}
+
+/// The selected tab of Ptyxis's tab view: every tab is a panel, and only
+/// the selected one has anything under it, a terminal among it.
+fn selected_page(conn: &zbus::blocking::Connection, pages: &[Object], deadline: Instant) -> Option<usize> {
+    let mut built = Vec::with_capacity(pages.len());
+    for page in pages {
+        if Instant::now() > deadline || role(conn, page)? != ROLE_PANEL {
+            return None;
+        }
+        built.push(!children(conn, page)?.is_empty());
+    }
+    let selected = selected_among(&built)?;
+    holds_terminal(conn, &pages[selected], deadline).then_some(selected)
+}
+
+/// The selected tab of a GTK notebook's tab list: its one page tab with the
+/// `SELECTED` state.
+fn selected_tab(conn: &zbus::blocking::Connection, tabs: &[Object], deadline: Instant) -> Option<usize> {
+    let mut selected = Vec::with_capacity(tabs.len());
+    for tab in tabs {
+        if Instant::now() > deadline || role(conn, tab)? != ROLE_PAGE_TAB {
+            return None;
+        }
+        let states = call::<Vec<u32>>(conn, tab, ACCESSIBLE, "GetState", &())?;
+        selected.push(has_state(&states, STATE_SELECTED));
+    }
+    selected_among(&selected)
+}
+
+/// Whether a terminal is under `object`, within the walk's bounds.
+fn holds_terminal(conn: &zbus::blocking::Connection, object: &Object, deadline: Instant) -> bool {
+    let mut stack = vec![(object.clone(), 0usize)];
+    let mut seen = 0;
+    while let Some((object, depth)) = stack.pop() {
+        seen += 1;
+        if seen > TERMINAL_NODES || Instant::now() > deadline {
+            return false;
+        }
+        if role(conn, &object) == Some(ROLE_TERMINAL) {
+            return true;
+        }
+        if depth < TERMINAL_DEPTH
+            && let Some(kids) = children(conn, &object)
+        {
+            stack.extend(kids.into_iter().map(|kid| (kid, depth + 1)));
+        }
+    }
+    false
+}
+
+/// Selects tab `to` of `node`'s list in `frame`, and waits until it shows.
+fn move_tab(
+    conn: &zbus::blocking::Connection,
+    frame: &Object,
+    node: &TabNode,
+    to: usize,
+    route: TabRoute,
+    deadline: Instant,
+) -> Result<(), TabError> {
+    if to >= node.tabs {
+        return Err(TabError::NotFound);
+    }
+    match route {
+        TabRoute::AdwPages => {
+            // One step at a time, each one seen before the next.
+            let mut selected = node.selected;
+            while let Some(page) = Page::toward(selected, to) {
+                if Instant::now() > deadline {
+                    return Err(TabError::TimedOut);
+                }
+                run_page_action(conn, frame, page)?;
+                selected = page_moved(conn, &node.list, selected, page, deadline)?;
+            }
+            Ok(())
+        }
+        TabRoute::Notebook => {
+            if node.selected == to {
+                return Ok(());
+            }
+            let index = i32::try_from(to).map_err(|_| TabError::CantSwitch)?;
+            if call::<bool>(conn, &node.list, SELECTION, "SelectChild", &(index,)) != Some(true) {
+                return Err(TabError::CantSwitch);
+            }
+            let until = (Instant::now() + TAB_STEP).min(deadline);
+            loop {
+                let shown = children(conn, &node.list).and_then(|tabs| selected_tab(conn, &tabs, deadline));
+                if shown == Some(to) {
+                    return Ok(());
+                }
+                if Instant::now() >= until {
+                    return Err(TabError::CantSwitch);
+                }
+                std::thread::sleep(TAB_POLL);
+            }
+        }
+    }
+}
+
+/// Runs the window's `page` action by its name: every action's name is read,
+/// the index taken from this read, and the name at that index read once
+/// more right before running it. The same list holds `page.close` and
+/// `window.close`, so an index is never reused or guessed.
+fn run_page_action(conn: &zbus::blocking::Connection, frame: &Object, page: Page) -> Result<(), TabError> {
+    let count = property::<i32>(conn, frame, ACTION, "NActions").ok_or(TabError::CantSwitch)?;
+    if !(0..=MAX_ACTIONS).contains(&count) {
+        return Err(TabError::CantSwitch);
+    }
+    let names = (0..count)
+        .map(|i| call::<String>(conn, frame, ACTION, "GetName", &(i,)))
+        .collect::<Option<Vec<String>>>()
+        .ok_or(TabError::CantSwitch)?;
+    let index = pick_action(&names, page).and_then(|i| i32::try_from(i).ok()).ok_or(TabError::CantSwitch)?;
+    if call::<String>(conn, frame, ACTION, "GetName", &(index,)).as_deref() != Some(page.name()) {
+        return Err(TabError::CantSwitch);
+    }
+    if call::<bool>(conn, frame, ACTION, "DoAction", &(index,)) != Some(true) {
+        return Err(TabError::CantSwitch);
+    }
+    Ok(())
+}
+
+/// After `page` from tab `from`: the selected tab, once it's the next one
+/// that way, within [`TAB_STEP`]. Any other move is refused.
+fn page_moved(
+    conn: &zbus::blocking::Connection,
+    list: &Object,
+    from: usize,
+    page: Page,
+    deadline: Instant,
+) -> Result<usize, TabError> {
+    let wanted = page.after(from).ok_or(TabError::CantSwitch)?;
+    let until = (Instant::now() + TAB_STEP).min(deadline);
+    loop {
+        match children(conn, list).and_then(|pages| selected_page(conn, &pages, deadline)) {
+            Some(shown) if shown == wanted => return Ok(shown),
+            Some(shown) if shown != from => return Err(TabError::CantSwitch),
+            _ => {}
+        }
+        if Instant::now() >= until {
+            return Err(TabError::CantSwitch);
+        }
+        std::thread::sleep(TAB_POLL);
+    }
+}
+
 /// `text` cut to at most `max` bytes, on a character boundary.
 fn cut(text: &str, max: usize) -> String {
     let end = (0..=max.min(text.len())).rev().find(|&i| text.is_char_boundary(i)).unwrap_or(0);
@@ -1487,10 +1897,64 @@ mod tests {
     }
 
     #[test]
-    fn a_terminal_frame_shows_no_text_in_logs() {
-        let frame = TerminalFrame { title: "claude".into(), active: true, text: "my secret".into() };
-        let shown = format!("{frame:?}");
-        assert!(!shown.contains("secret") && !shown.contains("claude"), "{shown}");
+    fn the_pc_is_free_once_nobody_used_it_for_a_while() {
+        let s = Duration::from_secs;
+        let ms = Duration::from_millis;
+        assert_eq!(free_after(s(7), s(5), false), Duration::ZERO);
+        assert_eq!(free_after(s(5), s(5), false), Duration::ZERO);
+        assert_eq!(free_after(ms(1200), s(5), false), ms(3800));
+        assert_eq!(free_after(Duration::ZERO, s(5), false), s(5));
+        assert_eq!(free_after(ms(300), s(5), true), Duration::ZERO, "the phone's own input");
+    }
+
+    #[test]
+    fn only_a_page_action_found_by_its_name_is_run() {
+        // Ptyxis 50.1's frame: 23 actions, not in name order.
+        let mut names: Vec<String> = (0..23).map(|i| format!("win.action-{i}")).collect();
+        names[3] = "page.close".into();
+        names[4] = "page.close-others".into();
+        names[7] = "page.detach".into();
+        names[9] = "window.close".into();
+        names[11] = "page.previous".into();
+        names[15] = "page.next".into();
+        assert_eq!(pick_action(&names, Page::Next), Some(15));
+        assert_eq!(pick_action(&names, Page::Previous), Some(11));
+
+        let mut twice = names.clone();
+        twice[20] = "page.next".into();
+        assert_eq!(pick_action(&twice, Page::Next), None, "duplicates");
+        assert_eq!(pick_action(&twice, Page::Previous), None);
+        let mut one_way = names.clone();
+        one_way[11] = "page.move-left".into();
+        assert_eq!(pick_action(&one_way, Page::Next), None, "both or none");
+        assert_eq!(pick_action(&[], Page::Next), None);
+    }
+
+    #[test]
+    fn steps_go_one_tab_at_a_time_toward_the_tab() {
+        assert_eq!(Page::toward(0, 2), Some(Page::Next));
+        assert_eq!(Page::toward(3, 1), Some(Page::Previous));
+        assert_eq!(Page::toward(2, 2), None);
+        assert_eq!(Page::Next.after(1), Some(2));
+        assert_eq!(Page::Previous.after(1), Some(0));
+        assert_eq!(Page::Previous.after(0), None, "never past the first");
+    }
+
+    #[test]
+    fn one_tab_is_the_selected_one() {
+        assert_eq!(selected_among(&[false, true, false]), Some(1));
+        assert_eq!(selected_among(&[true]), Some(0));
+        assert_eq!(selected_among(&[true, false, true]), None);
+        assert_eq!(selected_among(&[false, false]), None);
+        assert_eq!(selected_among(&[]), None);
+    }
+
+    #[test]
+    fn a_tab_spot_shows_no_title_in_logs() {
+        let spot =
+            TabSpot { frame_title: "G7 0123456789abcdef — claude".into(), at: 2, selected: 0, tabs: 3 };
+        let shown = format!("{spot:?}");
+        assert!(!shown.contains("G7") && !shown.contains("claude"), "{shown}");
     }
 
     #[test]

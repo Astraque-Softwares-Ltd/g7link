@@ -580,7 +580,7 @@ Column {
                     readonly property bool sessionsOn: phone.agentsOn && area.toggleOn(phone.deviceId, "agent_sessions")
                     indent: 30
                     title: qsTr("%1 can reply to sessions on this PC").arg(phone.name)
-                    description: qsTr("Brings the session's terminal window forward, pastes the reply and presses Enter. Never while the PC is locked or in use.")
+                    description: qsTr("Brings the session's terminal window and its tab forward, pastes the reply and presses Enter. Never while the PC is locked; it waits while the PC is in use.")
                     Toggle {
                         enabled: replyLine.sessionsOn
                         label: qsTr("%1 can reply to sessions on this PC").arg(phone.name)

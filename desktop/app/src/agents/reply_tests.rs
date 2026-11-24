@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! The reply sequence on a fake PC: one world plays the host, the windows,
-//! the keyboard and the desk, and records every call, so each test says
-//! which keys were pressed. No real window, session, clipboard or keyboard.
+//! The reply sequence on a fake PC: one world plays the host, the windows
+//! and their tabs, the terminal's title, the keyboard and the desk, and
+//! records every call, so each test says which keys were pressed and which
+//! titles were written and put back. No real window, pty, session,
+//! accessibility bus, clipboard or keyboard.
 
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
@@ -13,35 +15,64 @@ const PHONE: &str = "phone-a";
 const SESSION: &str = "sc0123";
 const MARK: &str = "Thequickbrownfoxjumpsoverthelazydog";
 /// Ptyxis (pid 100) with one window (7); the agent (pid 300) under bash
-/// (200) and ptyxis-agent (150); the owner's file manager (pid 50, window 1)
-/// in front.
+/// (200) and ptyxis-agent (150), on pts/0; the owner's file manager (pid 50,
+/// window 1) in front.
 const EMULATOR: u32 = 100;
 const WINDOW: u64 = 7;
+/// The session's terminal (`/dev/pts/0`), and other tabs' (pts/1, pts/2).
+const TTY: u32 = 34816;
+const OTHER_TTY: u32 = 34817;
+const THIRD_TTY: u32 = 34818;
+/// The session's tab as Ptyxis titles it.
+const CLAUDE_TITLE: &str = "✳ Claude Code — claude ";
 
 type Hook = Box<dyn Fn(&World)>;
+
+/// A terminal tab: its pty, its title, and the titles pushed under it.
+#[derive(Debug, Clone)]
+struct Tab {
+    tty: u32,
+    title: String,
+    pushed: Vec<String>,
+}
 
 struct World {
     log: RefCell<Vec<String>>,
     places: RefCell<VecDeque<Result<Found, HostDown>>>,
     windows_ready: Cell<bool>,
     wins: RefCell<Option<Vec<Win>>>,
+    /// Per window: its tabs and the selected one; the window's title is
+    /// the selected tab's.
+    tabs: RefCell<Vec<(u64, Vec<Tab>, usize)>>,
     activate_ok: Cell<bool>,
     activate_focuses: Cell<bool>,
-    frames: RefCell<Option<Vec<Frame>>>,
     screen: RefCell<Option<String>>,
     primary: RefCell<Option<String>>,
     primary_ok: Cell<bool>,
     app: RefCell<Option<String>>,
+    /// The pty can be written to.
+    title_ok: Cell<bool>,
+    /// The terminal shows a title written to it (false: a fixed title).
+    title_shows: Cell<bool>,
+    /// The titles G7 wrote, to look for them where they mustn't be.
+    written: RefCell<Vec<String>>,
+    tabs_readable: Cell<bool>,
+    select_ok: Cell<bool>,
     keys_ready: Cell<bool>,
     paste_ok: Cell<bool>,
     enter_ok: Cell<bool>,
     locked: RefCell<VecDeque<Option<bool>>>,
-    owner: Cell<Option<bool>>,
+    free: Cell<Option<Duration>>,
     typing: Cell<bool>,
     /// The window comes forward after this many looks.
     focus_after_waits: Cell<Option<usize>>,
     after_primary: RefCell<Option<Hook>>,
     after_paste: RefCell<Option<Hook>>,
+    after_select: RefCell<Option<Hook>>,
+    after_mark: RefCell<Option<Hook>>,
+    start: Instant,
+    /// Time passed on the fake clock: every wait, and what hooks add.
+    clock: Cell<Duration>,
 }
 
 fn ancestor(pid: u32, name: &str) -> Ancestor {
@@ -56,7 +87,7 @@ fn place() -> Place {
         state_exact: true,
         pid: 300,
         start_ticks: 3000,
-        tty: Some(34816),
+        tty: Some(TTY),
         foreground: true,
         chain: vec![
             ancestor(200, "bash"),
@@ -87,6 +118,10 @@ fn files_in_front() -> Win {
     Win { focused: true, ..win(1, 50, "org.gnome.Nautilus", "Home") }
 }
 
+fn tab(tty: u32, title: &str) -> Tab {
+    Tab { tty, title: title.into(), pushed: Vec::new() }
+}
+
 impl World {
     fn new() -> Self {
         World {
@@ -95,24 +130,33 @@ impl World {
             windows_ready: Cell::new(true),
             wins: RefCell::new(Some(vec![
                 files_in_front(),
-                win(WINDOW, EMULATOR, "org.gnome.Ptyxis", "claude"),
+                win(WINDOW, EMULATOR, "org.gnome.Ptyxis", CLAUDE_TITLE),
             ])),
+            tabs: RefCell::new(vec![(WINDOW, vec![tab(TTY, CLAUDE_TITLE)], 0)]),
             activate_ok: Cell::new(true),
             activate_focuses: Cell::new(true),
-            frames: RefCell::new(None),
             screen: RefCell::new(None),
             primary: RefCell::new(Some("the owner's selection".into())),
             primary_ok: Cell::new(true),
             app: RefCell::new(Some("Terminal".into())),
+            title_ok: Cell::new(true),
+            title_shows: Cell::new(true),
+            written: RefCell::new(Vec::new()),
+            tabs_readable: Cell::new(true),
+            select_ok: Cell::new(true),
             keys_ready: Cell::new(true),
             paste_ok: Cell::new(true),
             enter_ok: Cell::new(true),
             locked: RefCell::new(VecDeque::from([Some(false)])),
-            owner: Cell::new(Some(false)),
+            free: Cell::new(Some(Duration::ZERO)),
             typing: Cell::new(false),
             focus_after_waits: Cell::new(None),
             after_primary: RefCell::new(None),
             after_paste: RefCell::new(None),
+            after_select: RefCell::new(None),
+            after_mark: RefCell::new(None),
+            start: Instant::now(),
+            clock: Cell::new(Duration::ZERO),
         }
     }
 
@@ -129,14 +173,34 @@ impl World {
         *self.locked.borrow_mut() = answers.into();
     }
 
-    /// Several tabs: the content proof reads the window's terminal.
-    fn tabs(&self, screen: &str) {
-        let mut p = place();
-        p.ptys_under = vec![(200, 1), (150, 3), (EMULATOR, 3)];
-        self.place_is(p);
-        *self.frames.borrow_mut() =
-            Some(vec![Frame { title: "claude".into(), active: false, text: screen.into() }]);
-        *self.screen.borrow_mut() = Some(screen.into());
+    /// The terminal's windows: each with its tabs and the selected one.
+    fn tabbed(&self, layout: Vec<(u64, Vec<Tab>, usize)>) {
+        *self.tabs.borrow_mut() = layout;
+        self.titles_follow();
+    }
+
+    /// Each window's title is its selected tab's.
+    fn titles_follow(&self) {
+        let tabs = self.tabs.borrow();
+        if let Some(wins) = self.wins.borrow_mut().as_mut() {
+            for w in wins.iter_mut() {
+                if let Some((_, tabs, selected)) = tabs.iter().find(|(id, ..)| *id == w.id) {
+                    w.title = tabs[*selected].title.clone();
+                }
+            }
+        }
+    }
+
+    /// The tab selected in `window`.
+    fn selected(&self, window: u64) -> usize {
+        self.tabs.borrow().iter().find(|(id, ..)| *id == window).map(|(_, _, s)| *s).expect("a window")
+    }
+
+    /// The title of the tab on `tty`.
+    fn title_of(&self, tty: u32) -> String {
+        let tabs = self.tabs.borrow();
+        let tab = tabs.iter().flat_map(|(_, tabs, _)| tabs).find(|t| t.tty == tty).expect("a tab");
+        tab.title.clone()
     }
 
     fn focus(&self, id: u64) {
@@ -155,13 +219,26 @@ impl World {
         self.log.borrow().clone()
     }
 
+    /// The log entries whose first word is one of `names`, in order.
+    fn events(&self, names: &[&str]) -> Vec<String> {
+        self.log().into_iter().filter(|e| names.contains(&e.split(' ').next().unwrap_or_default())).collect()
+    }
+
     /// The keys pressed, in order.
     fn keys(&self) -> Vec<String> {
-        self.log().into_iter().filter(|e| e == "paste" || e == "enter").collect()
+        self.events(&["paste", "enter"])
     }
 
     fn activated(&self) -> bool {
         self.log().iter().any(|e| e.starts_with("activate"))
+    }
+
+    fn count(&self, what: &str) -> usize {
+        self.log().iter().filter(|e| *e == what).count()
+    }
+
+    fn pass(&self, how_long: Duration) {
+        self.clock.set(self.clock.get() + how_long);
     }
 
     fn pc(&self) -> Pc<'_, World, World, World, World> {
@@ -226,16 +303,105 @@ impl Windows for World {
         (pid == EMULATOR).then(|| self.screen.borrow().clone()).flatten()
     }
 
-    fn terminal_frames(&self, pid: u32) -> Option<Vec<Frame>> {
-        (pid == EMULATOR).then(|| self.frames.borrow().clone()).flatten()
-    }
-
     fn app_name(&self, class: &str, _pid: u32) -> Option<String> {
         match class {
             "code" => Some("Visual Studio Code".into()),
             "kitty" => Some("kitty".into()),
             _ => self.app.borrow().clone(),
         }
+    }
+
+    fn title_mark(&self, tty: u32, title: &str) -> bool {
+        self.note("mark");
+        if let Some(hook) = self.after_mark.borrow().as_ref() {
+            hook(self);
+        }
+        if !self.title_ok.get() {
+            return false;
+        }
+        self.written.borrow_mut().push(title.to_owned());
+        for (_, tabs, _) in self.tabs.borrow_mut().iter_mut() {
+            for tab in tabs.iter_mut().filter(|t| t.tty == tty) {
+                tab.pushed.push(tab.title.clone());
+                if self.title_shows.get() {
+                    // Ptyxis adds the foreground command.
+                    tab.title = format!("{title} — claude ");
+                }
+            }
+        }
+        self.titles_follow();
+        true
+    }
+
+    fn title_unmark(&self, tty: u32) {
+        self.note("unmark");
+        for (_, tabs, _) in self.tabs.borrow_mut().iter_mut() {
+            for tab in tabs.iter_mut().filter(|t| t.tty == tty) {
+                if let Some(old) = tab.pushed.pop() {
+                    tab.title = old;
+                }
+            }
+        }
+        self.titles_follow();
+    }
+
+    fn tab_titled(&self, pid: u32, mark: &str, _route: TabRoute) -> Option<Vec<TabSpot>> {
+        self.note("tabs");
+        if pid != EMULATOR || !self.tabs_readable.get() {
+            return None;
+        }
+        let wins = self.wins.borrow().clone().unwrap_or_default();
+        let mut spots = Vec::new();
+        for (id, tabs, selected) in self.tabs.borrow().iter() {
+            let frame_title = wins.iter().find(|w| w.id == *id).map(|w| w.title.clone()).unwrap_or_default();
+            for (at, _) in tabs.iter().enumerate().filter(|(_, t)| t.title.contains(mark)) {
+                spots.push(TabSpot {
+                    frame_title: frame_title.clone(),
+                    at,
+                    selected: *selected,
+                    tabs: tabs.len(),
+                });
+            }
+        }
+        Some(spots)
+    }
+
+    fn select_tab(&self, pid: u32, mark: &str, _route: TabRoute) -> Result<usize, TabError> {
+        self.note("select");
+        if !self.select_ok.get() {
+            return Err(TabError::CantSwitch);
+        }
+        let front =
+            self.wins.borrow().clone().unwrap_or_default().into_iter().find(|w| w.focused && w.pid == pid);
+        let front = front.ok_or(TabError::NotFound)?;
+        let before = {
+            let mut all = self.tabs.borrow_mut();
+            let (_, tabs, selected) =
+                all.iter_mut().find(|(id, ..)| *id == front.id).ok_or(TabError::NotFound)?;
+            let at = tabs.iter().position(|t| t.title.contains(mark)).ok_or(TabError::NotFound)?;
+            std::mem::replace(selected, at)
+        };
+        self.titles_follow();
+        if let Some(hook) = self.after_select.borrow().as_ref() {
+            hook(self);
+        }
+        Ok(before)
+    }
+
+    fn select_tab_at(&self, _pid: u32, mark: &str, at: usize, _route: TabRoute) -> bool {
+        self.note(format!("back {at}"));
+        let done = {
+            let mut all = self.tabs.borrow_mut();
+            match all.iter_mut().find(|(_, tabs, _)| tabs.iter().any(|t| t.title.contains(mark))) {
+                Some((_, tabs, selected)) if at < tabs.len() => {
+                    *selected = at;
+                    true
+                }
+                _ => false,
+            }
+        };
+        self.titles_follow();
+        done
     }
 }
 
@@ -263,8 +429,8 @@ impl Desk for World {
         next(&self.locked)
     }
 
-    fn owner_active(&self) -> Option<bool> {
-        self.owner.get()
+    fn free_in(&self) -> Option<Duration> {
+        self.free.get()
     }
 
     fn phone_typing(&self) -> bool {
@@ -273,11 +439,30 @@ impl Desk for World {
 
     fn wait(&self, how_long: Duration) {
         self.note(format!("wait {}", how_long.as_millis()));
+        self.pass(how_long);
         let looks = self.log().iter().filter(|e| *e == "wait 50").count();
         if self.focus_after_waits.get() == Some(looks) {
             self.focus(WINDOW);
         }
     }
+
+    fn now(&self) -> Instant {
+        self.start + self.clock.get()
+    }
+}
+
+/// The session in a Ptyxis with two terminals.
+fn tabs_place() -> Place {
+    Place { ptys_under: vec![(200, 1), (150, 2), (EMULATOR, 2)], ..place() }
+}
+
+/// Ptyxis window 7 with two tabs, a shell on pts/1 and the session on
+/// pts/0, `selected` in front: only the title can tell them apart.
+fn two_tabs(selected: usize) -> World {
+    let world = World::new();
+    world.place_is(tabs_place());
+    world.tabbed(vec![(WINDOW, vec![tab(OTHER_TTY, "~/src — bash "), tab(TTY, CLAUDE_TITLE)], selected)]);
+    world
 }
 
 fn reply(text: &str) -> Ask {
@@ -288,18 +473,15 @@ fn check_ask() -> Ask {
     Ask { session: SESSION.into(), text: None, check: true, confirm: None }
 }
 
-/// A ledger that already confirmed window 7 of this Ptyxis for this phone
-/// and session.
+/// A ledger that already confirmed this run of the agent in this Ptyxis,
+/// for this phone and session.
 fn confirmed() -> Replies {
-    confirmed_window(WINDOW)
-}
-
-fn confirmed_window(window: u64) -> Replies {
     let replies = Replies::default();
     let bound = Bound {
         phone: PHONE.into(),
         session: SESSION.into(),
-        window,
+        agent: 300,
+        agent_start: 3000,
         emulator: EMULATOR,
         emulator_start: u64::from(EMULATOR) * 10,
     };
@@ -340,13 +522,14 @@ fn a_reply_is_pasted_from_primary_and_entered() {
         })
     );
     assert_eq!(answer.emulator.as_deref(), Some("ptyxis"));
-    // One window, one terminal: no screen is read.
+    // One window, one terminal: no title is written and no screen is read.
     assert_eq!(
         world.log(),
-        ["place", "activate 7", "primary", "paste", "wait 250", "place", "enter", "clear"],
-        "PRIMARY is set before the chord and cleared after Enter"
+        ["place", "activate 7", "place", "primary", "paste", "wait 250", "place", "enter", "clear"],
+        "the same process before the paste; PRIMARY set before the chord and cleared after Enter"
     );
     assert_eq!(*world.primary.borrow(), None);
+    assert_eq!(answer.trail, Trail { proof: "structural", tab: "", steps: 0 });
 }
 
 #[test]
@@ -466,7 +649,7 @@ fn a_wrong_nonce_asks_again() {
 }
 
 #[test]
-fn a_changed_window_asks_again() {
+fn a_restarted_terminal_asks_again() {
     let world = World::new();
     let replies = confirmed();
     // The terminal was restarted: another window and a new process.
@@ -481,11 +664,31 @@ fn a_changed_window_asks_again() {
 }
 
 #[test]
+fn the_confirmation_holds_for_the_agent_not_the_window() {
+    // The session's tab dragged to another window of the same Ptyxis.
+    let world = World::new();
+    *world.wins.borrow_mut() = Some(vec![files_in_front(), win(9, EMULATOR, "org.gnome.Ptyxis", "claude")]);
+    world.tabbed(vec![(9, vec![tab(TTY, CLAUDE_TITLE)], 0)]);
+    let replies = confirmed();
+    assert_eq!(send(&world, &replies, "hello").map(|a| a.outcome), Ok(Outcome::Sent));
+    assert!(world.log().contains(&"activate 9".to_owned()));
+
+    // The agent restarted in the same terminal (`claude --resume`).
+    let world = World::new();
+    world.place_is(Place { pid: 301, start_ticks: 3010, ..place() });
+    let answer = send(&world, &confirmed(), "hello").expect("an answer");
+    assert_eq!(answer.outcome, Outcome::Refused(Refused::Confirm));
+    assert!(!world.activated());
+    assert_eq!(world.keys(), NOTHING);
+}
+
+#[test]
 fn a_nonce_works_once_for_its_window_and_expires() {
     let bound = Bound {
         phone: PHONE.into(),
         session: SESSION.into(),
-        window: WINDOW,
+        agent: 300,
+        agent_start: 3000,
         emulator: EMULATOR,
         emulator_start: 1000,
     };
@@ -507,7 +710,8 @@ fn a_nonce_works_once_for_its_window_and_expires() {
     for other in [
         Bound { phone: "phone-b".into(), ..bound.clone() },
         Bound { session: "sc9".into(), ..bound.clone() },
-        Bound { window: 8, ..bound.clone() },
+        Bound { agent: 301, ..bound.clone() },
+        Bound { agent_start: 3001, ..bound.clone() },
         Bound { emulator_start: 1001, ..bound.clone() },
     ] {
         let mut ledger = Ledger::default();
@@ -569,7 +773,7 @@ fn entered_replies_are_paced_per_session_minute_and_hour() {
 fn refusals_dont_count_but_entered_replies_do() {
     let world = World::new();
     let replies = confirmed();
-    world.owner.set(Some(true));
+    world.free.set(Some(Duration::from_secs(3)));
     assert_eq!(send(&world, &replies, "hi").map(|a| a.outcome), Ok(Outcome::Refused(Refused::InUse)));
     assert!(replies.ledger().phones.iter().all(|(_, pace)| pace.entered.is_empty()));
 
@@ -659,8 +863,16 @@ fn the_requests_debug_shows_no_text() {
     assert!(shown.contains("14"));
     let shown = format!("{:?}", place());
     assert!(!shown.contains(MARK), "{shown}");
-    let frame = Frame { title: "claude".into(), active: true, text: MARK.into() };
-    assert!(!format!("{frame:?}").contains(MARK));
+
+    // The title G7 wrote is in no answer.
+    let world = two_tabs(0);
+    let answer = sent(&world);
+    assert_eq!(answer.outcome, Outcome::Sent);
+    let written = world.written.borrow().clone();
+    assert_eq!(written.len(), 1);
+    assert!(written[0].starts_with("G7 ") && written[0].len() == 19, "G7 and 16 hex digits");
+    let shown = format!("{answer:?}");
+    assert!(!shown.contains(&written[0][3..]), "{shown}");
 }
 
 // ---- The host's answers (§1.1, §2.6) ----
@@ -682,9 +894,8 @@ fn the_sessions_state_decides() {
     for (agent, state, exact, expected) in cases {
         let world = World::new();
         world.place_is(Place { agent, state, state_exact: exact, ..place() });
-        // Codex, and Claude without its status file, are proven by the screen.
-        *world.frames.borrow_mut() =
-            Some(vec![Frame { title: "claude".into(), active: false, text: MARK.into() }]);
+        // Codex, and Claude without its status file, are proven by the
+        // title and the screen.
         *world.screen.borrow_mut() = Some(MARK.into());
         assert_eq!(outcome(&world), expected, "{agent:?} {state:?} exact {exact}");
         if expected != Outcome::Sent {
@@ -769,14 +980,84 @@ fn locked_after_the_paste_is_interrupted() {
 
 #[test]
 fn someone_at_the_pc_is_in_use() {
-    for (owner, typing) in [(Some(true), false), (None, false), (Some(false), true)] {
-        let world = World::new();
-        world.owner.set(owner);
+    let s = Duration::from_secs;
+    for (free, typing) in [(Some(s(3)), false), (None, false), (Some(Duration::ZERO), true)] {
+        let world = two_tabs(0);
+        world.free.set(free);
         world.typing.set(typing);
-        assert_eq!(outcome(&world), Outcome::Refused(Refused::InUse), "{owner:?} {typing}");
+        assert_eq!(outcome(&world), Outcome::Refused(Refused::InUse), "{free:?} {typing}");
         assert!(!world.activated());
         assert_eq!(world.keys(), NOTHING);
+        assert!(
+            world.events(&["mark", "tabs", "read"]).is_empty(),
+            "nothing titled or read while someone's there"
+        );
     }
+}
+
+#[test]
+fn in_use_says_how_long_to_wait() {
+    let ms = Duration::from_millis;
+    let retry = |world: &World| {
+        let answer = sent(world);
+        assert_eq!(answer.outcome, Outcome::Refused(Refused::InUse));
+        assert!(answer.target.is_some());
+        answer.retry_ms
+    };
+    // The rest of the owner's 5 s, and a little more.
+    let world = World::new();
+    world.free.set(Some(ms(2000)));
+    assert_eq!(retry(&world), Some(2100));
+    let world = World::new();
+    world.free.set(Some(ms(50)));
+    assert_eq!(retry(&world), Some(250), "at least 250 ms");
+    let world = World::new();
+    world.free.set(Some(ms(9000)));
+    assert_eq!(retry(&world), Some(5000), "at most 5 s");
+    // A phone's input being typed.
+    let world = World::new();
+    world.typing.set(true);
+    assert_eq!(retry(&world), Some(1000));
+    // A film in front.
+    let world = World::new();
+    if let Some(wins) = world.wins.borrow_mut().as_mut() {
+        wins[0].fullscreen = true;
+    }
+    assert_eq!(retry(&world), Some(5000));
+    // The desktop doesn't say: waiting won't help.
+    let world = World::new();
+    world.free.set(None);
+    assert_eq!(retry(&world), None);
+}
+
+#[test]
+fn a_check_with_someone_at_the_pc_is_ready() {
+    let busy: [Hook; 4] = [
+        Box::new(|w: &World| w.free.set(Some(Duration::from_secs(4)))),
+        Box::new(|w: &World| w.free.set(None)),
+        Box::new(|w: &World| w.typing.set(true)),
+        Box::new(|w: &World| {
+            if let Some(wins) = w.wins.borrow_mut().as_mut() {
+                wins[0].fullscreen = true;
+            }
+        }),
+    ];
+    for (i, make_busy) in busy.iter().enumerate() {
+        let world = World::new();
+        make_busy(&world);
+        let answer = answer(&world.pc(), &Replies::default(), PHONE, &check_ask()).expect("an answer");
+        assert_eq!(answer.outcome, Outcome::Ready, "case {i}: a reply would wait");
+        assert_eq!(answer.retry_ms, None);
+    }
+}
+
+#[test]
+fn the_confirmation_comes_before_in_use() {
+    let world = World::new();
+    world.free.set(Some(Duration::from_secs(4)));
+    let answer = send(&world, &Replies::default(), "hello").expect("an answer");
+    assert_eq!(answer.outcome, Outcome::Refused(Refused::Confirm), "not after a wait");
+    assert!(answer.nonce.is_some());
 }
 
 #[test]
@@ -787,6 +1068,7 @@ fn a_fullscreen_window_in_front_is_in_use() {
     }
     assert_eq!(outcome(&world), Outcome::Refused(Refused::InUse));
     assert_eq!(world.keys(), NOTHING);
+    assert!(!world.activated());
 
     // The session's own terminal, fullscreen in front, is fine.
     let world = World::new();
@@ -877,11 +1159,20 @@ fn only_known_terminals_are_pasted_into() {
 
 #[test]
 fn structural_proof_needs_one_window_and_one_terminal() {
-    // One window, three tabs: the screen is read.
+    // One window, three tabs: the title proves which.
     let world = World::new();
-    world.tabs("⏺ The quick brown fox\n  jumps over the lazy dog.\n> ");
-    assert_eq!(outcome(&world), Outcome::Sent);
-    assert!(world.log().contains(&"read".to_owned()));
+    let mut p = place();
+    p.ptys_under = vec![(200, 1), (150, 3), (EMULATOR, 3)];
+    world.place_is(p);
+    world.tabbed(vec![(
+        WINDOW,
+        vec![tab(TTY, CLAUDE_TITLE), tab(OTHER_TTY, "bash"), tab(THIRD_TTY, "vim")],
+        0,
+    )]);
+    let answer = sent(&world);
+    assert_eq!(answer.outcome, Outcome::Sent);
+    assert_eq!(world.count("mark"), 1);
+    assert_eq!(answer.trail, Trail { proof: "title", tab: "front", steps: 0 });
 
     // Two windows, one terminal each.
     let world = World::new();
@@ -890,50 +1181,57 @@ fn structural_proof_needs_one_window_and_one_terminal() {
         win(WINDOW, EMULATOR, "org.gnome.Ptyxis", "claude"),
         win(8, EMULATOR, "org.gnome.Ptyxis", "notes"),
     ]);
-    *world.frames.borrow_mut() = Some(vec![
-        Frame { title: "claude".into(), active: false, text: MARK.into() },
-        Frame { title: "notes".into(), active: false, text: "vim".into() },
-    ]);
-    *world.screen.borrow_mut() = Some(MARK.into());
+    world.tabbed(vec![(WINDOW, vec![tab(TTY, CLAUDE_TITLE)], 0), (8, vec![tab(OTHER_TTY, "vim")], 0)]);
     let mut p = place();
     p.ptys_under = vec![(200, 1), (150, 2), (EMULATOR, 2)];
     world.place_is(p);
     assert_eq!(outcome(&world), Outcome::Sent);
     assert!(world.log().contains(&"activate 7".to_owned()));
-}
+    assert_eq!(world.count("mark"), 1);
 
-#[test]
-fn codex_and_a_claude_without_its_status_file_are_proven_by_the_screen() {
-    // `codex resume <uuid>` keeps the id on its command line after `/resume`
-    // inside it: one window and one terminal don't say which session shows.
-    for (agent, exact) in [(Agent::Codex, false), (Agent::Claude, false)] {
-        let world = World::new();
-        world.place_is(Place { agent, state_exact: exact, ..place() });
-        assert_eq!(outcome(&world), Outcome::Refused(Refused::Ambiguous), "{agent:?} unread");
-        assert_eq!(world.keys(), NOTHING);
-
-        let world = World::new();
-        world.place_is(Place { agent, state_exact: exact, ..place() });
-        *world.frames.borrow_mut() =
-            Some(vec![Frame { title: "claude".into(), active: false, text: MARK.into() }]);
-        *world.screen.borrow_mut() = Some("› /resume\n  another session".into());
-        assert_eq!(outcome(&world), Outcome::Refused(Refused::Tab), "{agent:?} switched");
-        assert_eq!(world.keys(), NOTHING);
-
-        let world = World::new();
-        world.place_is(Place { agent, state_exact: exact, ..place() });
-        *world.frames.borrow_mut() =
-            Some(vec![Frame { title: "claude".into(), active: false, text: MARK.into() }]);
-        *world.screen.borrow_mut() = Some(MARK.into());
-        assert_eq!(outcome(&world), Outcome::Sent, "{agent:?} shown");
-        assert!(world.log().contains(&"read".to_owned()));
-    }
-    // A count the host couldn't make proves nothing either.
+    // A count the host couldn't make: the title proves it too.
     let world = World::new();
     let mut p = place();
     p.ptys_under.retain(|(pid, _)| *pid != EMULATOR);
     world.place_is(p);
-    assert_eq!(outcome(&world), Outcome::Refused(Refused::Ambiguous));
+    assert_eq!(outcome(&world), Outcome::Sent);
+    assert_eq!(world.count("mark"), 1);
+}
+
+#[test]
+fn codex_and_a_claude_without_its_status_file_need_the_title_and_the_screen() {
+    // `codex resume <uuid>` keeps the id on its command line after `/resume`
+    // inside it: the title says which terminal, the screen which session.
+    for (agent, exact) in [(Agent::Codex, false), (Agent::Claude, false)] {
+        let world = two_tabs(1);
+        world.place_is(Place { agent, state_exact: exact, ..tabs_place() });
+        assert_eq!(outcome(&world), Outcome::Refused(Refused::Ambiguous), "{agent:?} unread");
+        assert_eq!(world.keys(), NOTHING);
+        assert_eq!(world.events(&["mark", "unmark"]), ["mark", "unmark"]);
+
+        let world = two_tabs(1);
+        world.place_is(Place { agent, state_exact: exact, ..tabs_place() });
+        *world.screen.borrow_mut() = Some("› /resume\n  another session".into());
+        assert_eq!(outcome(&world), Outcome::Refused(Refused::Unproven), "{agent:?} switched");
+        assert_eq!(world.keys(), NOTHING);
+
+        // No marks yet: nothing to prove the session with.
+        let world = two_tabs(1);
+        world.place_is(Place { agent, state_exact: exact, marks: Vec::new(), ..tabs_place() });
+        *world.screen.borrow_mut() = Some(MARK.into());
+        assert_eq!(outcome(&world), Outcome::Refused(Refused::Unproven), "{agent:?} no marks");
+
+        let world = two_tabs(1);
+        world.place_is(Place { agent, state_exact: exact, ..tabs_place() });
+        *world.screen.borrow_mut() = Some(MARK.into());
+        let answer = sent(&world);
+        assert_eq!(answer.outcome, Outcome::Sent, "{agent:?} shown");
+        assert_eq!(answer.trail.proof, "title_text");
+        assert_eq!(
+            world.events(&["mark", "read", "paste", "enter", "unmark"]),
+            ["mark", "read", "paste", "enter", "unmark"]
+        );
+    }
 }
 
 #[test]
@@ -1001,108 +1299,333 @@ fn marks_match_across_wrapped_lines() {
     assert!(!shows_a_mark("anything at all", &[]));
 }
 
+// ---- The title and the tabs (`plans/reply-tabs-idle.md` §2, §3) ----
+
 #[test]
-fn a_background_tab_is_refused_tab() {
-    // Seen before bringing it forward: nothing activated.
-    let world = World::new();
-    world.tabs("~/src $ ls\nCargo.toml");
-    assert_eq!(outcome(&world), Outcome::Refused(Refused::Tab));
-    assert!(!world.activated());
-    assert_eq!(world.keys(), NOTHING);
-
-    // Changed after: the window stays in front, nothing typed.
-    let world = World::new();
-    world.tabs(MARK);
-    *world.screen.borrow_mut() = Some("~/src $ ".into());
-    assert_eq!(outcome(&world), Outcome::Refused(Refused::Tab));
-    assert!(world.activated());
-    assert_eq!(world.keys(), NOTHING);
-
-    // No marks yet: nothing to prove with.
-    let world = World::new();
-    world.tabs(MARK);
-    let mut p = place();
-    p.ptys_under = vec![(EMULATOR, 3)];
-    p.marks.clear();
-    world.place_is(p);
-    assert_eq!(outcome(&world), Outcome::Refused(Refused::Tab));
+fn a_new_session_in_the_tab_in_front_is_proven_by_its_title() {
+    // Brand new: no text to prove it with, Claude by its status file.
+    let world = two_tabs(1);
+    world.place_is(Place { marks: Vec::new(), ptys_under: vec![(EMULATOR, 2)], ..place() });
+    let answer = sent(&world);
+    assert_eq!(answer.outcome, Outcome::Sent);
+    assert_eq!(
+        world.events(&["mark", "unmark", "select", "back", "paste", "enter"]),
+        ["mark", "paste", "enter", "unmark"]
+    );
+    assert_eq!(answer.trail, Trail { proof: "title", tab: "front", steps: 0 });
+    assert!(!world.log().contains(&"read".to_owned()), "no screen is read");
+    assert_eq!(world.title_of(TTY), CLAUDE_TITLE, "the title is put back");
 }
 
 #[test]
-fn a_screen_that_cant_be_read_is_ambiguous() {
-    // No accessible terminal before (another app's, or none).
-    let world = World::new();
-    world.tabs(MARK);
-    *world.frames.borrow_mut() = None;
-    assert_eq!(outcome(&world), Outcome::Refused(Refused::Ambiguous));
-    let world = World::new();
-    world.tabs(MARK);
-    *world.frames.borrow_mut() = Some(Vec::new());
-    assert_eq!(outcome(&world), Outcome::Refused(Refused::Ambiguous));
-    assert!(!world.activated());
+fn a_session_in_a_background_tab_is_switched_to() {
+    let world = two_tabs(0);
+    let answer = sent(&world);
+    assert_eq!(answer.outcome, Outcome::Sent);
+    assert_eq!(
+        world.events(&["mark", "tabs", "activate", "select", "back", "paste", "enter", "unmark"]),
+        ["mark", "tabs", "activate 7", "select", "paste", "enter", "unmark"],
+        "found by its title, its window forward, its tab selected, then the keys"
+    );
+    assert_eq!(answer.trail, Trail { proof: "title", tab: "switched", steps: 1 });
+    assert_eq!(world.selected(WINDOW), 1, "the terminal stays on the session's tab");
+    assert_eq!(world.title_of(TTY), CLAUDE_TITLE);
+}
 
-    // After: the focused object isn't a terminal of this app.
-    let world = World::new();
-    world.tabs(MARK);
-    *world.screen.borrow_mut() = None;
-    assert_eq!(outcome(&world), Outcome::Refused(Refused::Ambiguous));
+#[test]
+fn an_ended_sessions_old_tab_never_gets_the_reply() {
+    // §1.4: the tab in front shows the session's text from before it ended
+    // there; the session runs on in the tab behind it, on another pty.
+    let world = two_tabs(0);
+    world.tabbed(vec![(WINDOW, vec![tab(OTHER_TTY, CLAUDE_TITLE), tab(TTY, CLAUDE_TITLE)], 0)]);
+    *world.screen.borrow_mut() = Some(MARK.into());
+    assert_eq!(outcome(&world), Outcome::Sent);
+    assert_eq!(world.events(&["select", "paste", "enter"]), ["select", "paste", "enter"]);
+    assert_eq!(world.selected(WINDOW), 1);
+
+    // The tab can't be selected: nothing typed anywhere.
+    let world = two_tabs(0);
+    world.tabbed(vec![(WINDOW, vec![tab(OTHER_TTY, CLAUDE_TITLE), tab(TTY, CLAUDE_TITLE)], 0)]);
+    *world.screen.borrow_mut() = Some(MARK.into());
+    world.select_ok.set(false);
+    assert_eq!(outcome(&world), Outcome::Refused(Refused::Tab));
+    assert_eq!(world.keys(), NOTHING);
+    assert!(!world.log().contains(&"primary".to_owned()));
+}
+
+#[test]
+fn a_tab_that_cant_be_brought_forward_is_tab() {
+    let world = two_tabs(0);
+    world.select_ok.set(false);
+    assert_eq!(outcome(&world), Outcome::Refused(Refused::Tab));
+    assert!(world.activated(), "the window stays in front");
+    assert_eq!(world.keys(), NOTHING);
+    assert_eq!(world.selected(WINDOW), 0);
+
+    // More tabs than G7 steps through: nothing is selected.
+    let world = two_tabs(0);
+    let mut tabs: Vec<Tab> = (0..17).map(|i| tab(OTHER_TTY + 1 + i, "bash")).collect();
+    tabs[16] = tab(TTY, CLAUDE_TITLE);
+    world.tabbed(vec![(WINDOW, tabs, 0)]);
+    assert_eq!(outcome(&world), Outcome::Refused(Refused::Tab));
+    assert!(!world.log().contains(&"select".to_owned()));
+    assert_eq!(world.keys(), NOTHING);
+
+    // Selected, but the window never shows the title.
+    let world = two_tabs(0);
+    *world.after_select.borrow_mut() = Some(Box::new(|w: &World| w.focus(1)));
+    assert_eq!(outcome(&world), Outcome::Refused(Refused::Tab));
+    assert_eq!(world.keys(), NOTHING);
+    assert_eq!(world.count("back 0"), 1);
+}
+
+#[test]
+fn a_title_that_never_shows_is_unproven() {
+    // A tab with a fixed title ("Set Title"): a second title, then no.
+    let world = two_tabs(0);
+    world.title_shows.set(false);
+    assert_eq!(outcome(&world), Outcome::Refused(Refused::Unproven));
+    assert_eq!(world.events(&["mark", "unmark"]), ["mark", "unmark", "mark", "unmark"]);
+    assert_eq!(world.keys(), NOTHING);
+    assert!(!world.activated());
+    let written = world.written.borrow().clone();
+    assert_ne!(written[0], written[1], "a new title the second time");
+
+    // Tabs that can't be read are no proof either.
+    let world = two_tabs(0);
+    world.tabs_readable.set(false);
+    assert_eq!(outcome(&world), Outcome::Refused(Refused::Unproven));
+    assert_eq!(world.count("unmark"), 2);
     assert_eq!(world.keys(), NOTHING);
 }
 
 #[test]
-fn of_several_windows_the_one_in_front_or_the_only_one_showing_it() {
-    let two = || {
+fn a_terminal_that_cant_be_titled_is_unproven() {
+    let world = two_tabs(1);
+    world.title_ok.set(false);
+    assert_eq!(outcome(&world), Outcome::Refused(Refused::Unproven));
+    assert_eq!(world.events(&["mark", "unmark"]), ["mark"], "nothing to put back");
+    assert_eq!(world.keys(), NOTHING);
+    assert!(!world.activated());
+}
+
+#[test]
+fn of_several_windows_the_one_whose_tab_has_the_title() {
+    let two = |first: &str, second: &str| {
         let world = World::new();
         *world.wins.borrow_mut() = Some(vec![
-            win(WINDOW, EMULATOR, "org.gnome.Ptyxis", "claude"),
-            win(8, EMULATOR, "org.gnome.Ptyxis", "build"),
+            files_in_front(),
+            win(WINDOW, EMULATOR, "org.gnome.Ptyxis", ""),
+            win(8, EMULATOR, "org.gnome.Ptyxis", ""),
+        ]);
+        world.tabbed(vec![
+            (WINDOW, vec![tab(THIRD_TTY, first)], 0),
+            (8, vec![tab(OTHER_TTY, second), tab(TTY, CLAUDE_TITLE)], 0),
         ]);
         let mut p = place();
-        p.ptys_under = vec![(EMULATOR, 2)];
+        p.ptys_under = vec![(EMULATOR, 3)];
         world.place_is(p);
-        *world.screen.borrow_mut() = Some(MARK.into());
         world
     };
 
-    // The one in front shows it: no other is looked for.
-    let world = two();
-    world.focus(8);
-    *world.frames.borrow_mut() = Some(vec![
-        Frame { title: "claude".into(), active: false, text: MARK.into() },
-        Frame { title: "build".into(), active: true, text: MARK.into() },
-    ]);
-    let answer = send(&world, &confirmed_window(8), "hello").expect("an answer");
-    assert_eq!(answer.outcome, Outcome::Sent);
-    assert!(world.log().contains(&"activate 8".to_owned()));
-
-    // Behind: the only window showing it, by its title.
-    let world = two();
-    *world.frames.borrow_mut() = Some(vec![
-        Frame { title: "claude".into(), active: false, text: MARK.into() },
-        Frame { title: "build".into(), active: false, text: "cargo".into() },
-    ]);
+    // In a background tab of the second window: that window, then the tab.
+    let world = two("build", "notes");
     assert_eq!(outcome(&world), Outcome::Sent);
-    assert!(world.log().contains(&"activate 7".to_owned()));
+    assert!(world.log().contains(&"activate 8".to_owned()));
+    assert!(!world.log().contains(&"activate 7".to_owned()));
+    assert_eq!(world.selected(8), 1);
 
-    // Two showing it, or none.
-    for texts in [[MARK, MARK], ["cargo", "make"]] {
-        let world = two();
-        *world.frames.borrow_mut() = Some(vec![
-            Frame { title: "claude".into(), active: false, text: texts[0].into() },
-            Frame { title: "build".into(), active: false, text: texts[1].into() },
-        ]);
-        assert_eq!(outcome(&world), Outcome::Refused(Refused::Ambiguous));
-        assert!(!world.activated(), "G7 never cycles through windows to look");
-    }
-
-    // Two windows with the same title.
-    let world = two();
-    if let Some(wins) = world.wins.borrow_mut().as_mut() {
-        wins[1].title = "claude".into();
-    }
-    *world.frames.borrow_mut() =
-        Some(vec![Frame { title: "claude".into(), active: false, text: MARK.into() }]);
+    // Two windows with the same title: G7 can't tell which holds the tab.
+    let world = two("notes", "notes");
     assert_eq!(outcome(&world), Outcome::Refused(Refused::Ambiguous));
+    assert!(!world.activated(), "G7 never cycles through windows to look");
+    assert_eq!(world.keys(), NOTHING);
+    assert_eq!(world.count("unmark"), 1);
+
+    // The title on two windows at once: ambiguous.
+    let world = two("build", "notes");
+    world.tabbed(vec![(WINDOW, vec![tab(TTY, CLAUDE_TITLE)], 0), (8, vec![tab(TTY, CLAUDE_TITLE)], 0)]);
+    assert_eq!(outcome(&world), Outcome::Refused(Refused::Ambiguous));
+    assert!(!world.activated());
+    assert_eq!(world.keys(), NOTHING);
+}
+
+#[test]
+fn a_switch_then_a_refusal_goes_back_once() {
+    let cases: [(&str, Hook, Outcome); 3] = [
+        (
+            "locked at the gate",
+            Box::new(|w: &World| w.locked_is(vec![Some(false), Some(false), Some(true)])),
+            Outcome::Refused(Refused::Locked),
+        ),
+        ("PRIMARY refused", Box::new(|w: &World| w.primary_ok.set(false)), Outcome::Refused(Refused::Setup)),
+        (
+            "focus lost before the paste",
+            Box::new(|w: &World| *w.after_primary.borrow_mut() = Some(Box::new(|w: &World| w.focus(1)))),
+            Outcome::Failed(Failed::Focus),
+        ),
+    ];
+    for (case, setup, expected) in cases {
+        let world = two_tabs(0);
+        setup(&world);
+        assert_eq!(outcome(&world), expected, "{case}");
+        assert_eq!(world.keys(), NOTHING, "{case}");
+        assert_eq!(world.events(&["select", "back"]), ["select", "back 0"], "{case}");
+        assert_eq!(world.selected(WINDOW), 0, "{case}: the tab that was in front");
+        assert_eq!(world.events(&["back", "unmark"]), ["back 0", "unmark"], "{case}: back while titled");
+    }
+
+    // After the paste, the pasted text stays in view.
+    let world = two_tabs(0);
+    *world.after_paste.borrow_mut() = Some(Box::new(|w: &World| w.focus(1)));
+    assert_eq!(outcome(&world), Outcome::Failed(Failed::Interrupted));
+    assert_eq!(world.keys(), ["paste"]);
+    assert!(world.events(&["back"]).is_empty());
+    assert_eq!(world.selected(WINDOW), 1);
+}
+
+#[test]
+fn another_process_on_the_terminal_before_the_paste_is_no_process() {
+    for again in [
+        Place { tty: Some(OTHER_TTY), ..tabs_place() },
+        Place { pid: 301, ..tabs_place() },
+        Place { start_ticks: 9999, ..tabs_place() },
+    ] {
+        let world = two_tabs(0);
+        world.places(vec![Ok(Found::Place(tabs_place())), Ok(Found::Place(again.clone()))]);
+        assert_eq!(outcome(&world), Outcome::Refused(Refused::NoProcess), "{again:?}");
+        assert_eq!(world.keys(), NOTHING);
+        assert!(!world.log().contains(&"primary".to_owned()));
+        assert_eq!(world.count("back 0"), 1);
+    }
+    // The structural proof looks too.
+    let world = World::new();
+    world.places(vec![Ok(Found::Place(place())), Ok(Found::Ended)]);
+    assert_eq!(outcome(&world), Outcome::Refused(Refused::NoProcess));
+    assert_eq!(world.keys(), NOTHING);
+    // The same process, now asking a question: its own reason.
+    let world = two_tabs(1);
+    world.places(vec![
+        Ok(Found::Place(tabs_place())),
+        Ok(Found::Place(Place { state: Now::NeedsYou, ..tabs_place() })),
+    ]);
+    assert_eq!(outcome(&world), Outcome::Refused(Refused::NeedsYou));
+    assert_eq!(world.keys(), NOTHING);
+}
+
+#[test]
+fn the_title_is_put_back_on_every_way_out() {
+    let cases: [(&str, Hook); 15] = [
+        ("sent", Box::new(|_: &World| {})),
+        ("tab not selected", Box::new(|w: &World| w.select_ok.set(false))),
+        ("window doesn't come forward", Box::new(|w: &World| w.activate_focuses.set(false))),
+        ("window can't be activated", Box::new(|w: &World| w.activate_ok.set(false))),
+        ("locked at the gate", Box::new(|w: &World| w.locked_is(vec![Some(false), Some(false), Some(true)]))),
+        ("PRIMARY refused", Box::new(|w: &World| w.primary_ok.set(false))),
+        (
+            "focus lost before the paste",
+            Box::new(|w: &World| *w.after_primary.borrow_mut() = Some(Box::new(|w: &World| w.focus(1)))),
+        ),
+        (
+            "focus lost after the paste",
+            Box::new(|w: &World| *w.after_paste.borrow_mut() = Some(Box::new(|w: &World| w.focus(1)))),
+        ),
+        ("paste failed", Box::new(|w: &World| w.paste_ok.set(false))),
+        ("enter failed", Box::new(|w: &World| w.enter_ok.set(false))),
+        (
+            "locked after the paste",
+            Box::new(|w: &World| w.locked_is(vec![Some(false), Some(false), Some(false), Some(true)])),
+        ),
+        (
+            "process changed",
+            Box::new(|w: &World| w.places(vec![Ok(Found::Place(tabs_place())), Ok(Found::Ended)])),
+        ),
+        (
+            "codex without its text",
+            Box::new(|w: &World| {
+                w.place_is(Place { agent: Agent::Codex, state_exact: false, ..tabs_place() })
+            }),
+        ),
+        ("fixed title", Box::new(|w: &World| w.title_shows.set(false))),
+        (
+            "too slow",
+            Box::new(|w: &World| {
+                *w.after_select.borrow_mut() = Some(Box::new(|w: &World| w.pass(Duration::from_secs(7))))
+            }),
+        ),
+    ];
+    for (case, setup) in cases {
+        for selected in [0, 1] {
+            let world = two_tabs(selected);
+            setup(&world);
+            let _ = sent(&world);
+            let titles = world.events(&["mark", "unmark"]);
+            assert!(!titles.is_empty(), "{case}");
+            assert_eq!(titles.last().map(String::as_str), Some("unmark"), "{case} {selected}");
+            assert_eq!(world.count("mark"), world.count("unmark"), "{case} {selected}");
+            assert_eq!(world.title_of(TTY), CLAUDE_TITLE, "{case} {selected}");
+        }
+    }
+}
+
+#[test]
+fn past_the_deadline_it_refuses_the_step_its_in() {
+    // Selecting the tab took too long.
+    let world = two_tabs(0);
+    *world.after_select.borrow_mut() = Some(Box::new(|w: &World| w.pass(Duration::from_secs(7))));
+    assert_eq!(outcome(&world), Outcome::Refused(Refused::Tab));
+    assert_eq!(world.keys(), NOTHING);
+    assert_eq!(world.count("back 0"), 1);
+
+    // The title step ran past it: no second title is tried.
+    let world = two_tabs(0);
+    world.title_shows.set(false);
+    *world.after_mark.borrow_mut() = Some(Box::new(|w: &World| w.pass(Duration::from_secs(7))));
+    assert_eq!(outcome(&world), Outcome::Refused(Refused::Unproven));
+    assert_eq!(world.events(&["mark", "unmark"]), ["mark", "unmark"]);
+    assert!(!world.log().contains(&"tabs".to_owned()), "no tabs are looked at past it");
+    assert_eq!(world.keys(), NOTHING);
+}
+
+#[test]
+fn a_check_titles_reads_and_selects_nothing() {
+    let worlds: [(&str, World); 7] = [
+        ("one window", World::new()),
+        ("its tab in front", two_tabs(1)),
+        ("its tab behind", two_tabs(0)),
+        ("a fixed title", {
+            let w = two_tabs(0);
+            w.title_shows.set(false);
+            w
+        }),
+        ("codex", {
+            let w = two_tabs(1);
+            w.place_is(Place { agent: Agent::Codex, state_exact: false, ..tabs_place() });
+            w
+        }),
+        ("no pty to title", {
+            let w = two_tabs(0);
+            w.title_ok.set(false);
+            w
+        }),
+        ("someone at the PC", {
+            let w = two_tabs(0);
+            w.free.set(Some(Duration::from_secs(2)));
+            w
+        }),
+    ];
+    for (case, world) in worlds {
+        let answer = answer(&world.pc(), &Replies::default(), PHONE, &check_ask()).expect("an answer");
+        assert_eq!(answer.outcome, Outcome::Ready, "{case}");
+        assert!(
+            world
+                .events(&["mark", "unmark", "tabs", "select", "back", "read", "activate", "primary"])
+                .is_empty(),
+            "{case}: {:?}",
+            world.log()
+        );
+        assert_eq!(world.keys(), NOTHING);
+    }
 }
 
 // ---- During the entry (§2.4 steps 7 to 9) ----
@@ -1128,8 +1651,11 @@ fn focus_lost_between_the_paste_and_enter_is_interrupted() {
 #[test]
 fn a_question_after_the_paste_never_gets_enter() {
     let world = World::new();
-    world
-        .places(vec![Ok(Found::Place(place())), Ok(Found::Place(Place { state: Now::NeedsYou, ..place() }))]);
+    world.places(vec![
+        Ok(Found::Place(place())),
+        Ok(Found::Place(place())),
+        Ok(Found::Place(Place { state: Now::NeedsYou, ..place() })),
+    ]);
     assert_eq!(outcome(&world), Outcome::Failed(Failed::Interrupted));
     assert_eq!(world.keys(), ["paste"]);
 }
@@ -1139,11 +1665,12 @@ fn the_process_gone_after_the_paste_is_interrupted() {
     for after in [
         Ok(Found::Ended),
         Ok(Found::Place(Place { start_ticks: 9999, ..place() })),
+        Ok(Found::Place(Place { tty: Some(OTHER_TTY), ..place() })),
         Ok(Found::Place(Place { foreground: false, ..place() })),
         Err(HostDown),
     ] {
         let world = World::new();
-        world.places(vec![Ok(Found::Place(place())), after.clone()]);
+        world.places(vec![Ok(Found::Place(place())), Ok(Found::Place(place())), after.clone()]);
         assert_eq!(outcome(&world), Outcome::Failed(Failed::Interrupted), "{after:?}");
         assert_eq!(world.keys(), ["paste"]);
     }

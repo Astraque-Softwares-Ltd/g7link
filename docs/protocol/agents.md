@@ -1122,8 +1122,9 @@ This isn't `agent/reply`, §5's answer to an agent's question.
   checks without bringing anything forward, setting a title or reading the
   screen, and answers `ready` or `refused`, never `confirm`: a check that
   lacks only the confirmation is `ready`. It is never refused `in_use`,
-  `tab`, `ambiguous` or `unproven`: only a reply finds those out (a PC
-  before 0.1.27 may still answer a check `in_use` or `tab`).
+  `tab` or `unproven`: only a reply finds those out (a PC before 0.1.27
+  may still answer a check `in_use` or `tab`). It may answer `ambiguous`
+  when the session's process itself can't be told apart.
   A phone checks when the session's screen opens, when the session's state
   changes and when the reply box gains focus, and shows a box only while the
   last check was `ready`.

@@ -42,6 +42,7 @@ pub mod storage;
 pub mod text_focus;
 pub mod toast;
 pub mod tray;
+pub mod tty_title;
 pub mod vcam;
 #[cfg(linux_ffmpeg_video)]
 pub(crate) mod video_decoder;

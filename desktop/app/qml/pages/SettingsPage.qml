@@ -535,7 +535,7 @@ Item {
         agents: qsTr("Start and answer coding agents from this phone"),
         agent_push: qsTr("This phone can push commits and open pull requests from your threads. It asks on the phone each time and tells you here."),
         agent_sessions: qsTr("See Claude and Codex sessions you started on this PC yourself"),
-        agent_reply: qsTr("Type replies into those sessions' terminal windows. Never while the PC is locked or in use")
+        agent_reply: qsTr("Type replies into those sessions' terminal windows, switching to their tab. Never while the PC is locked; it waits while the PC is in use")
     })
     readonly property var toggleTints: ({
         notifications: Theme.tintBlue,
