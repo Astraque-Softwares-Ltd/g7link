@@ -4,6 +4,14 @@ All notable changes to G7 Link. Versions follow
 [semantic versioning](https://semver.org); before 1.0, a minor version may
 change things that need a step from you, and its notes say so.
 
+## 0.1.28 (unreleased)
+
+### Added
+
+- **Agent logos.** In the phone's Agents list and drawer, each thread and
+  session shows the Claude or OpenAI mark before the agent's name, so you
+  can tell Claude and Codex apart at a glance.
+
 ## 0.1.27 (2026-11-24)
 
 **Update both together** for replies on the PC to wait and switch tabs.
