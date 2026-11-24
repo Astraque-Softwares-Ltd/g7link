@@ -1512,6 +1512,8 @@
     <string name="agents_folder_collapse">Collapse</string>
     <string name="agents_open">Open</string>
     <string name="agents_shelf_back">Back to projects</string>
+    <string name="agents_jump_latest">Go to the latest</string>
+    <string name="agents_new_below">New below</string>
     <plurals name="agents_folder_threads">
         <item quantity="one">%1$d thread</item>
         <item quantity="other">%1$d threads</item>

@@ -1436,6 +1436,8 @@
     <string name="agents_folder_collapse">Thu gọn</string>
     <string name="agents_open">Mở</string>
     <string name="agents_shelf_back">Quay lại dự án</string>
+    <string name="agents_jump_latest">Đến mục mới nhất</string>
+    <string name="agents_new_below">Có mục mới bên dưới</string>
     <plurals name="agents_folder_threads">
         <item quantity="other">%1$d luồng</item>
     </plurals>

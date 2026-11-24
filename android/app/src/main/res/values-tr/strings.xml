@@ -1500,6 +1500,8 @@
     <string name="agents_folder_collapse">Daralt</string>
     <string name="agents_open">Aç</string>
     <string name="agents_shelf_back">Projelere dön</string>
+    <string name="agents_jump_latest">En yeniye git</string>
+    <string name="agents_new_below">Aşağıda yeni</string>
     <plurals name="agents_folder_threads">
         <item quantity="one">%1$d konuşma</item>
         <item quantity="other">%1$d konuşma</item>

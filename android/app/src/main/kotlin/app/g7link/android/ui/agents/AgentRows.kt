@@ -31,6 +31,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.LazyListState
@@ -49,18 +50,22 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Brush
@@ -73,6 +78,8 @@ import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.Placeholder
 import androidx.compose.ui.text.PlaceholderVerticalAlign
@@ -101,10 +108,10 @@ import app.g7link.android.ui.theme.MONO_FEATURES
 import app.g7link.android.ui.theme.mono
 import app.g7link.core.AgentAlertKind
 import app.g7link.core.AgentAlign
-import app.g7link.core.AgentChangesNote
-import app.g7link.core.AgentCheckpointWhy
 import app.g7link.core.AgentBlock
 import app.g7link.core.AgentBlockKind
+import app.g7link.core.AgentChangesNote
+import app.g7link.core.AgentCheckpointWhy
 import app.g7link.core.AgentClause
 import app.g7link.core.AgentDetailOf
 import app.g7link.core.AgentDiffDoc
@@ -122,12 +129,13 @@ import app.g7link.core.AgentRowStatus
 import app.g7link.core.AgentSpan
 import app.g7link.core.AgentSummary
 import app.g7link.core.AgentTable
-import app.g7link.core.AgentTokClass
 import app.g7link.core.AgentThread
+import app.g7link.core.AgentTokClass
 import app.g7link.core.AgentToolClass
 import app.g7link.core.AgentToolLabel
 import app.g7link.core.AgentVia
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 // The gutter of a step's line (the design's GUT and LABEL_X): disclosure, gap, glyph, gap.
 private val GUTTER = 14.dp
@@ -211,10 +219,29 @@ internal fun AgentRowsList(
     footer: (LazyListScope.() -> Unit)? = null,
     /** Scroll once to the first row at or after this message (a search hit), instead of following the end. */
     scrollTo: ULong? = null,
+    /** Bumped when the user sends: the list goes to its end and follows it again, however far up they were. */
+    jump: Int = 0,
 ) {
     // Follows new rows while the end is in view; scrolling up stops that, scrolling back down resumes it.
     var follow by remember { mutableStateOf(scrollTo == null) }
     var scrolledTo by remember { mutableStateOf<ULong?>(null) }
+    // Rows that came in below while the reader was up the list, and the newest row's key, to tell.
+    var unseen by remember { mutableStateOf(false) }
+    var newestKey by remember { mutableStateOf<Any?>(null) }
+    // The list's own scrolls to its end aren't the reader's: they don't stop following.
+    var jumping by remember { mutableStateOf(false) }
+    val reduced = LocalReducedMotion.current
+    val scope = rememberCoroutineScope()
+    val toLatest: suspend (Boolean) -> Unit = { animate ->
+        jumping = true
+        try {
+            listState.toEnd(animate)
+        } finally {
+            jumping = false
+        }
+        follow = true
+        unseen = false
+    }
     // The list keeps its place by the first item on screen, which is the Earlier row when
     // it's tapped: earlier rows would go in below it and the view would stay on it. Hold
     // the first message on screen instead, at the same height.
@@ -228,9 +255,26 @@ internal fun AgentRowsList(
     }
     LaunchedEffect(listState) {
         snapshotFlow { listState.isScrollInProgress to listState.canScrollForward }
-            .collect { scroll -> if (scroll.first) follow = !scroll.second }
+            .collect { (scrolling, more) ->
+                if (scrolling && !jumping) {
+                    follow = !more
+                    if (follow) unseen = false
+                }
+            }
+    }
+    // The user sent something: to the end, where their message and what answers it come in.
+    LaunchedEffect(jump) {
+        if (jump == 0) return@LaunchedEffect
+        follow = true
+        unseen = false
+        // Rows the send added under the list (a held message, a reply on its way) are laid out first.
+        withFrameNanos { }
+        toLatest(!reduced)
     }
     LaunchedEffect(rows, scrollTo) {
+        val newest = AgentPlanCards.units(rows).lastOrNull()?.key
+        unseen = TimelineFollow.unseen(unseen, follow, newestKey, newest)
+        newestKey = newest
         val held = anchor
         val moved = held?.let { EarlierAnchor.moved(AgentPlanCards.units(rows).map { unit -> unit.key }, it, earlier) }
         if (held != null && moved != null) {
@@ -251,45 +295,85 @@ internal fun AgentRowsList(
                 return@LaunchedEffect
             }
         }
-        if (follow && rows.isNotEmpty()) {
-            val total = listState.layoutInfo.totalItemsCount
-            if (total > 0) {
-                listState.scrollToItem(total - 1)
-                listState.scrollBy(END_SCROLL)
+        if (follow && rows.isNotEmpty()) toLatest(false)
+    }
+    val moreBelow by remember(listState) { derivedStateOf { listState.canScrollForward } }
+    Box(modifier.fillMaxWidth()) {
+        LazyColumn(
+            state = listState,
+            modifier = Modifier.fillMaxWidth(),
+            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 12.dp),
+        ) {
+            if (earlier) {
+                item(key = EARLIER_KEY, contentType = "earlier") {
+                    Box(Modifier.fillMaxWidth().padding(bottom = 12.dp), contentAlignment = Alignment.Center) {
+                        if (loadingEarlier) {
+                            CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                        } else {
+                            G7RowAction(label = stringResource(R.string.agents_load_earlier), onClick = loadEarlier)
+                        }
+                    }
+                }
             }
+            val units = AgentPlanCards.units(rows)
+            items(units.size, key = { units[it].key }, contentType = { unitType(units[it]) }) { index ->
+                when (val unit = units[index]) {
+                    is RowUnit.One -> {
+                        val row = unit.row
+                        val gap = topGap(lastRow(units.getOrNull(index - 1)), row)
+                        NestedRow(row.depth.toInt(), gap) {
+                            Lit(lit = context.highlightSeq != null && row.seq == context.highlightSeq) { AgentRowView(row, context, actions) }
+                        }
+                    }
+                    is RowUnit.Plan -> NestedRow(unit.head.depth.toInt(), if (index > 0) 12.dp else 0.dp) { PlanCard(unit, context, actions) }
+                }
+            }
+            footer?.invoke(this)
+        }
+        if (TimelineFollow.jumpShown(follow, moreBelow)) {
+            JumpToLatest(
+                unseen = unseen,
+                onClick = { scope.launch { toLatest(!reduced) } },
+                modifier = Modifier.align(Alignment.BottomEnd).padding(12.dp),
+            )
         }
     }
-    LazyColumn(
-        state = listState,
-        modifier = modifier.fillMaxWidth(),
-        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 12.dp),
+}
+
+/**
+ * Back to the newest rows, at the list's bottom end while the reader is up
+ * it: a round button, or "New below" on the accent when rows came in since.
+ */
+@Composable
+private fun JumpToLatest(unseen: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
+    val scheme = MaterialTheme.colorScheme
+    val label = stringResource(R.string.agents_jump_latest)
+    val ground = if (unseen) scheme.primary else scheme.surfaceContainerHigh
+    val ink = if (unseen) scheme.onPrimary else scheme.onSurface
+    Row(
+        modifier
+            .shadow(4.dp, CircleShape)
+            .clip(CircleShape)
+            .background(ground)
+            .clickable(role = Role.Button, onClickLabel = label, onClick = onClick)
+            .semantics(mergeDescendants = true) { if (!unseen) contentDescription = label }
+            .heightIn(min = 44.dp)
+            .widthIn(min = 44.dp)
+            .padding(horizontal = if (unseen) 14.dp else 0.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally),
     ) {
-        if (earlier) {
-            item(key = EARLIER_KEY, contentType = "earlier") {
-                Box(Modifier.fillMaxWidth().padding(bottom = 12.dp), contentAlignment = Alignment.Center) {
-                    if (loadingEarlier) {
-                        CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-                    } else {
-                        G7RowAction(label = stringResource(R.string.agents_load_earlier), onClick = loadEarlier)
-                    }
-                }
-            }
-        }
-        val units = AgentPlanCards.units(rows)
-        items(units.size, key = { units[it].key }, contentType = { unitType(units[it]) }) { index ->
-            when (val unit = units[index]) {
-                is RowUnit.One -> {
-                    val row = unit.row
-                    val gap = topGap(lastRow(units.getOrNull(index - 1)), row)
-                    NestedRow(row.depth.toInt(), gap) {
-                        Lit(lit = context.highlightSeq != null && row.seq == context.highlightSeq) { AgentRowView(row, context, actions) }
-                    }
-                }
-                is RowUnit.Plan -> NestedRow(unit.head.depth.toInt(), if (index > 0) 12.dp else 0.dp) { PlanCard(unit, context, actions) }
-            }
-        }
-        footer?.invoke(this)
+        if (unseen) Text(stringResource(R.string.agents_new_below), style = MaterialTheme.typography.labelLarge, color = ink, maxLines = 1)
+        Icon(G7Icons.chevronDown, contentDescription = null, tint = ink, modifier = Modifier.size(16.dp))
     }
+}
+
+/** To the end of the last row: at once, or as a short scroll. */
+private suspend fun LazyListState.toEnd(animate: Boolean) {
+    val total = layoutInfo.totalItemsCount
+    if (total <= 0) return
+    if (animate) animateScrollToItem(total - 1) else scrollToItem(total - 1)
+    scrollBy(END_SCROLL)
 }
 
 private fun unitType(unit: RowUnit): String = when (unit) {
@@ -1701,6 +1785,27 @@ private const val EARLIER_KEY = "earlier"
  * The first message on screen when Earlier was tapped: its key, its index in the list
  * and how far below the list's top it was, so it can be put back after rows go in above it.
  */
+/**
+ * When the timeline follows its end and when it offers to go there (the
+ * owner's ask, 2026-11-24): it follows while the reader is at the end, stops
+ * while they read further up, and goes back on their own send or the button.
+ */
+internal object TimelineFollow {
+    /** The jump button shows while the reader is away from the end: they scrolled up and there's more below. */
+    fun jumpShown(following: Boolean, moreBelow: Boolean): Boolean = !following && moreBelow
+
+    /**
+     * Whether rows came in below that the reader hasn't seen: the newest row
+     * changed ([before] to [newest]) while they weren't following; following
+     * again clears it.
+     */
+    fun unseen(was: Boolean, following: Boolean, before: Any?, newest: Any?): Boolean = when {
+        following -> false
+        before != null && newest != null && newest != before -> true
+        else -> was
+    }
+}
+
 internal data class EarlierAnchor(val key: Any, val index: Int, val offset: Int) {
     companion object {
         /**

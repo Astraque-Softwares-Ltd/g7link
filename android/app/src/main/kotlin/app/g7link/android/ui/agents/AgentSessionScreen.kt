@@ -37,7 +37,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -240,10 +239,14 @@ fun AgentSessionScreen(
         checkTick++
     }
     LaunchedEffect(open?.items) { open?.items?.let { reply = AgentReplyModel.itemsSeen(reply, it) } }
+    // Each reply sent takes the transcript back to its end (AgentRowsList's jump).
+    var jumps by remember(sessionId) { mutableIntStateOf(0) }
     val sendReply: () -> Unit = {
         val out = AgentReplyModel.outgoing(reply, session)
         if (out != null) {
             val (text, confirm) = out
+            // Back to the end, where the reply and what answers it come in.
+            jumps++
             val lastSeq = AgentReplyModel.lastSeq(open?.items.orEmpty())
             reply = AgentReplyModel.sendStarted(reply)
             scope.launch {
@@ -308,12 +311,7 @@ fun AgentSessionScreen(
 
     val listState = rememberLazyListState()
     // A reply entered on the PC shows at the end, as a new message would.
-    LaunchedEffect(reply.pending) {
-        if (reply.pending == null) return@LaunchedEffect
-        withFrameNanos { }
-        val total = listState.layoutInfo.totalItemsCount
-        if (total > 0) listState.animateScrollToItem(total - 1)
-    }
+    LaunchedEffect(reply.pending) { if (reply.pending != null) jumps++ }
     val drawer = rememberAgentsDrawer()
     BackHandler(enabled = full != null) { full = null }
     when (val view = full) {
@@ -404,6 +402,7 @@ fun AgentSessionScreen(
                         listState = listState,
                         modifier = Modifier.weight(1f),
                         footer = pendingRows,
+                        jump = jumps,
                     )
                     SessionFooter(
                         session = session,

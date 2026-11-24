@@ -1367,6 +1367,8 @@
     <string name="agents_folder_collapse">收起</string>
     <string name="agents_open">打开</string>
     <string name="agents_shelf_back">返回项目</string>
+    <string name="agents_jump_latest">跳到最新</string>
+    <string name="agents_new_below">下方有新内容</string>
     <plurals name="agents_folder_threads">
         <item quantity="other">%1$d 个会话</item>
     </plurals>

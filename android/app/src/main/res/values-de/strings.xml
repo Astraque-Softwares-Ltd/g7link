@@ -1500,6 +1500,8 @@
     <string name="agents_folder_collapse">Zuklappen</string>
     <string name="agents_open">Öffnen</string>
     <string name="agents_shelf_back">Zurück zu den Projekten</string>
+    <string name="agents_jump_latest">Zum Neuesten</string>
+    <string name="agents_new_below">Neues unten</string>
     <plurals name="agents_folder_threads">
         <item quantity="one">%1$d Thread</item>
         <item quantity="other">%1$d Threads</item>

@@ -1359,6 +1359,8 @@
     <string name="agents_folder_collapse">Contraer</string>
     <string name="agents_open">Abrir</string>
     <string name="agents_shelf_back">Volver a los proyectos</string>
+    <string name="agents_jump_latest">Ir a lo más reciente</string>
+    <string name="agents_new_below">Novedades abajo</string>
     <plurals name="agents_folder_threads">
         <item quantity="one">%1$d hilo</item>
         <item quantity="many">%1$d hilos</item>

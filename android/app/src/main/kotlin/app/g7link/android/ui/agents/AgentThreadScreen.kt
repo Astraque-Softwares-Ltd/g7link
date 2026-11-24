@@ -406,11 +406,15 @@ fun AgentThreadScreen(
             }
         }
     }
+    // Each send takes the transcript back to its end (AgentRowsList's jump).
+    var jumps by remember(threadId) { mutableIntStateOf(0) }
     val send: (FollowUp?) -> Unit = send@{ chosen ->
         if (!composer.actionEnabled || sending) return@send
         val text = draft.trim()
         val shown = queue?.shown
         sending = true
+        // Back to the end, where what was sent and what answers it come in.
+        jumps++
         scope.launch {
             if (composer.action == ComposerAction.DENY_AND_SEND && shown != null) {
                 // The words go with a denial of the request they were typed under (contract §P8.3).
@@ -436,6 +440,8 @@ fun AgentThreadScreen(
                 val ids = AgentImages.readyIds(images)
                 when (val result = core.agentSend(device.id, threadId, text, followUp, ids, hold = ids.isEmpty())) {
                     is AgentCall.Ok -> {
+                        // Held on this phone while the PC can't be reached, it shows under the rows: there too.
+                        jumps++
                         draft = ""
                         draftFor = null
                         images = emptyList()
@@ -1307,6 +1313,7 @@ fun AgentThreadScreen(
                                 }
                             },
                             scrollTo = jumpTo,
+                            jump = jumps,
                         )
                         if (readonly) {
                             // Read only: no composer; the PC's folders decide (contract §U9.1 "Read-only thread").

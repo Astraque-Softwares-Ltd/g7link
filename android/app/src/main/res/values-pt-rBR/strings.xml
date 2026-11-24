@@ -1500,6 +1500,8 @@
     <string name="agents_folder_collapse">Recolher</string>
     <string name="agents_open">Abrir</string>
     <string name="agents_shelf_back">Voltar aos projetos</string>
+    <string name="agents_jump_latest">Ir para o mais recente</string>
+    <string name="agents_new_below">Novidades abaixo</string>
     <plurals name="agents_folder_threads">
         <item quantity="one">%1$d conversa</item>
         <item quantity="other">%1$d conversas</item>
