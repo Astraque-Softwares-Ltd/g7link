@@ -77,6 +77,32 @@ class AgentReplyModelTest {
     private fun cant(state: ReplyState, s: AgentSession = session()): ReplyFooter.Cant =
         AgentReplyModel.footer(state, s) as? ReplyFooter.Cant ?: error("not the quiet line: ${AgentReplyModel.footer(state, s)}")
 
+    /**
+     * The screen's send (AgentSessionScreen's sendReply) on a clock that moves
+     * only by the waits: [answer] gives the PC's answer to each try in turn;
+     * Cancel is tapped in the wait after try number [cancelAfter]. The state
+     * at the end, and how many tries went.
+     */
+    private fun sendWaiting(state: ReplyState, cancelAfter: Int? = null, answer: (Int) -> AgentCall<ReplyAnswer>): Pair<ReplyState, Int> {
+        val (text, _) = AgentReplyModel.outgoing(state, session()) ?: error("nothing can be sent")
+        var reply = AgentReplyModel.sendStarted(state)
+        val epoch = reply.epoch
+        var clock = now
+        var tries = 1
+        var call = answer(0)
+        while (true) {
+            val gap = AgentReplyModel.waitFor(reply, epoch, call, now, clock) ?: break
+            reply = AgentReplyModel.waiting(reply, clock + gap)
+            assertTrue(box(reply).waiting)
+            if (tries == cancelAfter) reply = AgentReplyModel.waitCancelled(reply)
+            clock += gap
+            if (!AgentReplyModel.stillWaiting(reply, epoch)) return reply to tries
+            reply = AgentReplyModel.resending(reply)
+            call = answer(tries++)
+        }
+        return AgentReplyModel.replied(reply, call, text, 10u, session()) to tries
+    }
+
     @Test
     fun `before any answer, and for an ended session, nothing is added`() {
         assertEquals(ReplyFooter.None, AgentReplyModel.footer(ReplyState(), session()))
@@ -235,6 +261,7 @@ class AgentReplyModelTest {
         val cases = listOf(
             ReplyReason.NEEDS_YOU to ReplyNote.NEEDS_YOU,
             ReplyReason.TAB to ReplyNote.TAB,
+            ReplyReason.UNPROVEN to ReplyNote.UNPROVEN,
             ReplyReason.AMBIGUOUS to ReplyNote.AMBIGUOUS,
             ReplyReason.CLIPBOARD to ReplyNote.CLIPBOARD,
         )
@@ -365,6 +392,7 @@ class AgentReplyModelTest {
         assertEquals(ReplyResult.SENT, ReplyResult.of("sent"))
         assertEquals(ReplyReason.OTHER, ReplyReason.of("moon_phase"))
         assertEquals(ReplyReason.NO_PROCESS, ReplyReason.of("no_process"))
+        assertEquals(ReplyReason.UNPROVEN, ReplyReason.of("unproven"))
         assertNull(ReplyReason.of(null))
         assertNull(ReplyReason.of(""))
         assertEquals(ReplyNote.FAILED, box(send(ready(), refused(ReplyReason.OTHER))).note)
@@ -406,6 +434,7 @@ class AgentReplyModelTest {
     @Test
     fun `the FFI's answer reads into the same words`() {
         for (reason in AgentReplyReason.entries) assertEquals(reason.name, AgentReplyFfi.reasonOf(reason).name)
+        assertEquals(ReplyReason.UNPROVEN, AgentReplyFfi.reasonOf(AgentReplyReason.UNPROVEN))
         val confirm = AgentReplyFfi.of(
             AgentReplyAnswer(
                 result = AgentReplyResult.REFUSED,
@@ -425,5 +454,191 @@ class AgentReplyModelTest {
         // The agent's app, and a kind this build doesn't know (a plain terminal icon).
         assertTrue(AgentReplyFfi.targetOf(AgentReplyTarget("Claude", "Claude", "g7linux", AgentReplyKind.APP)).inApp)
         assertFalse(AgentReplyFfi.targetOf(AgentReplyTarget("Terminal", "Codex", "g7linux", null)).inApp)
+    }
+
+    @Test
+    fun `G7 couldn't make sure of the terminal, so it says so in amber, nothing typed, the draft kept`() {
+        val state = send(ready(), refused(ReplyReason.UNPROVEN))
+        val footer = box(state)
+        assertEquals(ReplyNote.UNPROVEN, footer.note)
+        assertTrue(ReplyNote.UNPROVEN.amber)
+        assertFalse(ReplyNote.UNPROVEN.sticky)
+        assertTrue(footer.canSend)
+        assertFalse(footer.canRetry)
+        assertEquals("Run the tests again", state.draft)
+        assertNull(state.pending)
+        // Not a reason to wait: it goes once.
+        val going = AgentReplyModel.sendStarted(ready())
+        assertNull(AgentReplyModel.waitFor(going, going.epoch, refused(ReplyReason.UNPROVEN, retryMs = 4_000L), now, now))
+    }
+
+    @Test
+    fun `in use with the PC's wait is sent again after it, within the minute`() {
+        val going = AgentReplyModel.sendStarted(ready())
+        val epoch = going.epoch
+        val inUse = refused(ReplyReason.IN_USE, retryMs = 4_000L)
+        assertEquals(4_000L, AgentReplyModel.waitFor(going, epoch, inUse, now, now + 100L))
+        // Never sooner than the PC looks at attempts.
+        assertEquals(AgentReplyModel.WAIT_GAP_MS, AgentReplyModel.waitFor(going, epoch, refused(ReplyReason.IN_USE, retryMs = 250L), now, now))
+        // No wait from the PC (an older one, or it can't tell): waiting won't help.
+        assertNull(AgentReplyModel.waitFor(going, epoch, refused(ReplyReason.IN_USE), now, now))
+        // A wait outside the wire's bounds isn't trusted.
+        for (bad in listOf(0L, -1L, AgentReplyModel.WAIT_MS + 1)) {
+            assertNull(AgentReplyModel.waitFor(going, epoch, refused(ReplyReason.IN_USE, retryMs = bad), now, now))
+        }
+        // Only while the next try still goes inside the minute.
+        assertEquals(4_000L, AgentReplyModel.waitFor(going, epoch, inUse, now, now + 55_999L))
+        assertNull(AgentReplyModel.waitFor(going, epoch, inUse, now, now + 56_000L))
+        // Anything else is answered as before, and an answer that never came is never sent again.
+        val others = listOf(
+            ok(ReplyResult.SENT),
+            ok(ReplyResult.READY, retryMs = 4_000L),
+            refused(ReplyReason.LOCKED, retryMs = 4_000L),
+            refused(ReplyReason.RATE, retryMs = 4_000L),
+            refused(ReplyReason.BUSY, retryMs = 4_000L),
+            ok(ReplyResult.FAILED, ReplyReason.IN_USE, retryMs = 4_000L),
+            failed(ReplyReason.FOCUS),
+            AgentCall.Failed(AgentFailure.TIMEOUT),
+            AgentCall.Failed(AgentFailure.OFFLINE),
+        )
+        for (call in others) assertNull(AgentReplyModel.waitFor(going, epoch, call, now, now))
+        // Not for a reply that isn't going, or not this one.
+        assertNull(AgentReplyModel.waitFor(ready(), ready().epoch, inUse, now, now))
+        assertNull(AgentReplyModel.waitFor(going, epoch - 1, inUse, now, now))
+    }
+
+    @Test
+    fun `a waiting reply says so with Cancel, the field read only and checks held`() {
+        val going = AgentReplyModel.sendStarted(ready())
+        assertFalse(box(going).waiting)
+        val waiting = AgentReplyModel.waiting(going, now + 4_000L)
+        assertEquals(ReplyWait(now + 4_000L), waiting.wait)
+        val footer = box(waiting)
+        assertTrue(footer.waiting)
+        assertTrue(footer.sending)
+        assertFalse(footer.canSend)
+        assertNull(footer.note)
+        assertNull(AgentReplyModel.outgoing(waiting, session()))
+        assertEquals("Run the tests again", AgentReplyModel.typed(waiting, "changed").draft)
+        assertFalse(AgentReplyModel.shouldCheck(waiting, session()))
+        assertTrue(AgentReplyModel.stillWaiting(waiting, going.epoch))
+        // A check answered meanwhile is dropped.
+        assertEquals(waiting, AgentReplyModel.checked(waiting, going.epoch, ok(ReplyResult.READY), session()))
+        // Going again, it still reads as waiting.
+        val again = AgentReplyModel.resending(waiting)
+        assertTrue(box(again).waiting)
+        assertTrue(AgentReplyModel.stillWaiting(again, going.epoch))
+    }
+
+    @Test
+    fun `a reply that waits goes by itself once the PC is free`() {
+        val (state, tries) = sendWaiting(ready()) { n -> if (n < 2) refused(ReplyReason.IN_USE, retryMs = 2_300L) else ok(ReplyResult.SENT) }
+        assertEquals(3, tries)
+        assertNull(state.wait)
+        assertFalse(box(state).sending)
+        assertFalse(box(state).waiting)
+        assertNull(box(state).note)
+        assertEquals("", state.draft)
+        assertEquals(PendingReply("Run the tests again", 10u), state.pending)
+        // The first reply to a window still asks first, before any waiting.
+        val (asked, askedTries) = sendWaiting(ready()) { ok(ReplyResult.REFUSED, ReplyReason.CONFIRM, terminal, nonce = nonce) }
+        assertEquals(1, askedTries)
+        assertEquals(ReplyConfirm(terminal, nonce, "Run the tests again"), asked.confirm)
+    }
+
+    @Test
+    fun `still in use after a minute gives up, the text kept in the box`() {
+        val (state, tries) = sendWaiting(ready()) { refused(ReplyReason.IN_USE, retryMs = 4_000L) }
+        // Tried at 0, 4 s, … 56 s: the next would be past the minute.
+        assertEquals(15, tries)
+        val footer = box(state)
+        assertEquals(ReplyNote.GAVE_UP, footer.note)
+        assertFalse(ReplyNote.GAVE_UP.amber)
+        assertFalse(footer.sending)
+        assertFalse(footer.waiting)
+        assertTrue(footer.canSend)
+        assertEquals("Run the tests again", state.draft)
+        assertNull(state.wait)
+        // Said once: no check is asked for straight after it.
+        assertNull(state.retryMs)
+        // Never more than a try per gap.
+        assertEquals(50, sendWaiting(ready()) { refused(ReplyReason.IN_USE, retryMs = 1L) }.second)
+        // Without waiting first, or once the PC no longer says waiting helps: today's line.
+        assertEquals(ReplyNote.IN_USE, box(send(ready(), refused(ReplyReason.IN_USE))).note)
+        val (stopped, _) = sendWaiting(ready()) { n -> if (n == 0) refused(ReplyReason.IN_USE, retryMs = 4_000L) else refused(ReplyReason.IN_USE) }
+        assertEquals(ReplyNote.IN_USE, box(stopped).note)
+        // Something else after a wait: its own line.
+        val (tab, _) = sendWaiting(ready()) { n -> if (n == 0) refused(ReplyReason.IN_USE, retryMs = 4_000L) else refused(ReplyReason.TAB) }
+        assertEquals(ReplyNote.TAB, box(tab).note)
+        val (locked, _) = sendWaiting(ready()) { n -> if (n == 0) refused(ReplyReason.IN_USE, retryMs = 4_000L) else refused(ReplyReason.LOCKED) }
+        assertTrue(box(locked).locked)
+    }
+
+    @Test
+    fun `Cancel ends the waiting at once, the draft kept, no line and nothing more sent`() {
+        val going = AgentReplyModel.sendStarted(ready())
+        val epoch = going.epoch
+        val cancelled = AgentReplyModel.waitCancelled(AgentReplyModel.waiting(going, now + 4_000L))
+        assertNull(cancelled.wait)
+        assertFalse(cancelled.sending)
+        assertFalse(AgentReplyModel.stillWaiting(cancelled, epoch))
+        val footer = box(cancelled)
+        assertFalse(footer.waiting)
+        assertNull(footer.note)
+        assertTrue(footer.canSend)
+        assertEquals("Run the tests again", cancelled.draft)
+        assertTrue(AgentReplyModel.shouldCheck(cancelled, session()))
+        assertNull(AgentReplyModel.waitFor(cancelled, epoch, refused(ReplyReason.IN_USE, retryMs = 4_000L), now, now))
+        // A reply sent after it waits on its own; the cancelled one doesn't take it for its wait.
+        val newer = AgentReplyModel.waiting(AgentReplyModel.sendStarted(cancelled), now + 8_000L)
+        assertFalse(AgentReplyModel.stillWaiting(newer, epoch))
+        assertNull(AgentReplyModel.waitFor(newer, epoch, refused(ReplyReason.IN_USE, retryMs = 4_000L), now, now))
+        // Nothing waiting: Cancel changes nothing.
+        assertEquals(going, AgentReplyModel.waitCancelled(going))
+        assertEquals(ready(), AgentReplyModel.waitCancelled(ready()))
+        // In the screen's loop: no try after the Cancel, and the box is free with its draft.
+        val (end, tries) = sendWaiting(ready(), cancelAfter = 3) { refused(ReplyReason.IN_USE, retryMs = 4_000L) }
+        assertEquals(3, tries)
+        assertNull(end.wait)
+        assertNull(box(end).note)
+        assertTrue(box(end).canSend)
+        assertEquals("Run the tests again", end.draft)
+    }
+
+    @Test
+    fun `Cancel while a try is on its way still reads what it answers`() {
+        val going = AgentReplyModel.sendStarted(ready())
+        val epoch = going.epoch
+        val asking = AgentReplyModel.resending(AgentReplyModel.waiting(going, now + 4_000L))
+        val cancelled = AgentReplyModel.waitCancelled(asking)
+        assertNull(cancelled.wait)
+        // Busy until it answers, so no second send can go over it.
+        assertTrue(box(cancelled).sending)
+        assertFalse(box(cancelled).waiting)
+        assertFalse(box(cancelled).canSend)
+        assertNull(AgentReplyModel.outgoing(cancelled, session()))
+        assertFalse(AgentReplyModel.stillWaiting(cancelled, epoch))
+        // It went in: shown as sent.
+        val sent = AgentReplyModel.replied(cancelled, ok(ReplyResult.SENT), "Run the tests again", 10u, session())
+        assertEquals("", sent.draft)
+        assertEquals(PendingReply("Run the tests again", 10u), sent.pending)
+        // Still in use: not sent again, and today's line rather than "gave up".
+        val inUse = refused(ReplyReason.IN_USE, retryMs = 4_000L)
+        assertNull(AgentReplyModel.waitFor(cancelled, epoch, inUse, now, now))
+        val notSent = AgentReplyModel.replied(cancelled, inUse, "Run the tests again", 10u, session())
+        assertEquals(ReplyNote.IN_USE, box(notSent).note)
+        assertTrue(box(notSent).canSend)
+        assertEquals("Run the tests again", notSent.draft)
+    }
+
+    @Test
+    fun `a check's in use, from an older PC, is still a line and never a wait`() {
+        val state = AgentReplyModel.checked(ready(), 0, refused(ReplyReason.IN_USE, retryMs = 3_000L), session())
+        assertEquals(ReplyNote.IN_USE, box(state).note)
+        assertEquals(3_000L, state.retryMs)
+        assertNull(state.wait)
+        assertFalse(box(state).waiting)
+        assertFalse(box(state).sending)
+        assertTrue(box(state).canSend)
     }
 }

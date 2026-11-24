@@ -60,8 +60,8 @@ pub mod session_reply {
         pub const LOCKED: &str = "locked";
         /// Someone is using the PC.
         pub const IN_USE: &str = "in_use";
-        /// The first reply from this phone to this session's window: show
-        /// `target` and send again with `confirm` set to `nonce`.
+        /// The first reply from this phone to this session where it runs
+        /// now: show `target` and send again with `confirm` set to `nonce`.
         pub const CONFIRM: &str = "confirm";
         /// The agent waits for an answer on the PC.
         pub const NEEDS_YOU: &str = "needs_you";
@@ -73,8 +73,10 @@ pub mod session_reply {
         pub const NO_WINDOW: &str = "no_window";
         /// It can't be told which window shows the session.
         pub const AMBIGUOUS: &str = "ambiguous";
-        /// It's in a background tab.
+        /// It's in a background tab the PC couldn't bring forward.
         pub const TAB: &str = "tab";
+        /// The PC couldn't make sure which terminal is the session's.
+        pub const UNPROVEN: &str = "unproven";
         /// The session runs where G7 can't type (an app, VS Code, ssh).
         pub const PLACE: &str = "place";
         /// Something is copied that G7 couldn't put back.
@@ -92,8 +94,8 @@ pub mod session_reply {
         pub const INPUT: &str = "input";
         /// Those of `refused`.
         pub const REFUSED: &[&str] = &[
-            LOCKED, IN_USE, CONFIRM, NEEDS_YOU, BUSY, ENDED, NO_PROCESS, NO_WINDOW, AMBIGUOUS, TAB, PLACE,
-            CLIPBOARD, TEXT, RATE, SETUP,
+            LOCKED, IN_USE, CONFIRM, NEEDS_YOU, BUSY, ENDED, NO_PROCESS, NO_WINDOW, AMBIGUOUS, TAB, UNPROVEN,
+            PLACE, CLIPBOARD, TEXT, RATE, SETUP,
         ];
         /// Those of `failed`.
         pub const FAILED: &[&str] = &[FOCUS, INTERRUPTED, INPUT];
@@ -425,6 +427,7 @@ mod tests {
             AgentSessionReplied::sent(target()),
             AgentSessionReplied::confirm(target(), NONCE.into()),
             AgentSessionReplied::refused(reason::RATE).retry_after(3_000),
+            AgentSessionReplied::refused(reason::UNPROVEN),
             AgentSessionReplied::failed(reason::INTERRUPTED).with_target(target()),
         ] {
             assert!(answer.is_valid(), "{answer:?}");
@@ -550,6 +553,8 @@ mod tests {
         assert_eq!(in_use.retry_ms, Some(4_000));
         let tab = AgentSessionReplied::refused(reason::TAB).retry_after(4_000).sanitized();
         assert_eq!(tab.retry_ms, None, "only rate and in_use say when");
+        let unproven = AgentSessionReplied::refused(reason::UNPROVEN).retry_after(4_000).for_request(false);
+        assert_eq!((unproven.reason.as_deref(), unproven.retry_ms), (Some(reason::UNPROVEN), None));
         let stray =
             AgentSessionReplied { nonce: Some(NONCE.into()), ..AgentSessionReplied::refused(reason::TAB) };
         assert_eq!(stray.sanitized().nonce, None, "a nonce only with confirm");

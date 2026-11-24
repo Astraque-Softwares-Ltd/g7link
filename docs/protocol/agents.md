@@ -1090,12 +1090,15 @@ works.
 ## 9. Reply on the PC
 
 Added in G7 Link 0.1.21. A phone types a reply into a session it follows
-(§3), where the session runs: the PC brings the session's own window forward,
-proves that what has the keyboard is that session, pastes the text as one
-bracketed paste and presses Enter. The agent's answer arrives as the session's
-items, as everything else does. Nothing is written to the agent's files and
-nothing goes to a vendor's host. Each check that fails is a refusal with a
-reason the phone can show; a reply is never a best guess.
+(§3), where the session runs: the PC brings the session's own window and its
+tab forward, proves that what has the keyboard is that session, pastes the
+text as one bracketed paste and presses Enter. When the terminal may have
+more than one tab or window, the PC sets a one-time title on the session's
+terminal, selects the tab that shows it, and restores the terminal's title
+before it answers. The agent's answer arrives as the session's items, as
+everything else does. Nothing is written to the agent's files and nothing
+goes to a vendor's host. Each check that fails is a refusal with a reason the
+phone can show; a reply is never a best guess.
 
 The PC offers `agent.reply` only while it can do it now: it offers
 `agent.sessions`, its window backend can write the PRIMARY selection, and its
@@ -1116,8 +1119,11 @@ AgentReplyTarget = { app: text, agent: text, folder: text, kind: text }   // kin
 This isn't `agent/reply`, §5's answer to an agent's question.
 
 - **A check** (`check: true`, no `text`) enters nothing. The PC runs its
-  checks without bringing anything forward and answers `ready` or `refused`,
-  never `confirm`: a check that lacks only the confirmation is `ready`.
+  checks without bringing anything forward, setting a title or reading the
+  screen, and answers `ready` or `refused`, never `confirm`: a check that
+  lacks only the confirmation is `ready`. It is never refused `in_use`,
+  `tab`, `ambiguous` or `unproven`: only a reply finds those out (a PC
+  before 0.1.27 may still answer a check `in_use` or `tab`).
   A phone checks when the session's screen opens, when the session's state
   changes and when the reply box gains focus, and shows a box only while the
   last check was `ready`.
@@ -1129,21 +1135,25 @@ This isn't `agent/reply`, §5's answer to an agent's question.
   it, which would paste it twice) or `input` (a key couldn't be pressed; the
   paste may have landed, so a phone shows it as `interrupted`).
 - **Refusal reasons:** `locked`, `in_use` (someone used the PC in the last
-  5 s, or a window is full screen), `confirm`, `needs_you` (the agent waits
-  for an answer on the PC), `busy` (Codex is mid-turn), `ended`,
+  5 s, or a window is full screen; with `retry_ms` a phone may send the same
+  reply again after that long, for up to a minute, while its user sees it
+  waiting; without it, waiting won't help), `confirm`, `needs_you` (the
+  agent waits for an answer on the PC), `busy` (Codex is mid-turn), `ended`,
   `no_process`, `no_window`, `ambiguous` (it can't be told which window shows
-  the session), `tab` (it's in a background tab), `place` (it runs where G7
-  doesn't type: the agent's app, VS Code, ssh, a terminal G7 doesn't know),
-  `clipboard`, `text` (it starts with `!` or `/`, which the agent reads as a
-  command), `rate`, `setup` (the PC needs an update to its desktop's
-  extension).
-- **Confirming.** The first reply from a phone to a session's window is
-  refused with `confirm`, the `target` and a `nonce`; the phone shows where
-  it will type and, when its user says Send, sends the same text again with
-  `confirm` set to the nonce. A nonce works once, for 2 minutes, for that
-  phone, session and window. The PC remembers the confirmation in memory: a
-  different window, a restarted terminal, a restarted G7 Link or 24 h asks
-  again.
+  the session), `tab` (it's in a background tab the PC couldn't bring
+  forward), `unproven` (the PC couldn't make sure which terminal is the
+  session's), `place` (it runs where G7 doesn't type: the agent's app,
+  VS Code, ssh, a terminal G7 doesn't know), `clipboard`, `text` (it starts
+  with `!` or `/`, which the agent reads as a command), `rate`, `setup` (the
+  PC needs an update to its desktop's extension).
+- **Confirming.** The first reply from a phone to a session is refused with
+  `confirm`, the `target` and a `nonce`; the phone shows where it will type
+  and, when its user says Send, sends the same text again with `confirm` set
+  to the nonce. A nonce works once, for 2 minutes, for that phone and
+  session. The PC remembers the confirmation in memory, bound to the phone,
+  the session and the process it runs in, not the window: a restarted agent
+  or terminal, a restarted G7 Link or 24 h asks again; the session's tab
+  moved to another window of the same terminal doesn't.
 - **`target`** is on every `ready`, `sent` and `confirm` answer: the app's
   name from its desktop entry (never a window title), the agent's name and
   the folder's name (never a path). A phone shows "Terminal · Claude ·
@@ -1157,9 +1167,10 @@ This isn't `agent/reply`, §5's answer to an agent's question.
   text NFC, and trims trailing white space and new lines, before anything
   else. It never logs the text, writes it to disk or puts it in an error, a
   notification or a crash report.
-- **Never retried.** A phone sends a reply once and never holds it while
-  offline. An answer that never came is shown as "Not known if it was sent"
-  until the session's next item settles it.
+- **Sending again.** A phone never holds a reply while offline. A `refused`
+  answer is definite (nothing was typed), so the same reply may be sent
+  again. An answer that never came may not: it is shown as "Not known if it
+  was sent" until the session's next item settles it.
 - A receiver reads a `result` it doesn't know as `failed`, a `reason` it
   doesn't know as a plain "Couldn't reply", and a `kind` it doesn't know with
   a plain icon.

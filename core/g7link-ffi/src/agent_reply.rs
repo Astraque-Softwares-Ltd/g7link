@@ -6,9 +6,9 @@
 //!
 //! The PC offers it as `agent.reply` (`Unsupported`, without asking, while
 //! it doesn't); its `agents`, `agent_sessions` and `agent_reply` toggles
-//! for this phone govern it (`Denied`). A reply is sent once, never held
-//! or retried, and never over Bluetooth. No `Debug` here prints a message
-//! or a nonce.
+//! for this phone govern it (`Denied`). Each call sends once, never holds
+//! a reply while offline and never goes over Bluetooth; only a `Refused`
+//! reply may be sent again. No `Debug` here prints a message or a nonce.
 
 use g7link_core as core;
 
@@ -35,10 +35,12 @@ pub enum AgentReplyReason {
     // Refused: nothing was typed.
     /// "Unlock <PC> to reply".
     Locked,
-    /// "<PC> is in use. Try again in a moment." (`retry_ms` when known).
+    /// Someone is using <PC>. With `retry_ms`, the same reply may be sent
+    /// again after that long, for up to a minute, while the user sees it
+    /// waiting; without it: "<PC> is in use. Try again in a moment."
     InUse,
-    /// The first reply to this window: show the target and ask; send again
-    /// with the answer's `nonce` as `confirm`.
+    /// The first reply to this session where it runs now: show the target
+    /// and ask; send again with the answer's `nonce` as `confirm`.
     Confirm,
     /// "It's waiting for an answer on <PC>."
     NeedsYou,
@@ -51,8 +53,12 @@ pub enum AgentReplyReason {
     NoWindow,
     /// "G7 can't tell which window it's in."
     Ambiguous,
-    /// "It's in a background tab. Bring it forward on <PC>."
+    /// "It's in a background tab G7 couldn't switch to. Bring it forward on
+    /// <PC>."
     Tab,
+    /// "G7 couldn't make sure which terminal this session is in. Nothing
+    /// was typed."
+    Unproven,
     /// The session runs where G7 can't type (an app, VS Code, ssh).
     Place,
     /// "Something is copied on <PC> that G7 can't put back."
@@ -88,6 +94,7 @@ impl AgentReplyReason {
             reason::NO_WINDOW => Self::NoWindow,
             reason::AMBIGUOUS => Self::Ambiguous,
             reason::TAB => Self::Tab,
+            reason::UNPROVEN => Self::Unproven,
             reason::PLACE => Self::Place,
             reason::CLIPBOARD => Self::Clipboard,
             reason::TEXT => Self::Text,

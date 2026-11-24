@@ -4174,8 +4174,10 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
     /**
      * Has the PC bring [sessionId]'s window forward, paste [text] and press
      * Enter; [confirm] is the nonce of its earlier "confirm" answer, once the
-     * user said Send. Only for a send the user made in the reply box: sent
-     * once, never held, retried or sent on its own.
+     * user said Send. Only for a send the user made in the reply box; each
+     * call sends once. The reply screen may call again with the same text
+     * after a `refused` `in_use` answer that carries `retry_ms`, while the
+     * user sees it waiting.
      */
     suspend fun agentSessionReply(
         pcId: String,

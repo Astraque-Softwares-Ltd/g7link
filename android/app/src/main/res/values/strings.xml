@@ -1997,16 +1997,19 @@
     <!-- Reply on the PC (0.1.21, plans/reply-on-pc.md §6): the followed session's reply box -->
     <string name="agents_pc_reply_line">%1$s, reply on the PC</string>
     <string name="agents_pc_reply_hint">Reply on %1$s</string>
-    <string name="agents_pc_reply_where">G7 brings this window forward on %1$s, pastes your message and presses Enter.</string>
+    <string name="agents_pc_reply_where">G7 brings this window and its tab forward on %1$s, pastes your message and presses Enter.</string>
     <string name="agents_pc_reply_typing">Typing on %1$s…</string>
+    <string name="agents_pc_reply_waiting">Waiting until %1$s is free…</string>
     <string name="agents_pc_reply_entered">Entered on %1$s</string>
     <string name="agents_pc_reply_picking_up">Waiting for %1$s to pick it up</string>
     <string name="agents_pc_reply_unlock">Unlock %1$s to reply</string>
     <string name="agents_pc_reply_in_use">%1$s is in use. Try again in a moment.</string>
+    <string name="agents_pc_reply_gave_up">%1$s stayed in use for a minute. Not sent.</string>
     <string name="agents_pc_reply_busy">%1$s is mid-turn. Send when it\'s done.</string>
     <string name="agents_pc_reply_rate">Too many replies at once. Try again in a moment.</string>
     <string name="agents_pc_reply_needs_you">It\'s waiting for an answer on %1$s.</string>
-    <string name="agents_pc_reply_tab">It\'s in a background tab. Bring it forward on %1$s.</string>
+    <string name="agents_pc_reply_tab">It\'s in a background tab G7 couldn\'t switch to. Bring it forward on %1$s.</string>
+    <string name="agents_pc_reply_unproven">G7 couldn\'t make sure which terminal this session is in. Nothing was typed.</string>
     <string name="agents_pc_reply_ambiguous">G7 can\'t tell which window it\'s in.</string>
     <string name="agents_pc_reply_clipboard">Something is copied on %1$s that G7 can\'t put back.</string>
     <string name="agents_pc_reply_text">Starts with ! or /, which %1$s reads as a command.</string>
@@ -2015,7 +2018,7 @@
     <string name="agents_pc_reply_not_known">Not known if it was sent. Check the session.</string>
     <string name="agents_pc_reply_failed">Couldn\'t reply.</string>
     <string name="agents_pc_reply_confirm_title">Type into this window on %1$s?</string>
-    <string name="agents_pc_reply_confirm_body">G7 brings it forward, pastes your message and presses Enter. It won\'t type while someone is using the PC.</string>
+    <string name="agents_pc_reply_confirm_body">G7 brings it forward, pastes your message and presses Enter. If someone is using the PC, it waits until they stop.</string>
     <string name="agents_pc_reply_cant">Can\'t reply to it from here.</string>
     <string name="agents_pc_reply_why">Why?</string>
     <string name="agents_pc_reply_cant_app">Reply in the %1$s app on %2$s.</string>

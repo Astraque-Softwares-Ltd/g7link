@@ -249,9 +249,23 @@ fun AgentSessionScreen(
             jumps++
             val lastSeq = AgentReplyModel.lastSeq(open?.items.orEmpty())
             reply = AgentReplyModel.sendStarted(reply)
+            val epoch = reply.epoch
             scope.launch {
-                // One act of the user's, sent once: never retried here or by the core.
-                val answer = core.agentSessionReply(device.id, sessionId, text, confirm)
+                // One act of the user's. Only "in use" with the PC's wait is sent again, for up to a
+                // minute while "Waiting until guchu is free…" shows (plans/reply-tabs-idle.md §4);
+                // an answer that never came is never sent again. Leaving the screen ends it.
+                val startedMs = System.currentTimeMillis()
+                var answer = core.agentSessionReply(device.id, sessionId, text, confirm)
+                while (true) {
+                    val nowMs = System.currentTimeMillis()
+                    val gap = AgentReplyModel.waitFor(reply, epoch, answer, startedMs, nowMs) ?: break
+                    reply = AgentReplyModel.waiting(reply, nowMs + gap)
+                    delay(gap)
+                    // Cancelled while it waited: the box is free again and nothing more goes.
+                    if (!AgentReplyModel.stillWaiting(reply, epoch)) return@launch
+                    reply = AgentReplyModel.resending(reply)
+                    answer = core.agentSessionReply(device.id, sessionId, text, confirm)
+                }
                 reply = AgentReplyModel.replied(reply, answer, text, lastSeq, currentSession)
             }
         }
@@ -421,6 +435,7 @@ fun AgentSessionScreen(
                             send = sendReply,
                             dismiss = { reply = AgentReplyModel.dismissed(reply) },
                             why = { why = true },
+                            cancelWait = { reply = AgentReplyModel.waitCancelled(reply) },
                         ),
                     )
                 }
@@ -526,6 +541,7 @@ private class ReplyActions(
     val send: () -> Unit,
     val dismiss: () -> Unit,
     val why: () -> Unit,
+    val cancelWait: () -> Unit,
 )
 
 /**
@@ -651,6 +667,10 @@ private fun ReplyBox(box: ReplyFooter.Box, draft: String, agentName: String, pcN
     Column(Modifier.fillMaxWidth().padding(start = 10.dp, end = 10.dp, top = 6.dp, bottom = 8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
         val muted = scheme.onSurfaceVariant
         when {
+            // Cancel ends only the waiting: a try already on its way is still read.
+            box.waiting -> ReplyTargetRow(G7Icons.clock, stringResource(R.string.agents_pc_reply_waiting, pcName), muted) {
+                G7RowAction(label = stringResource(R.string.action_cancel), onClick = actions.cancelWait)
+            }
             box.sending -> ReplyTargetRow(G7Icons.keyboard, stringResource(R.string.agents_pc_reply_typing, pcName), muted)
             box.locked -> ReplyTargetRow(G7Icons.lock, stringResource(R.string.agents_pc_reply_unlock, pcName), scheme.onSurface)
             else -> box.target?.let { target ->
@@ -717,15 +737,24 @@ private fun ReplyBox(box: ReplyFooter.Box, draft: String, agentName: String, pcN
     }
 }
 
+/** The line above the box; [action] at its end ("Cancel" while a reply waits). */
 @Composable
-private fun ReplyTargetRow(icon: ImageVector, text: String, color: Color) {
+private fun ReplyTargetRow(icon: ImageVector, text: String, color: Color, action: @Composable (() -> Unit)? = null) {
     Row(
         modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 2.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         Icon(icon, contentDescription = null, tint = color, modifier = Modifier.size(14.dp))
-        Text(text, style = MaterialTheme.typography.labelMedium, color = color, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Text(
+            text,
+            style = MaterialTheme.typography.labelMedium,
+            color = color,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = if (action != null) Modifier.weight(1f) else Modifier,
+        )
+        action?.invoke()
     }
 }
 
@@ -760,10 +789,12 @@ private fun ReplyNoteLine(note: ReplyNote, agentName: String, pcName: String, on
 @Composable
 private fun replyNoteText(note: ReplyNote, agentName: String, pcName: String): String = when (note) {
     ReplyNote.IN_USE -> stringResource(R.string.agents_pc_reply_in_use, pcName)
+    ReplyNote.GAVE_UP -> stringResource(R.string.agents_pc_reply_gave_up, pcName)
     ReplyNote.BUSY -> stringResource(R.string.agents_pc_reply_busy, agentName)
     ReplyNote.RATE -> stringResource(R.string.agents_pc_reply_rate)
     ReplyNote.NEEDS_YOU -> stringResource(R.string.agents_pc_reply_needs_you, pcName)
     ReplyNote.TAB -> stringResource(R.string.agents_pc_reply_tab, pcName)
+    ReplyNote.UNPROVEN -> stringResource(R.string.agents_pc_reply_unproven)
     ReplyNote.AMBIGUOUS -> stringResource(R.string.agents_pc_reply_ambiguous)
     ReplyNote.CLIPBOARD -> stringResource(R.string.agents_pc_reply_clipboard, pcName)
     ReplyNote.TEXT -> stringResource(R.string.agents_pc_reply_text, agentName)

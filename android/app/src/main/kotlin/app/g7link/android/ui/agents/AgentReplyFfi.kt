@@ -36,6 +36,7 @@ object AgentReplyFfi {
         AgentReplyReason.NO_WINDOW -> ReplyReason.NO_WINDOW
         AgentReplyReason.AMBIGUOUS -> ReplyReason.AMBIGUOUS
         AgentReplyReason.TAB -> ReplyReason.TAB
+        AgentReplyReason.UNPROVEN -> ReplyReason.UNPROVEN
         AgentReplyReason.PLACE -> ReplyReason.PLACE
         AgentReplyReason.CLIPBOARD -> ReplyReason.CLIPBOARD
         AgentReplyReason.TEXT -> ReplyReason.TEXT

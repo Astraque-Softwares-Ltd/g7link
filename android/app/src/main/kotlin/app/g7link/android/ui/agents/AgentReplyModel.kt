@@ -39,6 +39,7 @@ enum class ReplyReason(val word: String) {
     NO_WINDOW("no_window"),
     AMBIGUOUS("ambiguous"),
     TAB("tab"),
+    UNPROVEN("unproven"),
     PLACE("place"),
     CLIPBOARD("clipboard"),
     TEXT("text"),
@@ -119,8 +120,11 @@ enum class CantReply {
 
 /** The line under the box. [amber]: something to do on the PC. [sticky]: a later check doesn't clear it. */
 enum class ReplyNote(val amber: Boolean = false, val sticky: Boolean = false) {
-    /** "guchu is in use. Try again in a moment." */
+    /** "guchu is in use. Try again in a moment.": the PC didn't say waiting would help (an older one, or it can't tell). */
     IN_USE,
+
+    /** "guchu stayed in use for a minute. Not sent.": it waited and gave up; the text is still in the box. */
+    GAVE_UP,
 
     /** "Codex is mid-turn. Send when it's done." */
     BUSY,
@@ -131,8 +135,11 @@ enum class ReplyNote(val amber: Boolean = false, val sticky: Boolean = false) {
     /** "It's waiting for an answer on guchu." */
     NEEDS_YOU(amber = true),
 
-    /** "It's in a background tab. Bring it forward on guchu." */
+    /** "It's in a background tab G7 couldn't switch to. Bring it forward on guchu." */
     TAB(amber = true),
+
+    /** "G7 couldn't make sure which terminal this session is in. Nothing was typed." */
+    UNPROVEN(amber = true),
 
     /** "G7 can't tell which window it's in." */
     AMBIGUOUS(amber = true),
@@ -167,6 +174,14 @@ data class PendingReply(val text: String, val afterSeq: ULong)
 @Immutable
 data class ReplyConfirm(val target: ReplyTarget?, val nonce: String, val text: String)
 
+/**
+ * A reply held while the PC is in use (plans/reply-tabs-idle.md §4): sent
+ * again at [untilMs]. [asking]: it is on its way again, so Cancel stops only
+ * the tries after it, and its answer is still read (it may be typing now).
+ */
+@Immutable
+data class ReplyWait(val untilMs: Long, val asking: Boolean = false)
+
 /** A followed session's replies on this screen. Held by the screen only: leaving it drops them. */
 @Immutable
 data class ReplyState(
@@ -185,7 +200,9 @@ data class ReplyState(
     val pending: PendingReply? = null,
     /** No answer came: settled by the next user item. */
     val unsure: PendingReply? = null,
-    /** Bumped when a reply starts and when it ends: a check asked before then is stale. */
+    /** Waiting for the PC to be free, with [sending] still on: the field stays read only and checks are held. */
+    val wait: ReplyWait? = null,
+    /** Bumped when a reply starts, stops waiting and ends: a check asked before then is stale. */
     val epoch: Int = 0,
 )
 
@@ -203,6 +220,8 @@ sealed interface ReplyFooter {
         val locked: Boolean,
         /** The spinner for the button, the field read-only, "Typing on guchu…" for the target line. */
         val sending: Boolean,
+        /** With [sending]: "Waiting until guchu is free…" and Cancel for the target line. */
+        val waiting: Boolean,
         val note: ReplyNote?,
         val canSend: Boolean,
         /** Over the wire's limit (as opposed to empty). */
@@ -227,6 +246,12 @@ data class PendingRow(val text: String, val waiting: Boolean)
 object AgentReplyModel {
     /** The least time between two checks: the PC looks at no more than 2 a second. */
     const val CHECK_GAP_MS = 600L
+
+    /** How long a reply waits for the PC to be free, from when it first went. */
+    const val WAIT_MS = 60_000L
+
+    /** The least time between two tries of a waiting reply: the PC looks at one attempt a second. */
+    const val WAIT_GAP_MS = 1_200L
 
     /** A nonce is 32 hex digits (§4 limits); anything else isn't sent back. */
     private val NONCE = Regex("[0-9a-f]{32}")
@@ -268,7 +293,44 @@ object AgentReplyModel {
         retryMs = null,
         unsure = null,
         confirm = null,
+        wait = null,
     )
+
+    /**
+     * How long to wait before sending the same reply again, or null when it
+     * shouldn't be: only for "in use" with the PC's `retry_ms`, while the reply
+     * that started at [epoch] is still going (not cancelled), and only within
+     * [WAIT_MS] of [startedMs]. A refusal typed nothing, so sending again is
+     * safe; an answer that never came is never sent again.
+     */
+    fun waitFor(state: ReplyState, epoch: Int, answer: AgentCall<ReplyAnswer>, startedMs: Long, nowMs: Long): Long? {
+        if (state.epoch != epoch || !state.sending) return null
+        val value = (answer as? AgentCall.Ok)?.value ?: return null
+        if (value.result != ReplyResult.REFUSED || value.reason != ReplyReason.IN_USE) return null
+        val retry = value.retryMs?.takeIf { it in 1L..WAIT_MS } ?: return null
+        val gap = maxOf(retry, WAIT_GAP_MS)
+        return gap.takeIf { nowMs + gap < startedMs + WAIT_MS }
+    }
+
+    /** The reply waits until [untilMs] for the PC to be free: "Waiting until guchu is free…" with Cancel. */
+    fun waiting(state: ReplyState, untilMs: Long): ReplyState = state.copy(wait = ReplyWait(untilMs))
+
+    /** Whether the reply that started at [epoch] still waits: Cancel or leaving ends it. */
+    fun stillWaiting(state: ReplyState, epoch: Int): Boolean = state.epoch == epoch && state.sending && state.wait != null
+
+    /** The waiting reply goes again now. */
+    fun resending(state: ReplyState): ReplyState = state.wait?.let { state.copy(wait = it.copy(asking = true)) } ?: state
+
+    /**
+     * Cancel beside "Waiting until guchu is free…": nothing more is sent, the
+     * draft stays, no line. While a try is on its way its answer is still
+     * read, so the box stays busy until it comes.
+     */
+    fun waitCancelled(state: ReplyState): ReplyState {
+        val wait = state.wait ?: return state
+        if (wait.asking) return state.copy(wait = null, epoch = state.epoch + 1)
+        return state.copy(wait = null, sending = false, epoch = state.epoch + 1, retryMs = null)
+    }
 
     /** The text a reply sends now, and the nonce once the sheet confirmed it; null when nothing can go. */
     fun outgoing(state: ReplyState, session: AgentSession?): Pair<String, String?>? {
@@ -280,7 +342,7 @@ object AgentReplyModel {
 
     /** A reply's answer: [text] is what went, [lastSeq] the newest item seen when it went. */
     fun replied(state: ReplyState, call: AgentCall<ReplyAnswer>, text: String, lastSeq: ULong, session: AgentSession?): ReplyState {
-        val done = state.copy(sending = false, epoch = state.epoch + 1)
+        val done = state.copy(sending = false, epoch = state.epoch + 1, wait = null)
         val answer = when (call) {
             is AgentCall.Ok -> call.value
             is AgentCall.Failed -> return when (call.failure) {
@@ -322,6 +384,12 @@ object AgentReplyModel {
                     } else {
                         done.copy(offer = ReplyOffer.BOX, target = target, confirm = ReplyConfirm(target, nonce, text))
                     }
+                }
+                // Waited the minute out while the PC still said waiting would help: not sent, the text still in the box.
+                ReplyReason.IN_USE -> if (gaveUp(state, answer)) {
+                    done.copy(offer = ReplyOffer.BOX, target = target, note = ReplyNote.GAVE_UP, retryMs = null)
+                } else {
+                    refused(done, reason, answer, target, session)
                 }
                 else -> refused(done, reason, answer, target, session)
             }
@@ -376,6 +444,7 @@ object AgentReplyModel {
                     target = state.target,
                     locked = locked,
                     sending = state.sending,
+                    waiting = state.sending && state.wait != null,
                     note = note,
                     canSend = free && fits,
                     tooLong = AgentsModel.tooLong(state.draft),
@@ -427,6 +496,7 @@ object AgentReplyModel {
             ReplyReason.RATE -> ReplyNote.RATE
             ReplyReason.NEEDS_YOU -> ReplyNote.NEEDS_YOU
             ReplyReason.TAB -> ReplyNote.TAB
+            ReplyReason.UNPROVEN -> ReplyNote.UNPROVEN
             ReplyReason.AMBIGUOUS -> ReplyNote.AMBIGUOUS
             ReplyReason.CLIPBOARD -> ReplyNote.CLIPBOARD
             ReplyReason.TEXT -> ReplyNote.TEXT
@@ -436,6 +506,12 @@ object AgentReplyModel {
         // A sticky line stays over a passing one.
         val kept = state.note?.takeIf { it.sticky } ?: note
         return state.copy(offer = ReplyOffer.BOX, target = target, note = kept, retryMs = answer.retryMs?.takeIf { it in 1L..60_000L })
+    }
+
+    /** An "in use" after the reply waited, while the PC still said a wait would help: the minute ran out. */
+    private fun gaveUp(state: ReplyState, answer: ReplyAnswer): Boolean {
+        val retry = answer.retryMs ?: return false
+        return state.wait != null && retry in 1L..WAIT_MS
     }
 
     /** The box, with no passing line (a sticky one stays). */
