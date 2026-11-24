@@ -6,10 +6,10 @@ import QtQuick.Dialogs
 import app.g7link
 
 // Agents: Claude and Codex threads on this PC, and the sessions started here
-// outside G7, on the left (needs you, working, recent, on this PC); on the
-// right the open one (its transcript, what it asks, the reply box or Continue
-// here, and its details), a new thread, or the setup. It doesn't need a
-// paired phone.
+// outside G7, on the left (what needs you, then a group per project with its
+// threads and sessions, as the phone has them); on the right the open one
+// (its transcript, what it asks, the reply box or Continue here, and its
+// details), a new thread, or the setup. It doesn't need a paired phone.
 Item {
     id: page
     property bool active: true
@@ -269,23 +269,55 @@ Item {
         return query.length === 0
             || (row.title + " " + row.folder + " " + row.agent_name).toLocaleLowerCase().indexOf(query) >= 0
     }
-    readonly property var needsRows: threads.filter((t) => t.state === "waiting" && matches(t))
-    readonly property var workingRows: threads.filter((t) => t.state === "working" && matches(t))
-    readonly property var pinnedRows: threads.filter((t) => t.state !== "waiting" && t.state !== "working"
-                                                     && t.pinned === true && matches(t))
-    readonly property var recentRows: threads.filter((t) => t.state !== "waiting" && t.state !== "working"
-                                                     && t.pinned !== true && matches(t))
-    readonly property var sessionRows: sessions.filter((s) => matches(s))
+    // As the phone has it (AgentProjects): what needs you, then a group per
+    // folder holding its threads and the sessions started in it, the busiest first.
+    readonly property var listedThreads: threads.filter((t) => matches(t))
+    readonly property var listedSessions: sessions.filter((s) => matches(s))
+    readonly property var needsItems: AgentProjects.needsYou(listedThreads, listedSessions)
+    readonly property var groups: AgentProjects.groups(listedThreads, listedSessions)
+    readonly property string newestFolder: AgentProjects.newest(groups)
+    // Folders the user opened or closed ([[folder, open], ...]) and those
+    // showing every row; a filter opens them all.
+    property var folderChoices: []
+    property var foldersShowingAll: []
+    readonly property bool filtering: query.length > 0
+    function folderOpen(group) {
+        return filtering || AgentProjects.isOpen(group, newestFolder, folderChoices)
+    }
+    function toggleFolder(group) {
+        page.folderChoices = AgentProjects.chose(page.folderChoices, group.folder, !folderOpen(group))
+    }
+    function folderRows(group) {
+        return folderOpen(group) ? AgentProjects.shown(group, filtering || foldersShowingAll.indexOf(group.folder) >= 0) : []
+    }
+    function showAllOf(group) {
+        if (page.foldersShowingAll.indexOf(group.folder) < 0)
+            page.foldersShowingAll = page.foldersShowingAll.concat([group.folder])
+    }
     readonly property var shelfShown: (shelfRows || []).filter((t) => matches(t))
-    // The list's rows in the order it shows them, for Alt+Up and Alt+Down.
+    function showShelf(value) {
+        page.shelf = value
+        page.picked = []
+        Agents.showShelf(value === "all" ? "main" : value)
+    }
+    // The list's rows in the order it shows them, for Alt+Up and Alt+Down; a
+    // row that needs you is also in its folder, and counts once.
     readonly property var shownRows: {
         const thread = (t) => ({ kind: "thread", id: t.id })
         if (searching)
             return (searchState.groups || []).map((g) => ({ kind: "thread", id: g.thread }))
         if (shelf !== "all")
             return shelfShown.map(thread)
-        return needsRows.concat(workingRows, pinnedRows, recentRows).map(thread)
-            .concat(sessionRows.map((s) => ({ kind: "session", id: s.id })))
+        const seen = new Set()
+        const rows = []
+        for (const i of needsItems.concat(...groups.map((g) => folderRows(g)))) {
+            const key = i.kind + ":" + i.id
+            if (!seen.has(key)) {
+                seen.add(key)
+                rows.push({ kind: i.kind, id: i.id })
+            }
+        }
+        return rows
     }
     // Opens the row `by` away from the open one, stopping at the ends.
     function stepRow(by) {
@@ -864,30 +896,33 @@ Item {
         }
     }
 
-    // A list section: its title and count, then its rows.
+    // A list section: its title and count (or neither, under a folder's
+    // header), then its rows: threads and sessions as AgentProjects lists
+    // them ({ kind, id, row }).
     component ListSection: Column {
         id: section
         property string title
-        property var rows: []
-        property bool sessions: false
+        property var items: []
+        property bool titled: true
         property bool counted: true
         property real now: Date.now()
         // Marks offered (the host keeps them), threads picked, the one being renamed.
         property bool marks: false
         property var pickedIds: []
         property string renamingId: ""
-        signal picked(string id)
+        signal picked(string kind, string id)
         signal pickToggled(string id)
         signal markRequested(string id, string what)
         signal menuRequested(var row, real x, real y)
         signal renameRequested(string id)
         signal renamed(string id, string title)
         signal renameCancelled
-        visible: rows.length > 0
-        topPadding: 6
+        visible: items.length > 0
+        topPadding: titled ? 6 : 0
         Item {
+            visible: section.titled
             width: section.width
-            height: 28
+            height: visible ? 28 : 0
             Txt {
                 x: Theme.rowPadding
                 anchors.verticalCenter: parent.verticalCenter
@@ -900,35 +935,177 @@ Item {
                 anchors.right: parent.right
                 anchors.rightMargin: Theme.rowPadding
                 anchors.verticalCenter: parent.verticalCenter
-                text: String(section.rows.length)
+                text: String(section.items.length)
                 role: "bodySmall"
                 muted: true
             }
         }
         Repeater {
-            model: section.rows
+            model: section.items
             delegate: AgentRow {
                 id: listRow
                 required property var modelData
+                readonly property bool isThread: modelData.kind === "thread"
                 width: section.width
-                item: modelData
-                session: section.sessions
+                item: modelData.row
+                session: !isThread
                 now: section.now
                 marks: section.marks
-                picking: section.pickedIds.length > 0
-                picked: section.pickedIds.indexOf(modelData.id) >= 0
-                renaming: section.renamingId === modelData.id
-                selected: Agents.openKind === (section.sessions ? "session" : "thread") && Agents.openId === modelData.id
-                onClicked: section.picked(listRow.modelData.id)
+                picking: isThread && section.pickedIds.length > 0
+                picked: isThread && section.pickedIds.indexOf(modelData.id) >= 0
+                renaming: isThread && section.renamingId === modelData.id
+                selected: Agents.openKind === modelData.kind && Agents.openId === modelData.id
+                onClicked: section.picked(listRow.modelData.kind, listRow.modelData.id)
                 onPickToggled: section.pickToggled(listRow.modelData.id)
-                onPinRequested: section.markRequested(listRow.modelData.id, listRow.modelData.pinned ? "unpin" : "pin")
+                onPinRequested: section.markRequested(listRow.modelData.id, listRow.modelData.row.pinned ? "unpin" : "pin")
                 onArchiveRequested: section.markRequested(listRow.modelData.id,
-                                                          listRow.modelData.archived ? "unarchive" : "archive")
-                onMenuRequested: (x, y) => section.menuRequested(listRow.modelData, x, y)
+                                                          listRow.modelData.row.archived ? "unarchive" : "archive")
+                onMenuRequested: (x, y) => section.menuRequested(listRow.modelData.row, x, y)
                 onRenameRequested: section.renameRequested(listRow.modelData.id)
                 onRenamed: (title) => section.renamed(listRow.modelData.id, title)
                 onRenameCancelled: section.renameCancelled()
             }
+        }
+    }
+
+    // A folder in the list (AgentProjects' group): its glyph and name, then
+    // what's in it. Open, its counts and branch; closed, what needs you or
+    // runs in it and when it last moved. A click opens or closes it.
+    component FolderHeader: Item {
+        id: head
+        property var group: ({})
+        property bool open: false
+        property bool interactive: true
+        property real now: Date.now()
+        signal toggled
+        readonly property string name: (group.folder || "").length > 0 ? group.folder : qsTr("No folder")
+        readonly property string counts: {
+            const threads = group.threads || 0
+            const sessions = group.sessions || 0
+            const parts = []
+            if (threads > 0)
+                parts.push(threads === 1 ? qsTr("1 thread") : qsTr("%1 threads").arg(threads))
+            if (sessions > 0)
+                parts.push(sessions === 1 ? qsTr("1 session") : qsTr("%1 sessions").arg(sessions))
+            return parts.join(" · ")
+        }
+        readonly property string needsText: (group.needsYou || 0) === 0 ? ""
+            : group.needsYou === 1 ? qsTr("1 needs you") : qsTr("%1 need you").arg(group.needsYou)
+        readonly property string runningText: (group.running || 0) === 0 ? ""
+            : group.running === 1 ? qsTr("1 running") : qsTr("%1 running").arg(group.running)
+        readonly property string branch: group.branch || ""
+        // "2 min", "1 h", "3 d".
+        function ago(ms) {
+            const minutes = Math.max(0, Math.floor((head.now - ms) / 60000))
+            if (minutes < 1)
+                return qsTr("now")
+            if (minutes < 60)
+                return qsTr("%1 min").arg(minutes)
+            const hours = Math.floor(minutes / 60)
+            return hours < 24 ? qsTr("%1 h").arg(hours) : qsTr("%1 d").arg(Math.floor(hours / 24))
+        }
+        readonly property string summary: open
+            ? [counts, branch].filter((s) => s.length > 0).join(" · ")
+            : [needsText, runningText, needsText.length + runningText.length > 0 ? "" : counts, ago(group.lastMs || 0)]
+                .filter((s) => s.length > 0).join(" · ")
+
+        implicitHeight: headTexts.implicitHeight + 16
+        activeFocusOnTab: interactive
+        Accessible.role: Accessible.Button
+        Accessible.name: head.name
+        Accessible.description: head.summary
+        Accessible.onPressAction: if (head.interactive) head.toggled()
+        Keys.onPressed: (event) => {
+            if (head.interactive && (event.key === Qt.Key_Return || event.key === Qt.Key_Enter || event.key === Qt.Key_Space)) {
+                head.toggled()
+                event.accepted = true
+            }
+        }
+
+        StateFill {
+            anchors.fill: parent
+            radius: Theme.rowRadius
+            color: Theme.raised
+            on: head.interactive && headMouse.containsMouse
+        }
+        Rectangle {
+            anchors.fill: parent
+            radius: Theme.rowRadius
+            color: "transparent"
+            visible: Theme.focusVisible(head)
+            border.width: 2
+            border.color: Theme.focusRing
+        }
+        MouseArea {
+            id: headMouse
+            anchors.fill: parent
+            enabled: head.interactive
+            hoverEnabled: true
+            cursorShape: head.interactive ? Qt.PointingHandCursor : Qt.ArrowCursor
+            onClicked: head.toggled()
+        }
+        Icon {
+            id: folderGlyph
+            x: Theme.rowPadding - 2
+            y: 8 + Math.round((nameText.lineHeight - height) / 2)
+            width: 16
+            height: 16
+            path: Icons.folder
+            color: Theme.tintAmber
+        }
+        Column {
+            id: headTexts
+            anchors.left: folderGlyph.right
+            anchors.leftMargin: 8
+            anchors.right: chevron.left
+            anchors.rightMargin: 8
+            y: 8
+            spacing: 1
+            Txt {
+                id: nameText
+                width: parent.width
+                text: head.name
+                weight: 600
+                maximumLineCount: 1
+            }
+            // Closed, what needs you and what runs come first, in their colours.
+            Row {
+                id: summaryLine
+                width: parent.width
+                readonly property bool needsShown: !head.open && head.needsText.length > 0
+                readonly property bool runningShown: !head.open && head.runningText.length > 0
+                Txt {
+                    visible: summaryLine.needsShown
+                    text: head.needsText
+                    role: "bodySmall"
+                    color: AgentPalette.needsYou
+                }
+                Txt {
+                    visible: summaryLine.runningShown
+                    text: (summaryLine.needsShown ? " · " : "") + head.runningText
+                    role: "bodySmall"
+                    color: AgentPalette.working
+                }
+                Txt {
+                    readonly property string rest: head.open ? head.summary
+                        : (summaryLine.needsShown || summaryLine.runningShown ? "" : head.counts + " · ") + head.ago(head.group.lastMs || 0)
+                    width: Math.max(0, summaryLine.width - x)
+                    text: (summaryLine.needsShown || summaryLine.runningShown ? " · " : "") + rest
+                    role: "bodySmall"
+                    muted: true
+                    maximumLineCount: 1
+                }
+            }
+        }
+        Icon {
+            id: chevron
+            anchors.right: parent.right
+            anchors.rightMargin: Theme.rowPadding
+            y: 8 + Math.round((nameText.lineHeight - height) / 2)
+            width: 14
+            height: 14
+            path: head.open ? Icons.chevronUp : Icons.chevronDown
+            color: Theme.surfaceContentVariant
         }
     }
 
@@ -991,22 +1168,6 @@ Item {
                     const group = (page.searchState.groups || [])[0]
                     if (page.searching && group)
                         page.openHit(group.thread, ((group.hits || [])[0] || {}).seq || "0")
-                }
-            }
-            // The main list, or a shelf: archived, or snoozed until a time.
-            Segmented {
-                visible: page.historyOn && !page.searching
-                width: parent.width
-                options: [
-                    { value: "all", label: qsTr("All") },
-                    { value: "archived", label: qsTr("Archived") },
-                    { value: "snoozed", label: qsTr("Snoozed") }
-                ]
-                value: page.shelf
-                onPicked: (value) => {
-                    page.shelf = value
-                    page.picked = []
-                    Agents.showShelf(value === "all" ? "main" : value)
                 }
             }
             // The agent host is still the version from before an update, kept
@@ -1084,12 +1245,12 @@ Item {
                     ListSection {
                         width: parent.width
                         title: qsTr("Needs you")
-                        rows: page.needsRows
+                        items: page.needsItems
                         now: page.now
                         marks: page.historyOn
                         pickedIds: page.picked
                         renamingId: page.renamingId
-                        onPicked: (id) => page.picked.length > 0 ? page.togglePick(id) : page.openRow("thread", id)
+                        onPicked: (kind, id) => kind === "thread" && page.picked.length > 0 ? page.togglePick(id) : page.openRow(kind, id)
                         onPickToggled: (id) => page.togglePick(id)
                         onMarkRequested: (id, what) => page.markThreads([id], what)
                         onMenuRequested: (row, x, y) => page.openRowMenu(row, x, y)
@@ -1100,88 +1261,135 @@ Item {
                         }
                         onRenameCancelled: page.renamingId = ""
                     }
-                    ListSection {
+                    Item {
+                        visible: page.groups.length > 0
                         width: parent.width
-                        title: qsTr("Working")
-                        rows: page.workingRows
-                        now: page.now
-                        marks: page.historyOn
-                        pickedIds: page.picked
-                        renamingId: page.renamingId
-                        onPicked: (id) => page.picked.length > 0 ? page.togglePick(id) : page.openRow("thread", id)
-                        onPickToggled: (id) => page.togglePick(id)
-                        onMarkRequested: (id, what) => page.markThreads([id], what)
-                        onMenuRequested: (row, x, y) => page.openRowMenu(row, x, y)
-                        onRenameRequested: (id) => page.renamingId = id
-                        onRenamed: (id, title) => {
-                            Agents.rename(id, title)
-                            page.renamingId = ""
+                        height: visible ? 34 : 0
+                        Txt {
+                            x: Theme.rowPadding
+                            anchors.bottom: parent.bottom
+                            anchors.bottomMargin: 6
+                            text: qsTr("Projects")
+                            role: "label"
+                            muted: true
                         }
-                        onRenameCancelled: page.renamingId = ""
                     }
-                    ListSection {
-                        width: parent.width
-                        title: qsTr("Pinned")
-                        rows: page.pinnedRows
-                        now: page.now
-                        marks: page.historyOn
-                        pickedIds: page.picked
-                        renamingId: page.renamingId
-                        onPicked: (id) => page.picked.length > 0 ? page.togglePick(id) : page.openRow("thread", id)
-                        onPickToggled: (id) => page.togglePick(id)
-                        onMarkRequested: (id, what) => page.markThreads([id], what)
-                        onMenuRequested: (row, x, y) => page.openRowMenu(row, x, y)
-                        onRenameRequested: (id) => page.renamingId = id
-                        onRenamed: (id, title) => {
-                            Agents.rename(id, title)
-                            page.renamingId = ""
+                    // A folder: its header, then its rows (those that need
+                    // you or run, then three more) and "n more".
+                    Repeater {
+                        model: page.groups
+                        delegate: Item {
+                            id: folderBlock
+                            required property var modelData
+                            readonly property bool open: page.folderOpen(modelData)
+                            readonly property var rows: page.folderRows(modelData)
+                            readonly property int hidden: open ? modelData.items.length - rows.length : 0
+                            width: listColumn.width
+                            height: folderColumn.height + 6
+                            // One card per folder, as the phone has them: an outline,
+                            // so its rows keep their hover and selection fills.
+                            Rectangle {
+                                width: parent.width
+                                height: folderColumn.height
+                                radius: Theme.radiusMd
+                                color: "transparent"
+                                border.width: 1
+                                border.color: Theme.outlineVariant
+                            }
+                            Column {
+                                id: folderColumn
+                                width: parent.width
+                                FolderHeader {
+                                    width: parent.width
+                                    group: folderBlock.modelData
+                                    open: folderBlock.open
+                                    interactive: !page.filtering
+                                    now: page.now
+                                    onToggled: page.toggleFolder(folderBlock.modelData)
+                                }
+                                ListSection {
+                                    width: parent.width
+                                    titled: false
+                                    items: folderBlock.rows
+                                    now: page.now
+                                    marks: page.historyOn
+                                    pickedIds: page.picked
+                                    renamingId: page.renamingId
+                                    onPicked: (kind, id) => kind === "thread" && page.picked.length > 0 ? page.togglePick(id) : page.openRow(kind, id)
+                                    onPickToggled: (id) => page.togglePick(id)
+                                    onMarkRequested: (id, what) => page.markThreads([id], what)
+                                    onMenuRequested: (row, x, y) => page.openRowMenu(row, x, y)
+                                    onRenameRequested: (id) => page.renamingId = id
+                                    onRenamed: (id, title) => {
+                                        Agents.rename(id, title)
+                                        page.renamingId = ""
+                                    }
+                                    onRenameCancelled: page.renamingId = ""
+                                }
+                                ActionRow {
+                                    visible: folderBlock.hidden > 0
+                                    width: parent.width
+                                    height: visible ? Theme.rowHeight : 0
+                                    iconPath: Icons.chevronDown
+                                    title: qsTr("%1 more").arg(folderBlock.hidden)
+                                    titleColor: Theme.surfaceContentVariant
+                                    onClicked: page.showAllOf(folderBlock.modelData)
+                                }
+                            }
                         }
-                        onRenameCancelled: page.renamingId = ""
                     }
-                    ListSection {
+                    // The shelves, under the folders.
+                    Column {
+                        visible: page.historyOn
                         width: parent.width
-                        title: qsTr("Recent")
-                        rows: page.recentRows
-                        counted: false
-                        now: page.now
-                        marks: page.historyOn
-                        pickedIds: page.picked
-                        renamingId: page.renamingId
-                        onPicked: (id) => page.picked.length > 0 ? page.togglePick(id) : page.openRow("thread", id)
-                        onPickToggled: (id) => page.togglePick(id)
-                        onMarkRequested: (id, what) => page.markThreads([id], what)
-                        onMenuRequested: (row, x, y) => page.openRowMenu(row, x, y)
-                        onRenameRequested: (id) => page.renamingId = id
-                        onRenamed: (id, title) => {
-                            Agents.rename(id, title)
-                            page.renamingId = ""
+                        topPadding: 8
+                        ActionRow {
+                            width: parent.width
+                            iconPath: Icons.tray
+                            title: qsTr("Archived")
+                            onClicked: page.showShelf("archived")
+                            Icon {
+                                anchors.verticalCenter: parent.verticalCenter
+                                width: 14
+                                height: 14
+                                path: Icons.chevronRight
+                                color: Theme.surfaceContentVariant
+                            }
                         }
-                        onRenameCancelled: page.renamingId = ""
-                    }
-
-                    ListSection {
-                        width: parent.width
-                        title: qsTr("On this PC")
-                        rows: page.sessionRows
-                        sessions: true
-                        counted: false
-                        now: page.now
-                        onPicked: (id) => page.openRow("session", id)
+                        ActionRow {
+                            width: parent.width
+                            iconPath: Icons.moon
+                            title: qsTr("Snoozed")
+                            onClicked: page.showShelf("snoozed")
+                            Icon {
+                                anchors.verticalCenter: parent.verticalCenter
+                                width: 14
+                                height: 14
+                                path: Icons.chevronRight
+                                color: Theme.surfaceContentVariant
+                            }
+                        }
                     }
                 }
-                // The Archived or Snoozed shelf.
+                // The Archived or Snoozed shelf, and the way back.
                 Column {
                     visible: !page.searching && page.shelf !== "all"
                     width: parent.width
+                    ActionRow {
+                        width: parent.width
+                        iconPath: Icons.back
+                        title: qsTr("Back to projects")
+                        onClicked: page.showShelf("all")
+                    }
                     ListSection {
                         width: parent.width
                         title: page.shelf === "archived" ? qsTr("Archived") : qsTr("Snoozed")
-                        rows: page.shelfShown
+                        items: AgentProjects.items(page.shelfShown, [])
                         now: page.now
                         marks: page.historyOn
                         pickedIds: page.picked
                         renamingId: page.renamingId
-                        onPicked: (id) => page.picked.length > 0 ? page.togglePick(id) : page.openRow("thread", id)
+                        onPicked: (kind, id) => kind === "thread" && page.picked.length > 0 ? page.togglePick(id) : page.openRow(kind, id)
                         onPickToggled: (id) => page.togglePick(id)
                         onMarkRequested: (id, what) => page.markThreads([id], what)
                         onMenuRequested: (row, x, y) => page.openRowMenu(row, x, y)
@@ -1235,8 +1443,7 @@ Item {
                 }
                 Txt {
                     visible: page.query.length > 0 && !page.searching && page.shelf === "all"
-                             && page.needsRows.length + page.workingRows.length + page.pinnedRows.length
-                                + page.recentRows.length + page.sessionRows.length === 0
+                             && page.groups.length === 0
                              && page.threads.length + page.sessions.length > 0
                     x: Theme.rowPadding
                     width: parent.width - 2 * Theme.rowPadding
@@ -2198,7 +2405,11 @@ Item {
                     agentId: page.info.agent || ""
                     folder: page.info.folder || ""
                     quotes: page.gitState.quotes || []
-                    onSend: (text, other) => Agents.send(text, other)
+                    // The message and what answers it show, however far up the transcript was.
+                    onSend: (text, other) => {
+                        Agents.send(text, other)
+                        transcript.jumpToLatest()
+                    }
                     onDenySend: (token, text) => Agents.denyWithMessage(token, text)
                     onAllow: page.allowShown()
                     onStop: Agents.stop()

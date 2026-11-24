@@ -24,7 +24,75 @@
     </message>
 </context>
 <context>
+    <name>AgentTimelineView</name>
+    <message>
+        <location filename="../../qml/components/AgentTimelineView.qml" line="722"/>
+        <source>New below</source>
+        <translation type="unfinished"></translation>
+    </message>
+</context>
+<context>
     <name>AgentsPage</name>
+    <message>
+        <location filename="../../qml/pages/AgentsPage.qml" line="974"/>
+        <source>No folder</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../../qml/pages/AgentsPage.qml" line="980"/>
+        <source>1 thread</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../../qml/pages/AgentsPage.qml" line="980"/>
+        <source>%1 threads</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../../qml/pages/AgentsPage.qml" line="982"/>
+        <source>1 session</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../../qml/pages/AgentsPage.qml" line="982"/>
+        <source>%1 sessions</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../../qml/pages/AgentsPage.qml" line="986"/>
+        <source>1 needs you</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../../qml/pages/AgentsPage.qml" line="986"/>
+        <source>%1 need you</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../../qml/pages/AgentsPage.qml" line="988"/>
+        <source>1 running</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../../qml/pages/AgentsPage.qml" line="988"/>
+        <source>%1 running</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../../qml/pages/AgentsPage.qml" line="1265"/>
+        <source>Projects</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../../qml/pages/AgentsPage.qml" line="1327"/>
+        <source>%1 more</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../../qml/pages/AgentsPage.qml" line="1374"/>
+        <source>Back to projects</source>
+        <translation type="unfinished"></translation>
+    </message>
     <message>
         <location filename="../../qml/pages/AgentsPage.qml" line="2939"/>
         <location filename="../../qml/pages/AgentsPage.qml" line="2966"/>

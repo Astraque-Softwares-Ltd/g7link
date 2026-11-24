@@ -21,6 +21,13 @@ change things that need a step from you, and its notes say so.
   the tiles. Where a language or a larger text size needs more room, tiles go
   three or two to a row and the sound switches and Activity tiles stack,
   instead of a name breaking onto a second line.
+- **The PC's Agents list follows the phone's.** What needs you comes first,
+  then a card per project holding its threads and the sessions started in
+  it, the busiest first. A project shows what needs you or runs and three
+  more, then "n more", and opens or closes with a click. Archived and
+  Snoozed sit under the projects. After you send, the transcript goes to its
+  end, and "Jump to latest" reads "New below" when rows came in while you
+  read further up.
 
 ## 0.1.27 (2026-11-24)
 

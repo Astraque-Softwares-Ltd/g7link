@@ -5,6 +5,10 @@ import QtQuick
 // Stands in for the Rust AgentTimeline in QML tests: one row of each kind,
 // every role set, as the model gives them.
 ListModel {
+    // The model's own lookup: a row's item ("" past the ends).
+    function itemIdAt(row) {
+        return row >= 0 && row < count ? get(row).itemId : ""
+    }
     ListElement {
         key: "i:u1"
         kind: "user"

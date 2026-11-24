@@ -24,7 +24,75 @@
     </message>
 </context>
 <context>
+    <name>AgentTimelineView</name>
+    <message>
+        <location filename="../qml/components/AgentTimelineView.qml" line="722"/>
+        <source>New below</source>
+        <translation>Neues unten</translation>
+    </message>
+</context>
+<context>
     <name>AgentsPage</name>
+    <message>
+        <location filename="../qml/pages/AgentsPage.qml" line="974"/>
+        <source>No folder</source>
+        <translation>Kein Ordner</translation>
+    </message>
+    <message>
+        <location filename="../qml/pages/AgentsPage.qml" line="980"/>
+        <source>1 thread</source>
+        <translation>1 Thread</translation>
+    </message>
+    <message>
+        <location filename="../qml/pages/AgentsPage.qml" line="980"/>
+        <source>%1 threads</source>
+        <translation>%1 Threads</translation>
+    </message>
+    <message>
+        <location filename="../qml/pages/AgentsPage.qml" line="982"/>
+        <source>1 session</source>
+        <translation>1 Sitzung</translation>
+    </message>
+    <message>
+        <location filename="../qml/pages/AgentsPage.qml" line="982"/>
+        <source>%1 sessions</source>
+        <translation>%1 Sitzungen</translation>
+    </message>
+    <message>
+        <location filename="../qml/pages/AgentsPage.qml" line="986"/>
+        <source>1 needs you</source>
+        <translation>1 braucht dich</translation>
+    </message>
+    <message>
+        <location filename="../qml/pages/AgentsPage.qml" line="986"/>
+        <source>%1 need you</source>
+        <translation>%1 brauchen dich</translation>
+    </message>
+    <message>
+        <location filename="../qml/pages/AgentsPage.qml" line="988"/>
+        <source>1 running</source>
+        <translation>1 läuft</translation>
+    </message>
+    <message>
+        <location filename="../qml/pages/AgentsPage.qml" line="988"/>
+        <source>%1 running</source>
+        <translation>%1 laufen</translation>
+    </message>
+    <message>
+        <location filename="../qml/pages/AgentsPage.qml" line="1265"/>
+        <source>Projects</source>
+        <translation>Projekte</translation>
+    </message>
+    <message>
+        <location filename="../qml/pages/AgentsPage.qml" line="1327"/>
+        <source>%1 more</source>
+        <translation>%1 weitere</translation>
+    </message>
+    <message>
+        <location filename="../qml/pages/AgentsPage.qml" line="1374"/>
+        <source>Back to projects</source>
+        <translation>Zurück zu den Projekten</translation>
+    </message>
     <message>
         <location filename="../qml/pages/AgentsPage.qml" line="2939"/>
         <location filename="../qml/pages/AgentsPage.qml" line="2966"/>

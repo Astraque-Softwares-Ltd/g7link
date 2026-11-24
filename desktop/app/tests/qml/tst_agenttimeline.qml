@@ -51,6 +51,26 @@ Item {
             compare(spy.signalArguments[0][0], "b:m1:1")
             compare(spy.signalArguments[0][1], 0)
         }
+
+        // Read further up, a new row at the end turns "Jump to latest" into
+        // "New below"; following again (a send, or the button) clears it.
+        function test_rows_arriving_while_reading_up_say_new_below() {
+            const view = createTemporaryObject(timelineView, root)
+            tryCompare(view, "count", AgentTimeline.count)
+            view.follow = false
+            verify(!view.newBelow)
+            view.checkNewBelow()
+            verify(!view.newBelow, "nothing new yet")
+            const last = AgentTimeline.count - 1
+            const was = AgentTimeline.get(last).itemId
+            AgentTimeline.setProperty(last, "itemId", "z9")
+            view.checkNewBelow()
+            AgentTimeline.setProperty(last, "itemId", was)
+            verify(view.newBelow)
+            view.jumpToLatest()
+            verify(view.follow)
+            verify(!view.newBelow)
+        }
     }
 
     Component {

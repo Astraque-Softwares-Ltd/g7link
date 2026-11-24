@@ -24,7 +24,75 @@
     </message>
 </context>
 <context>
+    <name>AgentTimelineView</name>
+    <message>
+        <location filename="../qml/components/AgentTimelineView.qml" line="722"/>
+        <source>New below</source>
+        <translation>Aşağıda yeni</translation>
+    </message>
+</context>
+<context>
     <name>AgentsPage</name>
+    <message>
+        <location filename="../qml/pages/AgentsPage.qml" line="974"/>
+        <source>No folder</source>
+        <translation>Klasör yok</translation>
+    </message>
+    <message>
+        <location filename="../qml/pages/AgentsPage.qml" line="980"/>
+        <source>1 thread</source>
+        <translation>1 konuşma</translation>
+    </message>
+    <message>
+        <location filename="../qml/pages/AgentsPage.qml" line="980"/>
+        <source>%1 threads</source>
+        <translation>%1 konuşma</translation>
+    </message>
+    <message>
+        <location filename="../qml/pages/AgentsPage.qml" line="982"/>
+        <source>1 session</source>
+        <translation>1 oturum</translation>
+    </message>
+    <message>
+        <location filename="../qml/pages/AgentsPage.qml" line="982"/>
+        <source>%1 sessions</source>
+        <translation>%1 oturum</translation>
+    </message>
+    <message>
+        <location filename="../qml/pages/AgentsPage.qml" line="986"/>
+        <source>1 needs you</source>
+        <translation>1 sizi bekliyor</translation>
+    </message>
+    <message>
+        <location filename="../qml/pages/AgentsPage.qml" line="986"/>
+        <source>%1 need you</source>
+        <translation>%1 sizi bekliyor</translation>
+    </message>
+    <message>
+        <location filename="../qml/pages/AgentsPage.qml" line="988"/>
+        <source>1 running</source>
+        <translation>1 çalışıyor</translation>
+    </message>
+    <message>
+        <location filename="../qml/pages/AgentsPage.qml" line="988"/>
+        <source>%1 running</source>
+        <translation>%1 çalışıyor</translation>
+    </message>
+    <message>
+        <location filename="../qml/pages/AgentsPage.qml" line="1265"/>
+        <source>Projects</source>
+        <translation>Projeler</translation>
+    </message>
+    <message>
+        <location filename="../qml/pages/AgentsPage.qml" line="1327"/>
+        <source>%1 more</source>
+        <translation>%1 tane daha</translation>
+    </message>
+    <message>
+        <location filename="../qml/pages/AgentsPage.qml" line="1374"/>
+        <source>Back to projects</source>
+        <translation>Projelere dön</translation>
+    </message>
     <message>
         <location filename="../qml/pages/AgentsPage.qml" line="2939"/>
         <location filename="../qml/pages/AgentsPage.qml" line="2966"/>

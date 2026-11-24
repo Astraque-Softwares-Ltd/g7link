@@ -8,7 +8,8 @@ import app.g7link
 // line a step, runs of steps as one line, a finished turn folded behind
 // "Worked for …"), its answer as Markdown, and the live line while it works.
 // It follows the newest until you scroll up; then "Jump to latest" brings
-// you back. Rows come from AgentTimeline, computed off the GUI thread.
+// you back, and reads "New below" once rows came in since. A send follows
+// the newest again. Rows come from AgentTimeline, computed off the GUI thread.
 ListView {
     id: timeline
     // Where it runs, beside an opened command.
@@ -25,6 +26,10 @@ ListView {
     property string agentName
     // The message a search hit opened the thread at, lit up for a moment.
     property string highlightItem: ""
+    // The newest row's item when the reader left the end, and whether rows
+    // came in below it since (as the phone's TimelineFollow has it).
+    property string newestSeen: ""
+    property bool newBelow: false
 
     // A link was clicked: the page shows where it goes, then opens it.
     signal linkActivated(string key, int index)
@@ -52,6 +57,14 @@ ListView {
         follow = true
         positionViewAtEnd()
     }
+    // The newest row's item ("" for none).
+    function newestItem() {
+        return count > 0 ? AgentTimeline.itemIdAt(count - 1) : ""
+    }
+    function checkNewBelow() {
+        if (!follow && !newBelow && count > 0 && newestItem() !== newestSeen)
+            newBelow = true
+    }
     // The item of the first row at the top of the view ("" for none).
     function topItem() {
         for (let y = 2; y < height; y += 12) {
@@ -73,10 +86,22 @@ ListView {
         if (!follow)
             readingAt(topItem())
     }
-    onFollowChanged: if (follow) readingAt("")
+    onFollowChanged: {
+        if (follow) {
+            newBelow = false
+            readingAt("")
+        } else {
+            newestSeen = newestItem()
+        }
+    }
     onAtYEndChanged: if (atYEnd) follow = true
     onContentHeightChanged: if (follow) Qt.callLater(() => timeline.positionViewAtEnd())
-    onCountChanged: if (follow) Qt.callLater(() => timeline.positionViewAtEnd())
+    onCountChanged: {
+        if (follow)
+            Qt.callLater(() => timeline.positionViewAtEnd())
+        else
+            checkNewBelow()
+    }
 
     // Scrolling up to read stops following the end.
     WheelHandler {
@@ -663,7 +688,8 @@ ListView {
         }
     }
 
-    // Scrolled up while it works: one click back to the newest.
+    // Scrolled up while it works: one click back to the newest, in the
+    // accent once rows came in below.
     Rectangle {
         visible: !timeline.follow && timeline.count > 0 && !timeline.atYEnd
         anchors.horizontalCenter: parent.horizontalCenter
@@ -672,8 +698,8 @@ ListView {
         width: jumpRow.implicitWidth + 20
         height: 28
         radius: 14
-        color: Theme.surfaceContainerHighest
-        border.width: 1
+        color: timeline.newBelow ? Theme.accent : Theme.surfaceContainerHighest
+        border.width: timeline.newBelow ? 0 : 1
         border.color: Theme.outlineVariant
         z: 5
         Accessible.role: Accessible.Button
@@ -688,13 +714,14 @@ ListView {
                 width: 14
                 height: 14
                 path: Icons.chevronDown
-                color: Theme.surfaceContent
+                color: timeline.newBelow ? Theme.accentContent : Theme.surfaceContent
             }
             Txt {
                 id: jumpText
                 anchors.verticalCenter: parent.verticalCenter
-                text: qsTr("Jump to latest")
+                text: timeline.newBelow ? qsTr("New below") : qsTr("Jump to latest")
                 role: "bodySmall"
+                color: timeline.newBelow ? Theme.accentContent : Theme.surfaceContent
             }
         }
         MouseArea {
