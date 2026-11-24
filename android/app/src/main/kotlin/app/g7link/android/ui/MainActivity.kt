@@ -15,6 +15,7 @@ import androidx.compose.animation.AnimatedContent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.navigationBars
@@ -788,7 +789,7 @@ private fun App(
                         onOpenThread = { agentThreadId = it },
                         onOpenSession = { agentSessionId = it },
                         onBack = { agentsPcId = null },
-                        modifier = Modifier.fillMaxSize().padding(padding),
+                        modifier = Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding),
                     )
                 }
             }
@@ -808,7 +809,7 @@ private fun App(
                             agentThreadId = threadId
                         },
                         onBack = { agentSessionId = null },
-                        modifier = Modifier.fillMaxSize().padding(padding),
+                        modifier = Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding),
                     )
                 }
             }
@@ -823,7 +824,7 @@ private fun App(
                         core = core,
                         threadId = route.threadId,
                         onBack = { agentThreadId = null },
-                        modifier = Modifier.fillMaxSize().padding(padding),
+                        modifier = Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding),
                     )
                 }
             }

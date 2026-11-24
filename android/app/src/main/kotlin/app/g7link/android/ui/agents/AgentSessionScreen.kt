@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyListScope
@@ -338,7 +339,8 @@ fun AgentSessionScreen(
         onOpenSession = { id -> AgentsNavigation.open(context, device.id, sessionId = id) },
         modifier = modifier,
     ) {
-        Column(Modifier.fillMaxSize()) {
+        // The reply box rides on the keyboard, as the thread's does.
+        Column(Modifier.fillMaxSize().imePadding()) {
             G7Header(title = session?.title.orEmpty(), onBack = onBack) {
                 AgentsDrawerButton(drawer)
                 if (session != null && session.state != AgentSessionState.ENDED) {
