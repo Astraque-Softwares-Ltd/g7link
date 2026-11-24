@@ -200,8 +200,14 @@ private fun NeedsYouCardView(card: NeedsYouCard, agents: AgentsState, pcName: St
                 is NeedsYouCard.Thread -> listOf(agents.agentName(card.thread.agent), card.thread.folder).filter { it.isNotBlank() }.joinToString(" · ")
                 is NeedsYouCard.Session -> sessionPlace(card.session, agents.agentName(card.session.agent))
             }
+            val mark = AgentMark.of(
+                when (card) {
+                    is NeedsYouCard.Thread -> card.thread.agent
+                    is NeedsYouCard.Session -> card.session.agent
+                },
+            )
             if (card is NeedsYouCard.Session) sourceIcon(card.session.source)?.let { Icon(it, contentDescription = null, tint = scheme.onSurfaceVariant, modifier = Modifier.size(13.dp)) }
-            Text(place, style = MaterialTheme.typography.bodySmall, color = scheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+            Text(markedText(place, mark), style = MaterialTheme.typography.bodySmall, color = scheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis, inlineContent = agentMarkContent(mark), modifier = Modifier.weight(1f))
             Text(relativeTime(card.updatedMs, now), style = MaterialTheme.typography.bodySmall, color = scheme.onSurfaceVariant, maxLines = 1)
         }
         Text(
@@ -391,6 +397,7 @@ private fun ProjectThreadRow(thread: AgentThread, agents: AgentsState, now: Long
                 },
                 meta = threadMeta(thread, agents, status),
                 metaIcon = null,
+                metaMark = AgentMark.of(thread.agent),
                 onClick = { actions.open(thread.id) },
                 onLongClick = { actions.menu(thread.id) },
             )
@@ -404,6 +411,8 @@ private fun threadMeta(thread: AgentThread, agents: AgentsState, status: ThreadS
     val p = agentPalette()
     val muted = MaterialTheme.colorScheme.onSurfaceVariant
     val agent = agents.agentName(thread.agent)
+    // The agent's mark goes before its name: the first part, or the second after a resting thread's state word.
+    val marked = AgentMark.of(thread.agent) != null
     val origin = when (val from = AgentShelves.origin(thread)) {
         is ThreadOrigin.ForkOf -> stringResource(R.string.agents_fork_of, from.title)
         ThreadOrigin.BroughtIn -> stringResource(R.string.agents_brought_in)
@@ -415,13 +424,13 @@ private fun threadMeta(thread: AgentThread, agents: AgentsState, status: ThreadS
             val questions = maxOf(agents.questionsFor(thread.id).size, thread.asking.toInt())
             val what = ask?.let { AgentsModel.askBody(it) ?: it.title }?.lineSequence()?.firstOrNull { it.isNotBlank() }
                 ?: if (questions > 0) pluralStringResource(R.plurals.agents_question_asks_you, questions, questions) else null
-            joined(listOfNotNull(agent, what).map { it to muted })
+            joined(listOfNotNull(agent, what).map { it to muted }, markAt = 0.takeIf { marked })
         }
-        ThreadStatus.Working -> joined(listOfNotNull(agent, thread.step?.takeIf { it.isNotBlank() }?.let { stringResource(R.string.agents_step_now, it) }, origin).map { it to muted })
+        ThreadStatus.Working -> joined(listOfNotNull(agent, thread.step?.takeIf { it.isNotBlank() }?.let { stringResource(R.string.agents_step_now, it) }, origin).map { it to muted }, markAt = 0.takeIf { marked })
         else -> {
             val (word, color) = restingWord(status)
             val detail = statusDetail(status) ?: thread.summary?.takeIf { it.isNotBlank() }
-            joined(listOf(word to color) + listOfNotNull(agent, origin, detail).map { it to muted })
+            joined(listOf(word to color) + listOfNotNull(agent, origin, detail).map { it to muted }, markAt = 1.takeIf { marked })
         }
     }
 }
@@ -455,12 +464,14 @@ private fun ProjectSessionRow(session: AgentSession, agents: AgentsState, pcName
         AgentSessionSource.OTHER -> null
     }
     val (word, color) = sessionWord(session, now)
+    val mark = AgentMark.of(session.agent)
     val meta = when (look) {
         SessionLook.NEEDS_YOU -> joined(
             listOfNotNull(agent, where, session.waitingFor?.takeIf { it.isNotBlank() } ?: stringResource(R.string.agents_session_answer_on, pcName)).map { it to muted },
+            markAt = 0.takeIf { mark != null },
         )
-        SessionLook.WORKING -> joined(listOfNotNull(agent, where, session.step?.takeIf { it.isNotBlank() }?.let { stringResource(R.string.agents_step_now, it) }).map { it to muted })
-        SessionLook.MAY_NEED_YOU, SessionLook.LIMITED, SessionLook.IDLE, SessionLook.ENDED -> joined(listOf(word to color) + listOfNotNull(agent, where).map { it to muted })
+        SessionLook.WORKING -> joined(listOfNotNull(agent, where, session.step?.takeIf { it.isNotBlank() }?.let { stringResource(R.string.agents_step_now, it) }).map { it to muted }, markAt = 0.takeIf { mark != null })
+        SessionLook.MAY_NEED_YOU, SessionLook.LIMITED, SessionLook.IDLE, SessionLook.ENDED -> joined(listOf(word to color) + listOfNotNull(agent, where).map { it to muted }, markAt = 1.takeIf { mark != null })
     }
     Box(modifier.fillMaxWidth().clip(shape)) {
         ProjectRowBody(
@@ -479,6 +490,7 @@ private fun ProjectSessionRow(session: AgentSession, agents: AgentsState, pcName
             },
             meta = meta,
             metaIcon = sourceIcon(session.source),
+            metaMark = mark,
             onClick = onOpen,
             onLongClick = null,
         )
@@ -501,6 +513,7 @@ private fun ProjectRowBody(
     trailing: @Composable () -> Unit,
     meta: AnnotatedString,
     metaIcon: ImageVector?,
+    metaMark: AgentMark?,
     onClick: () -> Unit,
     onLongClick: (() -> Unit)?,
 ) {
@@ -539,7 +552,7 @@ private fun ProjectRowBody(
             if (meta.isNotEmpty()) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
                     metaIcon?.let { Icon(it, contentDescription = null, tint = scheme.onSurfaceVariant, modifier = Modifier.size(12.dp)) }
-                    Text(meta, style = MaterialTheme.typography.bodySmall, color = scheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(meta, style = MaterialTheme.typography.bodySmall, color = scheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis, inlineContent = agentMarkContent(metaMark))
                 }
             }
         }
@@ -639,10 +652,11 @@ internal fun SearchButton(onClick: () -> Unit, modifier: Modifier = Modifier) {
     }
 }
 
-/** Parts joined with " · ", each in its colour. */
-private fun joined(parts: List<Pair<String, Color>>): AnnotatedString = buildAnnotatedString {
+/** Parts joined with " · ", each in its colour; the agent's mark ([appendAgentMark]) before the part at [markAt]. */
+private fun joined(parts: List<Pair<String, Color>>, markAt: Int? = null): AnnotatedString = buildAnnotatedString {
     parts.forEachIndexed { index, (text, color) ->
         if (index > 0) append(" · ")
+        if (index == markAt) appendAgentMark()
         withStyle(SpanStyle(color = color)) { append(text) }
     }
 }

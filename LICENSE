@@ -27,6 +27,11 @@ project. The full license texts are in the LICENSES/ directory.
   (desktop G7Glyphs.qml, Android G7Icons       rest of the apps
   and res/drawable)
 
+  The Claude Spark and the OpenAI Blossom      Not licensed: trademarks of
+  (android/app/src/main/res/drawable/          Anthropic PBC and OpenAI,
+  ic_agent_*)                                  shown to identify their agents.
+                                               See TRADEMARKS.md.
+
   Anything not listed above                    GPL-3.0-or-later, with the
                                                additional permission in
                                                LICENSES/APP-STORE-EXCEPTION.md

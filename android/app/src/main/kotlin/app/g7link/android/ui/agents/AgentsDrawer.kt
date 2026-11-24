@@ -397,6 +397,7 @@ private fun ThreadRow(thread: AgentThread, agents: AgentsState, selected: Drawer
     DrawerRow(
         label = thread.title,
         sublabel = listOf(agents.agentName(thread.agent), what).filter { it.isNotBlank() }.joinToString(" · "),
+        mark = AgentMark.of(thread.agent),
         note = if (AgentsModel.running(thread)) null else relativeTime(thread.updatedMs, now),
         selected = selected == DrawerSelection.Thread(thread.id),
         onClick = { onThread(thread.id) },
@@ -411,6 +412,7 @@ private fun SessionRow(session: AgentSession, agents: AgentsState, selected: Dra
     DrawerRow(
         label = session.title,
         sublabel = sessionPlace(session, agents.agentName(session.agent)),
+        mark = AgentMark.of(session.agent),
         note = if (AgentsModel.sessionLook(session) == SessionLook.WORKING) null else relativeTime(session.updatedMs, now),
         selected = selected == DrawerSelection.Session(session.id),
         onClick = { onSession(session.id) },
@@ -422,7 +424,8 @@ private fun SessionRow(session: AgentSession, agents: AgentsState, selected: Dra
 /**
  * A row of the drawer: something small before it (a state dot, a glyph), a
  * label and maybe a line under it, a muted note after it. 48 dp tall at least,
- * with an 8 dp corner; the one on screen sits on the accent's plate.
+ * with an 8 dp corner; the one on screen sits on the accent's plate. A line
+ * that starts with the agent's name has its [mark] before it.
  */
 @Composable
 private fun DrawerRow(
@@ -430,6 +433,7 @@ private fun DrawerRow(
     onClick: () -> Unit,
     selected: Boolean = false,
     sublabel: String? = null,
+    mark: AgentMark? = null,
     note: String? = null,
     labelColor: Color = Color.Unspecified,
     leading: @Composable () -> Unit,
@@ -461,7 +465,7 @@ private fun DrawerRow(
                 overflow = TextOverflow.Ellipsis,
             )
             if (!sublabel.isNullOrEmpty()) {
-                Text(sublabel, style = MaterialTheme.typography.bodySmall, color = scheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(markedText(sublabel, mark), style = MaterialTheme.typography.bodySmall, color = scheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis, inlineContent = agentMarkContent(mark))
             }
         }
         if (!note.isNullOrEmpty()) {
