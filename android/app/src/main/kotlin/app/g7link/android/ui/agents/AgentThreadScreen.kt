@@ -643,9 +643,7 @@ fun AgentThreadScreen(
     }
     val configure: (ThreadSettings) -> Unit = { chosen ->
         settingsOpen = false
-        val shown = thread
         val change = AgentSettings.change(settingsNow, chosen)
-        if (shown != null) AgentChoices.set(device.id, shown.agent, shown.folder, chosen)
         if (change != null) {
             scope.launch {
                 when (val result = core.agentConfigure(device.id, threadId, change)) {
@@ -1441,7 +1439,7 @@ fun AgentThreadScreen(
                                 codex = codex,
                                 settings = ComposerSettings(
                                     shown = abilities.control,
-                                    model = AgentSettings.modelName(abilities.models, control.model),
+                                    model = AgentSettings.settingName(abilities.models, control.model, control.answeredModel),
                                     effort = AgentSettings.effectiveEffort(abilities.models, settingsNow)?.let(AgentSettings::effortLabel),
                                     plan = control.mode == ThreadMode.PLAN,
                                 ),

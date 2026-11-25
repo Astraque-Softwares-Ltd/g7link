@@ -19,19 +19,14 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
@@ -56,7 +51,6 @@ import androidx.compose.ui.platform.LocalLocale
 import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextRange
@@ -70,22 +64,14 @@ import app.g7link.android.R
 import app.g7link.android.core.Core
 import app.g7link.android.core.Device
 import app.g7link.android.ui.Preferences
-import app.g7link.android.ui.agents.voice.AgentMicButton
-import app.g7link.android.ui.agents.voice.AgentVoice
-import app.g7link.android.ui.agents.voice.AgentVoiceStrip
-import app.g7link.android.ui.agents.voice.rememberAgentDictation
-import app.g7link.android.ui.agents.voice.rememberTapToTalk
 import app.g7link.android.ui.theme.G7Header
 import app.g7link.android.ui.theme.G7IconButton
 import app.g7link.android.ui.theme.G7Icons
 import app.g7link.android.ui.theme.G7PrimaryButton
 import app.g7link.android.ui.theme.G7RaisedButton
-import app.g7link.android.ui.theme.G7Row
 import app.g7link.android.ui.theme.G7SectionLabel
 import app.g7link.android.ui.theme.LocalReducedMotion
-import app.g7link.android.ui.theme.g7Tints
 import app.g7link.core.AgentCatalog
-import app.g7link.core.AgentInfo
 import app.g7link.core.AgentSession
 import app.g7link.core.AgentSessionSource
 import app.g7link.core.AgentThread
@@ -126,7 +112,7 @@ fun AgentsScreen(
     var attempt by remember(device.id) { mutableIntStateOf(0) }
     var filter by rememberSaveable { mutableStateOf(ThreadFilter.ALL) }
     var page by rememberSaveable { mutableStateOf(AgentsPage.LIST) }
-    // Shared from another app to a new thread (contract §V6): the new-thread sheet opens with it in the box.
+    // Shared from another app to a new thread (contract §V6): the new-thread flow opens with it in the box.
     var sharedNew by remember(device.id) { mutableStateOf(AgentShared.take(device.id, null)) }
     var newThread by rememberSaveable { mutableStateOf(sharedNew != null) }
     var settings by rememberSaveable { mutableStateOf(false) }
@@ -216,7 +202,29 @@ fun AgentsScreen(
         AgentsPage.LIST -> Unit
     }
 
-    val canStart = !offline && catalog != null && agents.readyAgents.isNotEmpty() && catalog.folders.isNotEmpty()
+    // A folder is chosen in the flow (contract C §5.6); an older PC that can't be browsed still needs one of its own.
+    val placesOffered = remember(device.id, device.online) { core.agentPlacesOffered(device.id) }
+    val canStart = !offline && catalog != null && agents.readyAgents.isNotEmpty() && (catalog.folders.isNotEmpty() || placesOffered)
+    if (newThread && catalog != null && canStart) {
+        NewThreadFlow(
+            device = device,
+            core = core,
+            catalog = catalog,
+            threads = agents.threads,
+            shared = sharedNew,
+            onStarted = { id ->
+                newThread = false
+                sharedNew = null
+                onOpenThread(id)
+            },
+            onClose = {
+                newThread = false
+                sharedNew = null
+            },
+            modifier = modifier,
+        )
+        return
+    }
     val retry: () -> Unit = { attempt++ }
     // The saved list stands in while the PC can't be reached or hasn't answered yet.
     val savedShown = load != ListLoad.READY && agents.savedMs != null && agents.threads.isNotEmpty() &&
@@ -292,6 +300,7 @@ fun AgentsScreen(
                     filter = filter,
                     onFilter = { filter = it },
                     canStart = canStart,
+                    placesOffered = placesOffered,
                     onNewThread = { newThread = true },
                     rowActions = rowActions,
                     onOpenSession = onOpenSession,
@@ -328,24 +337,6 @@ fun AgentsScreen(
         }
     }
 
-    if (newThread && catalog != null && canStart) {
-        NewThreadSheet(
-            device = device,
-            core = core,
-            catalog = catalog,
-            threads = agents.threads,
-            shared = sharedNew,
-            onStarted = { id ->
-                newThread = false
-                sharedNew = null
-                onOpenThread(id)
-            },
-            onDismiss = {
-                newThread = false
-                sharedNew = null
-            },
-        )
-    }
     if (settings) AgentCacheSheet(core = core, pcId = device.id, pcName = device.name, onDismiss = { settings = false })
     menuFor?.let { id -> agents.thread(id) }?.let { thread ->
         ThreadActionsSheet(
@@ -440,6 +431,7 @@ private fun ThreadList(
     filter: ThreadFilter,
     onFilter: (ThreadFilter) -> Unit,
     canStart: Boolean,
+    placesOffered: Boolean,
     onNewThread: () -> Unit,
     rowActions: ThreadRowActions,
     onOpenSession: (String) -> Unit,
@@ -483,12 +475,12 @@ private fun ThreadList(
                 item(key = "none_ready", contentType = "setup") {
                     Column(Modifier.padding(bottom = 8.dp)) {
                         SetupNote(stringResource(R.string.agents_none_ready, pcName))
-                        AgentRows(catalog.agents, selected = null, onSelect = {})
+                        AgentChoiceRows(catalog.agents, selected = null, onSelect = {})
                     }
                 }
             } else if (catalog != null && catalog.folders.isEmpty()) {
                 item(key = "no_folders", contentType = "setup") {
-                    SetupNote(stringResource(R.string.agents_no_folders, pcName))
+                    SetupNote(if (placesOffered) stringResource(R.string.agents_no_folders_start) else stringResource(R.string.agents_no_folders, pcName))
                 }
             }
             if (shelf) {
@@ -699,248 +691,6 @@ internal fun ElapsedText(sinceMs: Long, style: TextStyle, color: Color, modifier
     Text(AgentsModel.elapsed(now - sinceMs), style = style, color = color, maxLines = 1, modifier = modifier)
 }
 
-/** The new-thread sheet: the task, the agent (when there's a choice), the folder. Always asks before each change. */
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-internal fun NewThreadSheet(
-    device: Device,
-    core: Core,
-    catalog: AgentCatalog,
-    threads: List<AgentThread>,
-    onStarted: (String) -> Unit,
-    onDismiss: () -> Unit,
-    shared: SharedDraft? = null,
-) {
-    val resources = LocalResources.current
-    val context = LocalContext.current
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-    val ready = catalog.agents.filter { it.installed && it.signedIn }
-    // The agent and folder picked last time on this PC, while they can still be picked.
-    val saved = remember(device.id) { Preferences.agentChoice(context, device.id) }
-    var agentId by rememberSaveable { mutableStateOf(saved.first?.takeIf { id -> ready.any { it.id == id } } ?: ready.firstOrNull()?.id) }
-    var folderId by rememberSaveable {
-        mutableStateOf(saved.second?.takeIf { id -> catalog.folders.any { it.id == id } } ?: catalog.folders.firstOrNull()?.id)
-    }
-    var prompt by rememberSaveable { mutableStateOf(shared?.text.orEmpty()) }
-    var busy by remember { mutableStateOf(false) }
-    // A share's pictures, uploaded as the sheet opens and sent with Start; never anything sent before it.
-    var images by remember { mutableStateOf(emptyList<PendingImage>()) }
-    val thumbs = remember(device.id) { ImageThumbs { id -> (core.agentImageThumb(device.id, id) as? AgentCall.Ok)?.value } }
-    LaunchedEffect(shared) {
-        if (shared == null) return@LaunchedEffect
-        if (shared.shortened) core.say(resources.getString(R.string.agents_share_shortened))
-        for (path in shared.images) {
-            val key = path
-            images = AgentImages.adding(images, key)
-            if (images.none { it.key == key }) {
-                AgentImageIntake.deleteCameraFile(path)
-                continue
-            }
-            val problem = when (val read = AgentImageIntake.read(context, android.net.Uri.fromFile(java.io.File(path)))) {
-                is ImageRead.Problem -> read.problem
-                is ImageRead.Bytes -> when (val sent = core.agentImageSend(device.id, read.name, read.bytes)) {
-                    is AgentCall.Ok -> {
-                        images = AgentImages.uploaded(images, key, sent.value)
-                        null
-                    }
-                    is AgentCall.Failed -> ImageProblem.FAILED
-                }
-            }
-            // The copy lives only until it's on the PC.
-            AgentImageIntake.deleteCameraFile(path)
-            if (problem != null) {
-                images = AgentImages.removed(images, key)
-                core.say(resources.getString(R.string.agents_image_failed))
-            }
-        }
-    }
-    var error by remember { mutableStateOf<String?>(null) }
-    val scope = rememberCoroutineScope()
-    val agent = ready.firstOrNull { it.id == agentId }
-    val folder = catalog.folders.firstOrNull { it.id == folderId }
-    // The model, effort and mode it starts with (contract §Q6.3): the last ones for this agent and folder, Plan chosen per task.
-    val abilities = remember(agent, catalog.canControl) { AgentControlFfi.abilities(agent, catalog.canControl) }
-    var chosen by remember(agentId, folderId) {
-        mutableStateOf(if (agent != null && folder != null) AgentChoices.get(device.id, agent.id, folder.label) else ThreadSettings())
-    }
-    var settingsOpen by remember { mutableStateOf(false) }
-    val tooLong = AgentsModel.tooLong(prompt)
-    val imagesTaken = images.isEmpty() || AgentSettings.takesImages(abilities, chosen)
-    val canStart = !busy && agent != null && folder != null && AgentsModel.fits(prompt) && !AgentImages.uploading(images) && imagesTaken
-
-    fun start() {
-        if (!canStart || agent == null || folder == null) return
-        busy = true
-        error = null
-        scope.launch {
-            when (val result = core.agentStart(device.id, agent.id, folder.id, prompt.trim(), chosen, AgentImages.readyIds(images))) {
-                is AgentCall.Ok -> {
-                    Preferences.setAgentChoice(context, device.id, agent.id, folder.id)
-                    AgentChoices.set(device.id, agent.id, folder.label, chosen)
-                    onStarted(result.value.id)
-                }
-                is AgentCall.Failed -> error = when (result.failure) {
-                    AgentFailure.DENIED -> resources.getString(R.string.agents_access_title, device.name)
-                    AgentFailure.UNSUPPORTED -> resources.getString(R.string.agents_unavailable, device.name)
-                    AgentFailure.OFFLINE, AgentFailure.TIMEOUT -> resources.getString(R.string.agents_unreachable_title, device.name)
-                    AgentFailure.NOT_FOUND, AgentFailure.OTHER -> {
-                        // The PC's BUSY reaches the phone as a plain failure: the caps (4 in all, 3 per agent) say which.
-                        val running = threads.filter { AgentsModel.running(it) }
-                        when {
-                            running.size >= MAX_RUNNING -> resources.getString(R.string.agents_start_busy, device.name)
-                            running.count { it.agent == agent.id } >= MAX_RUNNING_PER_AGENT ->
-                                resources.getString(R.string.agents_start_busy_agent, device.name, agent.name)
-                            else -> resources.getString(R.string.agents_failed_generic)
-                        }
-                    }
-                }
-            }
-            busy = false
-        }
-    }
-
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        sheetState = sheetState,
-        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 20.dp)
-                .padding(bottom = 20.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            Text(stringResource(R.string.agents_new_thread_on, device.name), style = MaterialTheme.typography.titleLarge)
-            Text(
-                stringResource(R.string.agents_new_thread_note),
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            // The mic adds what was said to the task, selected; Start is still the user's (contract §V8.1).
-            val promptSelection = remember { TextSelection() }
-            val dictation = rememberAgentDictation { heard ->
-                AgentVoice.appended(prompt, heard, AgentsModel.MAX_PROMPT_CHARS)?.let { added ->
-                    prompt = added.text
-                    promptSelection.select(added.start, added.end)
-                }
-            }
-            AgentVoiceStrip(dictation)
-            AgentTextField(
-                value = prompt,
-                onValueChange = { prompt = it },
-                hint = if (dictation.holding) stringResource(R.string.agents_voice_release) else stringResource(R.string.agents_prompt_hint),
-                minLines = 3,
-                maxLines = 8,
-                background = MaterialTheme.colorScheme.surfaceContainer,
-                selection = promptSelection,
-            )
-            if (dictation.available) {
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                    AgentMicButton(dictation, tap = rememberTapToTalk(), enabled = !busy)
-                }
-            }
-            if (tooLong) {
-                Text(stringResource(R.string.agents_too_long), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
-            }
-            if (images.isNotEmpty()) {
-                ImageStrip(images = images, thumbs = thumbs, onRemove = { key -> images = AgentImages.removed(images, key) })
-                if (!imagesTaken && agent != null) {
-                    Text(
-                        stringResource(R.string.agents_image_model, agent.name),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.error,
-                    )
-                }
-            }
-            if (catalog.agents.size > 1) {
-                Column {
-                    G7SectionLabel(stringResource(R.string.agents_pick_agent))
-                    AgentRows(catalog.agents, selected = agentId, onSelect = { agentId = it })
-                }
-            }
-            Column {
-                G7SectionLabel(stringResource(R.string.agents_pick_folder))
-                val tints = g7Tints()
-                for (each in catalog.folders) {
-                    G7Row(
-                        label = each.label,
-                        icon = G7Icons.folder,
-                        tint = tints.amber,
-                        role = Role.RadioButton,
-                        active = each.id == folderId,
-                        onClick = { folderId = each.id },
-                    )
-                }
-            }
-            if (agent != null && abilities.control) {
-                val model = AgentSettings.modelName(abilities.models, chosen.model) ?: stringResource(R.string.agents_model_default)
-                val effort = AgentSettings.effectiveEffort(abilities.models, chosen)?.let(AgentSettings::effortLabel)
-                Column {
-                    G7SectionLabel(stringResource(R.string.agents_settings_model))
-                    G7Row(
-                        label = listOfNotNull(model, effort).joinToString(" · "),
-                        sublabel = modeLabel(chosen.mode),
-                        icon = G7Icons.sparkle,
-                        onClick = { settingsOpen = true },
-                    ) {
-                        Icon(G7Icons.chevronRight, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(12.dp))
-                    }
-                }
-            }
-            Text(
-                stringResource(if (chosen.mode == ThreadMode.PLAN) R.string.agents_mode_plan else R.string.agents_supervised_note),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            error?.let { Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error) }
-            if (busy) {
-                Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-                    CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp)
-                }
-            } else {
-                G7PrimaryButton(label = stringResource(R.string.agents_start), enabled = canStart, onClick = ::start)
-            }
-        }
-    }
-    if (settingsOpen && agent != null) {
-        AgentSettingsSheet(
-            agentName = agent.name,
-            codex = agent.id == "codex",
-            abilities = abilities,
-            initial = chosen,
-            appliesLater = false,
-            onDone = { picked ->
-                chosen = picked
-                settingsOpen = false
-            },
-            onDismiss = { settingsOpen = false },
-        )
-    }
-}
-
-/** The PC's agents, each with whether it can run: signed in, signed out (and the command for it), not installed. */
-@Composable
-private fun AgentRows(agents: List<AgentInfo>, selected: String?, onSelect: (String) -> Unit) {
-    for (agent in agents) {
-        val ready = agent.installed && agent.signedIn
-        G7Row(
-            label = agent.name,
-            sublabel = when {
-                !agent.installed -> stringResource(R.string.agents_not_installed)
-                !agent.signedIn -> stringResource(R.string.agents_signed_out) + "\n" + stringResource(R.string.agents_login_hint, agent.loginHint)
-                agent.auth == "api_key" -> stringResource(R.string.agents_api_key)
-                else -> stringResource(R.string.agents_signed_in)
-            },
-            role = Role.RadioButton,
-            enabled = ready,
-            active = ready && agent.id == selected,
-            onClick = if (ready) ({ onSelect(agent.id) }) else null,
-        )
-    }
-}
-
 @Composable
 private fun SetupNote(text: String) {
     Text(
@@ -1135,10 +885,6 @@ internal fun rememberNow(stepMs: Long = 30_000L): Long {
 
 internal fun relativeTime(ms: Long, now: Long): String =
     DateUtils.getRelativeTimeSpanString(ms, now, DateUtils.MINUTE_IN_MILLIS, DateUtils.FORMAT_ABBREV_RELATIVE).toString()
-
-/** The PC's limits on running threads (the reconcile file): 4 in all, 3 per agent. */
-private const val MAX_RUNNING = 4
-private const val MAX_RUNNING_PER_AGENT = 3
 
 /** After asking the PC to show its sessions: look again this often, this many times, while the list is on screen. */
 private const val SESSIONS_ASK_EVERY_MS = 5_000L

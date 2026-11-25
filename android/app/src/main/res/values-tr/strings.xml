@@ -1416,8 +1416,6 @@
     <string name="action_agents_pc">Ajanlar</string>
     <string name="agents_title">Ajanlar</string>
     <string name="agents_new_thread">Yeni konuşma</string>
-    <string name="agents_new_thread_on">%1$s üzerinde yeni konuşma</string>
-    <string name="agents_new_thread_note">Ajan, bilgisayarda seçtiğiniz klasörde çalışır.</string>
     <string name="agents_empty">Henüz konuşma yok.</string>
     <string name="agents_access_title">Bu telefon %1$s üzerinde henüz ajanları kullanamıyor.</string>
     <string name="agents_access_body">Bilgisayardaki G7 Link Ayarları\'nda, Ajanlar bölümünden açın.</string>
@@ -1429,7 +1427,6 @@
     <string name="agents_login_hint">Bilgisayarda şunu çalıştırın: %1$s</string>
     <string name="agents_no_folders">Henüz klasör yok. %1$s üzerinde, G7 Link Ayarları\'nda Ajanlar bölümünden bir tane ekleyin.</string>
     <string name="agents_pick_agent">Ajan</string>
-    <string name="agents_pick_folder">Klasör</string>
     <string name="agents_prompt_hint">Ne yapsın?</string>
     <string name="agents_supervised_note">Telefondan başlatıldığında, bir dosyayı değiştirmeden veya bir şeyi değiştirebilecek bir komutu çalıştırmadan önce sorar.</string>
     <string name="agents_start">Başlat</string>
@@ -1749,7 +1746,6 @@
     <string name="agents_mode_default_note">Varsayılanınız</string>
     <string name="agents_settings_title">%1$s, bu konuşma için</string>
     <string name="agents_settings_model">Model</string>
-    <string name="agents_settings_effort">Efor</string>
     <string name="agents_settings_mode">Mod</string>
     <string name="agents_settings_done">Tamam</string>
     <string name="agents_settings_later">Bunu %1$s durduğunda değiştirebilirsiniz.</string>
@@ -2351,5 +2347,43 @@
     <plurals name="agents_pr_detail_older">
         <item quantity="one">Daha eski %1$d yorum gösterilmiyor.</item>
         <item quantity="other">Daha eski %1$d yorum gösterilmiyor.</item>
+    </plurals>
+    <!-- A new thread, direction C: where it works, what it runs with, browsing the PC (plans/new-thread-c-contract.md). -->
+    <string name="agents_where_title">Nerede çalışsın?</string>
+    <string name="agents_where_all">%1$s üzerindeki tüm klasörler</string>
+    <string name="agents_where_note">Yeni bir klasör ilk seferde %1$s üzerinde onaylanır.</string>
+    <string name="agents_where_not_used">Henüz kullanılmadı</string>
+    <string name="agents_where_shared">Önce yeri seçin, sonra paylaştığınızı gönderin.</string>
+    <string name="agents_no_folders_start">Henüz klasör yok. Bir klasör seçmek için bir konuşma başlatın.</string>
+    <string name="agents_run_with">Şununla çalıştır</string>
+    <string name="agents_pick_here">Burada son kullanılan</string>
+    <string name="agents_pick_used_in">%1$s içinde kullanıldı</string>
+    <string name="agents_agent_default">%1$s varsayılanı</string>
+    <string name="agents_pick_yours">Sizin seçiminiz</string>
+    <string name="agents_pick_delisted">Artık %1$s listesinde değil</string>
+    <string name="agents_agent_signed_out_on">%1$s, %2$s üzerinde oturumu kapalı.</string>
+    <string name="agents_agent_missing_on">%1$s, %2$s üzerinde yüklü değil.</string>
+    <string name="agents_run_other">Başka ajan, model veya düşünme…</string>
+    <string name="agents_thinking">Düşünme</string>
+    <string name="agents_reasoning">Akıl yürütme</string>
+    <string name="agents_effort_auto">Otomatik</string>
+    <string name="agents_asks_before">Önce sorar</string>
+    <string name="agents_asks_edits">Düzenlemeler ve komutlar</string>
+    <string name="agents_asks_plan">Önce planla</string>
+    <string name="agents_add_picture">Resim ekleyin</string>
+    <string name="agents_places_home">Ev klasörü</string>
+    <string name="agents_places_in_folders">Ajan klasörlerinizde</string>
+    <string name="agents_places_use_short">Kullan</string>
+    <string name="agents_places_use">Bu klasörü kullan</string>
+    <string name="agents_places_show_more">Daha fazla göster</string>
+    <string name="agents_places_empty">Burada klasör yok.</string>
+    <string name="agents_places_approve">%1$s üzerinde onaylayın</string>
+    <string name="agents_places_add_denied">%1$s bu klasörü eklemedi.</string>
+    <string name="agents_places_gone">Bu klasör artık yok.</string>
+    <string name="agents_places_busy">%1$s bu klasörü okumakta çok gecikti. Tekrar deneyin.</string>
+    <string name="agents_places_limit">%1$s tutabileceği kadar ajan klasörüne sahip. Önce orada birini kaldırın.</string>
+    <plurals name="agents_where_more">
+        <item quantity="one">%1$d son klasör daha</item>
+        <item quantity="other">%1$d son klasör daha</item>
     </plurals>
 </resources>

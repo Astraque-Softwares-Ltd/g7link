@@ -91,7 +91,6 @@ import app.g7link.android.ui.agents.AgentCall
 import app.g7link.android.ui.agents.AgentFailure
 import app.g7link.android.ui.agents.AgentsModel
 import app.g7link.android.ui.agents.AgentsState
-import app.g7link.android.ui.agents.AgentChoices
 import app.g7link.android.ui.agents.AgentControlFfi
 import app.g7link.android.ui.agents.ConfigureChange
 import app.g7link.android.ui.agents.FollowUp
@@ -1054,6 +1053,8 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
             // GNOME asks someone at the PC to allow sharing, or the player's window is gone.
             is Event.PcMirrorNotice -> _pcMirrorSignals.tryEmit(PcMirrorSignal.Notice(event.id, event.notice))
             is Event.PcCapturePrompt -> pcCapture.onPrompt(event.id)
+            // Someone at the PC is asked about a folder this phone asked to add: the browse page in front says so.
+            is Event.AgentFolderPrompt -> _agentFolderPrompts.tryEmit(app.g7link.android.ui.agents.FolderPrompt(event.id, event.place))
             is Event.PcCaptureRecordEnded -> pcCapture.onRecordingEnded(event.id, event.name)
             // A PC that's gone isn't playing for this phone anymore; it
             // sends what plays when it's back.
@@ -3381,6 +3382,13 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
     )
     val agentBesideAsks: SharedFlow<app.g7link.android.ui.agents.BesideAsk> = _agentBesideAsks.asSharedFlow()
 
+    /** A PC asking its user about a folder this phone asked to add (`Event.AgentFolderPrompt`): the browse page waiting on it says "Approve on <PC>". */
+    private val _agentFolderPrompts = MutableSharedFlow<app.g7link.android.ui.agents.FolderPrompt>(
+        extraBufferCapacity = 4,
+        onBufferOverflow = kotlinx.coroutines.channels.BufferOverflow.DROP_OLDEST,
+    )
+    val agentFolderPrompts: SharedFlow<app.g7link.android.ui.agents.FolderPrompt> = _agentFolderPrompts.asSharedFlow()
+
     /** Reading a PC's threads and sessions after its catalog arrives, once at a time per PC. */
     private val agentRefreshes = java.util.concurrent.ConcurrentHashMap<String, Job>()
     private val agentSessionRefreshes = java.util.concurrent.ConcurrentHashMap<String, Job>()
@@ -3704,7 +3712,6 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
         _agentPresence.update { it - pcId }
         agentPresenceLapses.remove(pcId)?.cancel()
         AgentNotifications.cancelPc(context, pcId)
-        AgentChoices.forgetPc(pcId)
         // The tile and widget keep its last rows, dimmed: "<PC> isn't reachable." (contract §V8.3).
         app.g7link.android.agents.AgentsSurfaceStore.offline(context, pcId)
     }
@@ -4187,6 +4194,47 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
     ): AgentCall<app.g7link.android.ui.agents.ReplyAnswer> {
         if (!AgentsModel.fits(text)) return AgentCall.Failed(AgentFailure.OTHER)
         return agentCall { app.g7link.android.ui.agents.AgentReplyFfi.of(it.agentSessionReply(pcId, sessionId, text, confirm)) }
+    }
+
+    // ---- A new thread in any folder (docs/protocol/agents.md §15, plans/new-thread-c-contract.md §5) ----
+
+    /** Whether PC [pcId] offered browsing its folders (`agent.places`) when it last connected. */
+    fun agentPlacesOffered(pcId: String): Boolean = node?.agentPlacesOffered(pcId) ?: false
+
+    /** PC [pcId]'s roots for an empty [place] (Home, then its disks), else one page of the folders in [place] from [offset]. */
+    suspend fun agentPlaces(pcId: String, place: String, offset: Int?): app.g7link.android.ui.agents.PlacesAnswer<app.g7link.android.ui.agents.PlacesPage> =
+        when (val result = placesCall { it.agentPlaces(pcId, place, offset?.coerceIn(0, app.g7link.android.ui.agents.AgentPlacesModel.MAX_ENTRIES)?.toUInt()) }) {
+            is app.g7link.android.ui.agents.PlacesAnswer.Ok -> app.g7link.android.ui.agents.PlacesAnswer.Ok(app.g7link.android.ui.agents.AgentPlacesFfi.page(result.value))
+            is app.g7link.android.ui.agents.PlacesAnswer.Failed -> result
+        }
+
+    /**
+     * Makes the folder at [place] one of PC [pcId]'s agent folders, once,
+     * only when the user asked; while its switch for this phone is off,
+     * someone at the PC approves it first (agentFolderPrompts says so). The
+     * folder joins the catalog here at once, so a new thread can start in it
+     * before the PC's next catalog arrives.
+     */
+    suspend fun agentFolderAdd(pcId: String, place: String): app.g7link.android.ui.agents.PlacesAnswer<app.g7link.core.AgentFolder> {
+        val result = placesCall { it.agentFolderAdd(pcId, place) }
+        if (result is app.g7link.android.ui.agents.PlacesAnswer.Ok) {
+            val folder = result.value
+            updateAgents(pcId) { state ->
+                val catalog = state.catalog ?: return@updateAgents state
+                if (catalog.folders.any { it.id == folder.id }) state else state.copy(catalog = catalog.copy(folders = catalog.folders + folder))
+            }
+        }
+        return result
+    }
+
+    private suspend fun <T> placesCall(block: suspend (G7LinkNode) -> T): app.g7link.android.ui.agents.PlacesAnswer<T> {
+        startJob?.join()
+        val current = node ?: return app.g7link.android.ui.agents.PlacesAnswer.Failed(app.g7link.android.ui.agents.PlacesFailure.OFFLINE)
+        return try {
+            app.g7link.android.ui.agents.PlacesAnswer.Ok(block(current))
+        } catch (e: G7LinkException) {
+            app.g7link.android.ui.agents.PlacesAnswer.Failed(app.g7link.android.ui.agents.AgentPlacesFfi.failure(e))
+        }
     }
 
     // ---- Move to G7 (docs/protocol/agents.md §9, plans/move-and-focus.md) ----

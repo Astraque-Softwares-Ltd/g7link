@@ -313,6 +313,7 @@ private fun AgentShareSheet(
                 else -> Destinations(
                     device = pc,
                     agents = all[pc.id] ?: AgentsState(),
+                    placesOffered = remember(pc.id, pc.online) { core.agentPlacesOffered(pc.id) },
                     incoming = incoming,
                     pictures = pictures,
                     onPicked = { threadId -> onPicked(pc.id, threadId, pc.online, incoming.text) },
@@ -335,7 +336,14 @@ private fun PcChoices(pcs: List<Device>, onPick: (String) -> Unit) {
 }
 
 @Composable
-private fun Destinations(device: Device, agents: AgentsState, incoming: Incoming, pictures: SharePictures?, onPicked: (String?) -> Unit) {
+private fun Destinations(
+    device: Device,
+    agents: AgentsState,
+    placesOffered: Boolean,
+    incoming: Incoming,
+    pictures: SharePictures?,
+    onPicked: (String?) -> Unit,
+) {
     val scheme = MaterialTheme.colorScheme
     val tints = g7Tints()
     val catalog = agents.catalog
@@ -361,7 +369,8 @@ private fun Destinations(device: Device, agents: AgentsState, incoming: Incoming
         }
         return
     }
-    val canStart = online && catalog != null && agents.readyAgents.isNotEmpty() && catalog.folders.isNotEmpty()
+    // The folder is chosen in the new-thread flow (contract C §5.6); an older PC that can't be browsed still needs one.
+    val canStart = online && catalog != null && agents.readyAgents.isNotEmpty() && (catalog.folders.isNotEmpty() || placesOffered)
     G7Row(
         label = stringResource(R.string.agents_new_thread),
         icon = G7Icons.plus,

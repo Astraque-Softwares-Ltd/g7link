@@ -24,6 +24,8 @@ data class ModelOption(
     val images: Boolean = false,
     /** A short name that follows the newest model ("opus"): listed first. */
     val short: Boolean = false,
+    /** The exact model it stands for ("Opus 5"), when the CLI says; shown in place of [name]. */
+    val exact: String? = null,
 )
 
 enum class LimitState { OK, WARN, REACHED }
@@ -289,7 +291,11 @@ data class ThreadSettings(
     val customModel: Boolean = false,
 )
 
-/** The sheet's model list: the short names first, the rest under "More models". */
+/**
+ * The sheet's model list: the short names first, the rest under "More models".
+ * A short name that reads like one already shown (the default's "Opus 5" for
+ * `opus`) moves to the rest.
+ */
 @Immutable
 data class ModelSections(val first: List<ModelOption>, val more: List<ModelOption>)
 
@@ -297,27 +303,121 @@ data class ModelSections(val first: List<ModelOption>, val more: List<ModelOptio
 @Immutable
 data class ConfigureChange(val model: String?, val effort: String?, val mode: ThreadMode?, val customModel: Boolean)
 
-/** The rules of the model, effort and mode sheet. */
+/** A folder's newest thread (`AgentFolderLast`): what it ran with (null: the defaults), its title and the branch it was on. */
+@Immutable
+data class FolderLast(
+    val agent: String,
+    val model: String? = null,
+    val effort: String? = null,
+    val title: String = "",
+    val branch: String? = null,
+)
+
+/** A PC's agent folder as a new thread reads it (`AgentFolder`): by id and label, never a path. */
+@Immutable
+data class FolderUse(
+    val id: String,
+    val label: String,
+    /** When a thread there last started, else when it was added; 0 when the PC doesn't say. */
+    val usedMs: Long = 0L,
+    val repo: Boolean = false,
+    val last: FolderLast? = null,
+)
+
+/** An agent as quick picks read it: whether it can start a thread now, and the models its CLI reports. */
+@Immutable
+data class PickAgent(val id: String, val name: String, val ready: Boolean, val models: List<ModelOption> = emptyList())
+
+/**
+ * What a new thread runs with: exactly what a start takes, without the mode
+ * (Plan is chosen per task). A null model or effort is the default; [custom]
+ * is a model the agent's list doesn't hold, sent as typed.
+ */
+@Immutable
+data class RunChoice(val agent: String, val model: String? = null, val effort: String? = null, val custom: Boolean = false) {
+    /** The same agent, model and effort (how it was chosen doesn't matter). */
+    fun same(other: RunChoice): Boolean = agent == other.agent && model == other.model && effort == other.effort
+
+    /** The settings a start sends for it, with [mode]. */
+    fun settings(mode: ThreadMode = ThreadMode.SUPERVISED): ThreadSettings =
+        ThreadSettings(model = model, effort = effort, mode = mode, customModel = custom && model != null)
+}
+
+/** Where a quick pick comes from: its line under the label. */
+enum class PickFrom {
+    /** "Last used here". */
+    HERE,
+
+    /** "Used in <folder>". */
+    FOLDER,
+
+    /** "<Agent>'s default". */
+    DEFAULT,
+
+    /** "Your choice": picked under "Other agent, model or thinking…". */
+    YOURS,
+}
+
+/** A quick pick: what it runs with, and where it comes from ([folder]: the label of the folder it was used in). */
+@Immutable
+data class QuickPick(val choice: RunChoice, val from: PickFrom, val folder: String? = null)
+
+/** A row of Run with: a pick, and whether it's the one the thread starts with. */
+@Immutable
+data class RunRow(val pick: QuickPick, val selected: Boolean)
+
+/** The rules of the model, effort and mode sheet, and of a new thread's quick picks. */
 object AgentSettings {
     /** Claude's entry that stands for its default: the sheet's own "Default" row. */
     private const val DEFAULT_ID = "default"
     private const val MAX_MODEL_ID_BYTES = 64
 
+    /** Quick picks shown at most (contract C §2.3). */
+    const val MAX_PICKS = 3
+
     /** The modes a phone may choose (contract §Q5): never the one that edits without asking. */
     fun phoneModes(abilities: AgentAbilities): List<ThreadMode> =
         if (abilities.can(AgentAbilities.PLAN)) listOf(ThreadMode.SUPERVISED, ThreadMode.PLAN) else listOf(ThreadMode.SUPERVISED)
 
+    /**
+     * The sheet's rows after Default: the short names (or every model when
+     * the CLI names none short), each shown name once, counting the Default
+     * row's; later ones that read the same move to the rest, kept in the
+     * CLI's order.
+     */
     fun sections(models: List<ModelOption>): ModelSections {
         val listed = models.filter { it.id != DEFAULT_ID }
         val short = listed.filter { it.short }
-        return if (short.isEmpty()) ModelSections(listed, emptyList()) else ModelSections(short, listed.filterNot { it.short })
+        val wanted = short.ifEmpty { listed }
+        val seen = HashSet<String>()
+        defaultModel(models)?.let(::shownName)?.let(seen::add)
+        val first = wanted.filter { seen.add(rowName(it)) }
+        return ModelSections(first, listed.filter { it !in first })
     }
 
-    /** The CLI's own default model, when it says which (shown under "Default"). */
+    /** The ids of rows that read like another row, the Default row included: they carry their id as a note. */
+    fun sameNamed(models: List<ModelOption>): Set<String> {
+        val listed = models.filter { it.id != DEFAULT_ID }
+        val names = listed.map(::rowName) + listOfNotNull(defaultModel(models)?.let(::shownName))
+        val counts = names.groupingBy { it }.eachCount()
+        return listed.filter { (counts[rowName(it)] ?: 0) > 1 }.mapTo(HashSet()) { it.id }
+    }
+
+    /** The CLI's own default model, when it says which. */
     fun defaultModel(models: List<ModelOption>): ModelOption? = models.firstOrNull { it.isDefault }
 
     fun model(models: List<ModelOption>, id: String?): ModelOption? =
         if (id == null) defaultModel(models) else models.firstOrNull { it.id == id }
+
+    /**
+     * A model's name as shown (contract C §3.2): the exact model when the CLI
+     * says ("Opus 5"), else its listed name; null for Claude's "Default"
+     * entry when no version is known ("<Agent>'s default", never guessed).
+     */
+    fun shownName(option: ModelOption): String? =
+        option.exact?.takeIf { it.isNotBlank() } ?: if (option.id == DEFAULT_ID) null else option.name.ifBlank { option.id }
+
+    private fun rowName(option: ModelOption): String = shownName(option) ?: option.id
 
     /** The efforts the chosen model offers; none (hidden) for a typed model the list doesn't know. */
     fun efforts(models: List<ModelOption>, settings: ThreadSettings): List<String> =
@@ -330,10 +430,22 @@ object AgentSettings {
     /** An effort as the CLI names it, first letter capitalised ("xhigh" → "Xhigh"). */
     fun effortLabel(effort: String): String = effort.replaceFirstChar { it.uppercaseChar() }
 
-    /** The model's name; null for the CLI's default (shown as "Default"); a typed one as typed. */
+    /** The model's shown name; null for the CLI's default; a typed one as typed. */
     fun modelName(models: List<ModelOption>, id: String?): String? {
         if (id == null || id == DEFAULT_ID) return null
-        return models.firstOrNull { it.id == id }?.name?.takeIf { it.isNotBlank() } ?: id
+        return models.firstOrNull { it.id == id }?.let(::shownName) ?: id
+    }
+
+    /**
+     * The shown name of what a [model] setting runs: the listed model's, a
+     * typed one as typed, and for none the model that [answered] there when
+     * the list has it, else the default's. Null: "<Agent>'s default", no
+     * version known.
+     */
+    fun settingName(models: List<ModelOption>, model: String?, answered: String? = null): String? {
+        if (model != null && model != DEFAULT_ID) return modelName(models, model)
+        val ran = answered?.let { id -> models.firstOrNull { it.id == id } }?.let(::shownName)
+        return ran ?: defaultModel(models)?.let(::shownName)
     }
 
     /** Whether the model takes images: unknown models count as taking them when the agent says it does. */
@@ -382,35 +494,86 @@ object AgentSettings {
         return ConfigureChange(model, effort, mode, customModel = model != null && model.isNotEmpty() && chosen.customModel)
     }
 
+    // ---- Quick picks (contract C §2; the twin of the desktop's control.rs `quick_picks`) ----
+
+    /**
+     * A model and effort as a start sends them: the list's default model is
+     * no model set, and an effort the listed model doesn't take now is
+     * dropped. A model the list doesn't hold keeps its effort (nothing says it
+     * can't) and goes as typed.
+     */
+    fun normalized(agent: PickAgent, model: String?, effort: String?): RunChoice {
+        val models = agent.models
+        val id = model?.takeIf { it.isNotBlank() && it != DEFAULT_ID && models.firstOrNull { m -> m.id == it }?.isDefault != true }
+        val listed = model(models, id)
+        val kept = effort?.takeIf { word -> listed == null || word in listed.efforts }
+        return RunChoice(agent.id, id, kept, custom = id != null && models.none { it.id == id })
+    }
+
+    /** What the sheet's settings run with for [agent], as a choice. */
+    fun choiceOf(agent: PickAgent, settings: ThreadSettings): RunChoice {
+        val choice = normalized(agent, settings.model, settings.effort)
+        return choice.copy(custom = choice.model != null && (choice.custom || settings.customModel))
+    }
+
+    /**
+     * The quick picks for folder [folderId], distinct by agent, model and
+     * effort, at most [MAX_PICKS]: what its newest thread ran, then what other
+     * folders' newest threads ran (the most recently used folder first), then
+     * each ready agent's default not yet among them. Agents that can't start
+     * a thread are left out.
+     */
+    fun quickPicks(folders: List<FolderUse>, agents: List<PickAgent>, folderId: String): List<QuickPick> {
+        val here = folders.filter { it.id == folderId }.map { it to PickFrom.HERE }
+        val others = folders.filter { it.id != folderId }
+            .sortedWith(compareByDescending<FolderUse> { it.usedMs }.thenBy { it.id })
+            .map { it to PickFrom.FOLDER }
+        val picks = ArrayList<QuickPick>(MAX_PICKS)
+        for ((folder, from) in here + others) {
+            if (picks.size == MAX_PICKS) return picks
+            val last = folder.last ?: continue
+            val agent = agents.firstOrNull { it.id == last.agent && it.ready } ?: continue
+            val choice = normalized(agent, last.model, last.effort)
+            if (picks.none { it.choice.same(choice) }) {
+                picks += QuickPick(choice, from, folder.label.takeIf { from == PickFrom.FOLDER })
+            }
+        }
+        for (agent in agents) {
+            if (picks.size == MAX_PICKS) break
+            if (agent.ready && picks.none { it.choice.agent == agent.id }) picks += QuickPick(RunChoice(agent.id), PickFrom.DEFAULT)
+        }
+        return picks
+    }
+
+    /** The PC's agents a folder's newest thread ran with that can't start one now: a line under Run with says why. */
+    fun leftOut(folders: List<FolderUse>, agents: List<PickAgent>): List<PickAgent> =
+        agents.filter { agent -> !agent.ready && folders.any { it.last?.agent == agent.id } }
+
+    /**
+     * Run with's rows: the picks, the one [chosen] (else the first) selected,
+     * and [chosen] as "Your choice" after them when it's none of them.
+     */
+    fun runRows(picks: List<QuickPick>, chosen: RunChoice?): List<RunRow> {
+        val wanted = chosen ?: picks.firstOrNull()?.choice
+        val rows = picks.map { RunRow(it, wanted != null && it.choice.same(wanted)) }
+        return if (wanted != null && rows.none { it.selected }) rows + RunRow(QuickPick(wanted, PickFrom.YOURS), selected = true) else rows
+    }
+
+    /** What the thread starts with: the one [chosen], else the folder's first pick. */
+    fun runWith(picks: List<QuickPick>, chosen: RunChoice?): RunChoice? = chosen ?: picks.firstOrNull()?.choice
+
+    /** A pick's model as shown: its exact name; null for a default whose version isn't known ("<Agent>'s default"). */
+    fun pickName(models: List<ModelOption>, choice: RunChoice): String? = settingName(models, choice.model)
+
+    /** A pick's effort as shown: its own, else its model's default; null for none. */
+    fun pickEffort(models: List<ModelOption>, choice: RunChoice): String? =
+        (choice.effort ?: model(models, choice.model)?.defaultEffort)?.let(::effortLabel)
+
+    /** A pick's model that the agent's list (when it has one) doesn't hold now. */
+    fun delisted(models: List<ModelOption>, choice: RunChoice): Boolean =
+        models.isNotEmpty() && choice.model != null && models.none { it.id == choice.model }
+
     private val BIDI = setOf('؜', '‎', '‏', '‪', '‫', '‬', '‭', '‮', '⁦', '⁧', '⁨', '⁩')
-}
-
-/**
- * The model and effort chosen last for an agent in a folder of a PC (contract
- * §Q6.1: sticky per agent and folder), kept for this run of the app only.
- */
-object AgentChoices {
-    private val chosen = HashMap<String, ThreadSettings>()
-
-    private fun key(pcId: String, agent: String, folder: String) = "$pcId/$agent/$folder"
-
-    @Synchronized
-    fun get(pcId: String, agent: String, folder: String): ThreadSettings =
-        chosen[key(pcId, agent, folder)] ?: ThreadSettings()
-
-    /** The mode isn't kept: Plan is chosen for a task, not for a folder. */
-    @Synchronized
-    fun set(pcId: String, agent: String, folder: String, settings: ThreadSettings) {
-        if (chosen.size >= MAX_KEPT) chosen.keys.firstOrNull()?.let(chosen::remove)
-        chosen[key(pcId, agent, folder)] = settings.copy(mode = ThreadMode.SUPERVISED)
-    }
-
-    @Synchronized
-    fun forgetPc(pcId: String) {
-        chosen.keys.removeAll { it.startsWith("$pcId/") }
-    }
-
-    private const val MAX_KEPT = 64
 }
 
 // ---- Sending while it works (contract §Q3.4, §Q6.1 "Follow-up key") ----

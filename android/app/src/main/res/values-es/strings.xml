@@ -1277,8 +1277,6 @@
     <string name="action_agents_pc">Agentes</string>
     <string name="agents_title">Agentes</string>
     <string name="agents_new_thread">Nuevo hilo</string>
-    <string name="agents_new_thread_on">Nuevo hilo en %1$s</string>
-    <string name="agents_new_thread_note">El agente trabaja en el PC, en la carpeta que elijas.</string>
     <string name="agents_empty">Aún no hay hilos.</string>
     <string name="agents_access_title">Este teléfono aún no puede usar agentes en %1$s.</string>
     <string name="agents_access_body">Actívalo en los Ajustes de G7 Link en el PC, en Agentes.</string>
@@ -1290,7 +1288,6 @@
     <string name="agents_login_hint">En el PC, ejecuta: %1$s</string>
     <string name="agents_no_folders">Aún no hay carpetas. Añade una en %1$s, en los Ajustes de G7 Link, en Agentes.</string>
     <string name="agents_pick_agent">Agente</string>
-    <string name="agents_pick_folder">Carpeta</string>
     <string name="agents_prompt_hint">¿Qué debe hacer?</string>
     <string name="agents_supervised_note">Iniciado desde el teléfono, pregunta antes de cambiar un archivo o ejecutar un comando que pueda cambiar algo.</string>
     <string name="agents_start">Iniciar</string>
@@ -1637,7 +1634,6 @@
     <string name="agents_mode_default_note">Tu opción predeterminada</string>
     <string name="agents_settings_title">%1$s, para este hilo</string>
     <string name="agents_settings_model">Modelo</string>
-    <string name="agents_settings_effort">Esfuerzo</string>
     <string name="agents_settings_mode">Modo</string>
     <string name="agents_settings_done">Listo</string>
     <string name="agents_settings_later">Puedes cambiarlo cuando %1$s se detenga.</string>
@@ -2261,4 +2257,42 @@
         <item quantity="other">No se muestran %1$d comentarios anteriores.</item>
     </plurals>
     <string name="home_tile_pc_speaker">PC como altavoz</string>
+    <!-- A new thread, direction C: where it works, what it runs with, browsing the PC (plans/new-thread-c-contract.md). -->
+    <string name="agents_where_title">¿Dónde debe trabajar?</string>
+    <string name="agents_where_all">Todas las carpetas de %1$s</string>
+    <string name="agents_where_note">Una carpeta nueva se aprueba en %1$s la primera vez.</string>
+    <string name="agents_where_not_used">Sin usar aún</string>
+    <string name="agents_where_shared">Elige dónde y luego envía lo que compartiste.</string>
+    <string name="agents_no_folders_start">Aún no hay carpetas. Inicia un hilo para elegir una.</string>
+    <string name="agents_run_with">Ejecutar con</string>
+    <string name="agents_pick_here">Usado aquí por última vez</string>
+    <string name="agents_pick_used_in">Usado en %1$s</string>
+    <string name="agents_agent_default">Predeterminado de %1$s</string>
+    <string name="agents_pick_yours">Tu elección</string>
+    <string name="agents_pick_delisted">Ya no está en la lista de %1$s</string>
+    <string name="agents_agent_signed_out_on">%1$s tiene la sesión cerrada en %2$s.</string>
+    <string name="agents_agent_missing_on">%1$s no está instalado en %2$s.</string>
+    <string name="agents_run_other">Otro agente, modelo o pensamiento…</string>
+    <string name="agents_thinking">Pensamiento</string>
+    <string name="agents_reasoning">Razonamiento</string>
+    <string name="agents_effort_auto">Auto</string>
+    <string name="agents_asks_before">Pregunta antes de</string>
+    <string name="agents_asks_edits">Ediciones y comandos</string>
+    <string name="agents_asks_plan">Planificar primero</string>
+    <string name="agents_add_picture">Añadir una foto</string>
+    <string name="agents_places_home">Carpeta personal</string>
+    <string name="agents_places_in_folders">En tus carpetas de agentes</string>
+    <string name="agents_places_use_short">Usar</string>
+    <string name="agents_places_use">Usar esta carpeta</string>
+    <string name="agents_places_show_more">Mostrar más</string>
+    <string name="agents_places_empty">No hay carpetas aquí.</string>
+    <string name="agents_places_approve">Aprueba en %1$s</string>
+    <string name="agents_places_add_denied">%1$s no añadió esa carpeta.</string>
+    <string name="agents_places_gone">Esa carpeta ya no existe.</string>
+    <string name="agents_places_busy">%1$s tardó demasiado en leer esa carpeta. Inténtalo de nuevo.</string>
+    <string name="agents_places_limit">%1$s ya tiene todas las carpetas de agentes que admite. Quita una allí primero.</string>
+    <plurals name="agents_where_more">
+        <item quantity="one">%1$d carpeta reciente más</item>
+        <item quantity="other">%1$d carpetas recientes más</item>
+    </plurals>
 </resources>

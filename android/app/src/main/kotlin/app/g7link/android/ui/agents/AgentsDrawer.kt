@@ -33,6 +33,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.ModalNavigationDrawer
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
@@ -169,7 +170,9 @@ internal fun AgentsDrawer(
     val groups = remember(agents.threads, agents.sessions, agents.sessionsAllowed, agents.sessionsUnsupported) { AgentsModel.drawerGroups(agents) }
     val pcs = remember(coreState.devices) { coreState.devices.filter { !it.isAndroid && it.offersAgents } }
     val catalog = agents.catalog
-    val canStart = catalog != null && agents.readyAgents.isNotEmpty() && catalog.folders.isNotEmpty() && device.online
+    // A folder is chosen in the flow (contract C §5.6); an older PC that can't be browsed still needs one of its own.
+    val placesOffered = remember(device.id, device.online) { core.agentPlacesOffered(device.id) }
+    val canStart = catalog != null && agents.readyAgents.isNotEmpty() && (catalog.folders.isNotEmpty() || placesOffered) && device.online
     var newThread by remember(device.id) { mutableStateOf(false) }
     val state = control.state
     val showing = state.isOpen || state.isAnimationRunning
@@ -225,27 +228,30 @@ internal fun AgentsDrawer(
         Box(
             Modifier
                 .fillMaxSize()
-                .openFromEdge(enabled = !showing, startPx = gestureInset, widthPx = stripWidth, rtl = direction == LayoutDirection.Rtl, onOpen = control::open),
+                .openFromEdge(enabled = !showing && !newThread, startPx = gestureInset, widthPx = stripWidth, rtl = direction == LayoutDirection.Rtl, onOpen = control::open),
         ) {
             content()
+            // A new thread from a thread's screen: the flow covers it, which stays as it was underneath.
+            if (newThread && catalog != null && canStart) {
+                Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+                    NewThreadFlow(
+                        device = device,
+                        core = core,
+                        catalog = catalog,
+                        threads = agents.threads,
+                        onStarted = { id ->
+                            newThread = false
+                            onOpenThread(id)
+                        },
+                        onClose = { newThread = false },
+                    )
+                }
+            }
         }
     }
     // Composed after the screen, so it hears Back before the screen's own handlers do.
     BackHandler(enabled = state.isOpen) { control.close() }
 
-    if (newThread && catalog != null && canStart) {
-        NewThreadSheet(
-            device = device,
-            core = core,
-            catalog = catalog,
-            threads = agents.threads,
-            onStarted = { id ->
-                newThread = false
-                onOpenThread(id)
-            },
-            onDismiss = { newThread = false },
-        )
-    }
 }
 
 /**

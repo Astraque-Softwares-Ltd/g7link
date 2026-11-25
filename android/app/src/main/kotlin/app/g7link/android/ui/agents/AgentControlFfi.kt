@@ -34,6 +34,7 @@ internal object AgentControlFfi {
                     defaultEffort = model.defaultEffort,
                     images = model.images,
                     short = model.short,
+                    exact = model.exact?.takeIf { it.isNotBlank() },
                 )
             },
             can = agent.can.mapTo(HashSet()) { can ->

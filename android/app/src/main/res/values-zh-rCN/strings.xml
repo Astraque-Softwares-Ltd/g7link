@@ -1283,8 +1283,6 @@
     <string name="action_agents_pc">智能体</string>
     <string name="agents_title">智能体</string>
     <string name="agents_new_thread">新会话</string>
-    <string name="agents_new_thread_on">在 %1$s 上新建会话</string>
-    <string name="agents_new_thread_note">智能体在电脑上你选择的文件夹中工作。</string>
     <string name="agents_empty">还没有会话。</string>
     <string name="agents_access_title">本手机还不能使用 %1$s 上的智能体。</string>
     <string name="agents_access_body">请在电脑上 G7 Link 设置的“智能体”中开启。</string>
@@ -1296,7 +1294,6 @@
     <string name="agents_login_hint">在电脑上运行：%1$s</string>
     <string name="agents_no_folders">还没有文件夹。请在 %1$s 上 G7 Link 设置的“智能体”中添加。</string>
     <string name="agents_pick_agent">智能体</string>
-    <string name="agents_pick_folder">文件夹</string>
     <string name="agents_prompt_hint">要它做什么？</string>
     <string name="agents_supervised_note">从手机启动时，它会在修改文件或运行可能改变内容的命令前先询问。</string>
     <string name="agents_start">开始</string>
@@ -1589,7 +1586,6 @@
     <string name="agents_mode_default_note">你的默认设置</string>
     <string name="agents_settings_title">%1$s，用于此会话</string>
     <string name="agents_settings_model">模型</string>
-    <string name="agents_settings_effort">推理强度</string>
     <string name="agents_settings_mode">模式</string>
     <string name="agents_settings_done">完成</string>
     <string name="agents_settings_later">%1$s 停止后才能更改。</string>
@@ -2171,5 +2167,43 @@
     </plurals>
     <plurals name="agents_pr_detail_older">
         <item quantity="other">另有 %1$d 条更早的评论未显示。</item>
+    </plurals>
+    <!-- A new thread, direction C: where it works, what it runs with, browsing the PC (plans/new-thread-c-contract.md). -->
+    <string name="agents_where_title">要在哪里工作？</string>
+    <string name="agents_where_all">%1$s 上的所有文件夹</string>
+    <string name="agents_where_note">新文件夹第一次使用时需在 %1$s 上确认。</string>
+    <string name="agents_where_not_used">尚未使用</string>
+    <string name="agents_where_shared">先选择位置，再发送你分享的内容。</string>
+    <string name="agents_no_folders_start">还没有文件夹。新建会话时即可选择。</string>
+    <string name="agents_run_with">运行方式</string>
+    <string name="agents_pick_here">上次在这里使用</string>
+    <string name="agents_pick_used_in">曾在 %1$s 中使用</string>
+    <string name="agents_agent_default">%1$s 的默认设置</string>
+    <string name="agents_pick_yours">你的选择</string>
+    <string name="agents_pick_delisted">已不在 %1$s 的列表中</string>
+    <string name="agents_agent_signed_out_on">%1$s 在 %2$s 上未登录。</string>
+    <string name="agents_agent_missing_on">%1$s 未安装在 %2$s 上。</string>
+    <string name="agents_run_other">其他智能体、模型或思考程度…</string>
+    <string name="agents_thinking">思考</string>
+    <string name="agents_reasoning">推理</string>
+    <string name="agents_effort_auto">自动</string>
+    <string name="agents_asks_before">先询问</string>
+    <string name="agents_asks_edits">编辑和命令</string>
+    <string name="agents_asks_plan">先做计划</string>
+    <string name="agents_add_picture">添加图片</string>
+    <string name="agents_places_home">主文件夹</string>
+    <string name="agents_places_in_folders">已在你的智能体文件夹中</string>
+    <string name="agents_places_use_short">使用</string>
+    <string name="agents_places_use">使用此文件夹</string>
+    <string name="agents_places_show_more">显示更多</string>
+    <string name="agents_places_empty">这里没有文件夹。</string>
+    <string name="agents_places_approve">请在 %1$s 上确认</string>
+    <string name="agents_places_add_denied">%1$s 未添加该文件夹。</string>
+    <string name="agents_places_gone">该文件夹已不存在。</string>
+    <string name="agents_places_busy">%1$s 读取该文件夹的时间过长，请重试。</string>
+    <string name="agents_places_limit">%1$s 的智能体文件夹已达上限。请先在那里移除一个。</string>
+    <plurals name="agents_where_more">
+        <item quantity="one">另外 %1$d 个最近的文件夹</item>
+        <item quantity="other">另外 %1$d 个最近的文件夹</item>
     </plurals>
 </resources>

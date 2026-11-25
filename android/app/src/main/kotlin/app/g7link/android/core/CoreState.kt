@@ -613,6 +613,8 @@ data class CoreState(
         // Screenshots and recordings of a PC: kept by Core.pcCapture.
         is Event.PcCapturePrompt,
         is Event.PcCaptureRecordEnded,
+        // A PC asking its user about a folder this phone asked to add: heard by the browse page (Core.agentFolderPrompts).
+        is Event.AgentFolderPrompt,
         -> this
         // A PC's agent threads: kept by Core.agents (AgentsModel), apart from this state so streaming text doesn't redraw Home.
         is Event.AgentCatalog,
@@ -734,6 +736,7 @@ internal fun Event.affectsCoreState(): Boolean = when (this) {
     is Event.PcMirrorNotice,
     is Event.PcCapturePrompt,
     is Event.PcCaptureRecordEnded,
+    is Event.AgentFolderPrompt,
     is Event.AgentCatalog,
     is Event.AgentThreadChanged,
     is Event.AgentThreadRemoved,

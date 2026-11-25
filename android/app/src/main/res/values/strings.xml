@@ -1427,8 +1427,6 @@
     <string name="action_agents_pc">Agents</string>
     <string name="agents_title">Agents</string>
     <string name="agents_new_thread">New thread</string>
-    <string name="agents_new_thread_on">New thread on %1$s</string>
-    <string name="agents_new_thread_note">The agent works on the PC, in the folder you pick.</string>
     <string name="agents_empty">No threads yet.</string>
     <string name="agents_access_title">This phone can\'t use agents on %1$s yet.</string>
     <string name="agents_access_body">Turn it on in G7 Link Settings on the PC, under Agents.</string>
@@ -1440,7 +1438,6 @@
     <string name="agents_login_hint">On the PC, run: %1$s</string>
     <string name="agents_no_folders">No folders yet. Add one on %1$s, in G7 Link Settings, under Agents.</string>
     <string name="agents_pick_agent">Agent</string>
-    <string name="agents_pick_folder">Folder</string>
     <string name="agents_prompt_hint">What should it do?</string>
     <string name="agents_supervised_note">Started from the phone, it asks before it changes a file or runs a command that could change something.</string>
     <string name="agents_start">Start</string>
@@ -1761,7 +1758,6 @@
     <string name="agents_mode_default_note">Your default</string>
     <string name="agents_settings_title">%1$s, for this thread</string>
     <string name="agents_settings_model">Model</string>
-    <string name="agents_settings_effort">Effort</string>
     <string name="agents_settings_mode">Mode</string>
     <string name="agents_settings_done">Done</string>
     <string name="agents_settings_later">You can change this when %1$s stops.</string>
@@ -2365,5 +2361,43 @@
     <plurals name="agents_pr_detail_older">
         <item quantity="one">%1$d older comment isn\'t shown.</item>
         <item quantity="other">%1$d older comments aren\'t shown.</item>
+    </plurals>
+    <!-- A new thread, direction C: where it works, what it runs with, browsing the PC (plans/new-thread-c-contract.md). -->
+    <string name="agents_where_title">Where should it work?</string>
+    <string name="agents_where_all">All folders on %1$s</string>
+    <string name="agents_where_note">A new folder is approved on %1$s the first time.</string>
+    <string name="agents_where_not_used">Not used yet</string>
+    <string name="agents_where_shared">Choose where, then send what you shared.</string>
+    <string name="agents_no_folders_start">No folders yet. Start a thread to choose one.</string>
+    <string name="agents_run_with">Run with</string>
+    <string name="agents_pick_here">Last used here</string>
+    <string name="agents_pick_used_in">Used in %1$s</string>
+    <string name="agents_agent_default">%1$s\'s default</string>
+    <string name="agents_pick_yours">Your choice</string>
+    <string name="agents_pick_delisted">Not in %1$s\'s list now</string>
+    <string name="agents_agent_signed_out_on">%1$s is signed out on %2$s.</string>
+    <string name="agents_agent_missing_on">%1$s isn\'t installed on %2$s.</string>
+    <string name="agents_run_other">Other agent, model or thinking…</string>
+    <string name="agents_thinking">Thinking</string>
+    <string name="agents_reasoning">Reasoning</string>
+    <string name="agents_effort_auto">Auto</string>
+    <string name="agents_asks_before">Asks before</string>
+    <string name="agents_asks_edits">Edits and commands</string>
+    <string name="agents_asks_plan">Plan first</string>
+    <string name="agents_add_picture">Add a picture</string>
+    <string name="agents_places_home">Home</string>
+    <string name="agents_places_in_folders">In your agent folders</string>
+    <string name="agents_places_use_short">Use</string>
+    <string name="agents_places_use">Use this folder</string>
+    <string name="agents_places_show_more">Show more</string>
+    <string name="agents_places_empty">No folders here.</string>
+    <string name="agents_places_approve">Approve on %1$s</string>
+    <string name="agents_places_add_denied">%1$s didn\'t add that folder.</string>
+    <string name="agents_places_gone">That folder isn\'t there any more.</string>
+    <string name="agents_places_busy">%1$s took too long to read that folder. Try again.</string>
+    <string name="agents_places_limit">%1$s has as many agent folders as it can keep. Remove one there first.</string>
+    <plurals name="agents_where_more">
+        <item quantity="one">%1$d more recent folder</item>
+        <item quantity="other">%1$d more recent folders</item>
     </plurals>
 </resources>

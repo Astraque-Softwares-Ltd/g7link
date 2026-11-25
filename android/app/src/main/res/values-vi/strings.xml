@@ -1352,8 +1352,6 @@
 <string name="action_agents_pc">Agent</string>
 <string name="agents_title">Agent</string>
 <string name="agents_new_thread">Luồng mới</string>
-<string name="agents_new_thread_on">Luồng mới trên %1$s</string>
-<string name="agents_new_thread_note">Agent làm việc trên PC, trong thư mục bạn chọn.</string>
 <string name="agents_empty">Chưa có luồng nào.</string>
 <string name="agents_access_title">Điện thoại này chưa thể dùng agent trên %1$s.</string>
 <string name="agents_access_body">Hãy bật trong Cài đặt của G7 Link trên PC, mục Agent.</string>
@@ -1365,7 +1363,6 @@
 <string name="agents_login_hint">Trên PC, hãy chạy: %1$s</string>
 <string name="agents_no_folders">Chưa có thư mục nào. Hãy thêm trên %1$s, trong Cài đặt của G7 Link, mục Agent.</string>
 <string name="agents_pick_agent">Agent</string>
-<string name="agents_pick_folder">Thư mục</string>
 <string name="agents_prompt_hint">Nó nên làm gì?</string>
 <string name="agents_supervised_note">Khi bắt đầu từ điện thoại, nó sẽ hỏi trước khi sửa tệp hoặc chạy lệnh có thể thay đổi điều gì đó.</string>
 <string name="agents_start">Bắt đầu</string>
@@ -1658,7 +1655,6 @@
 <string name="agents_mode_default_note">Mặc định của bạn</string>
 <string name="agents_settings_title">%1$s, cho luồng này</string>
 <string name="agents_settings_model">Mô hình</string>
-<string name="agents_settings_effort">Mức nỗ lực</string>
 <string name="agents_settings_mode">Chế độ</string>
 <string name="agents_settings_done">Xong</string>
 <string name="agents_settings_later">Bạn có thể đổi khi %1$s dừng.</string>
@@ -2240,5 +2236,43 @@
     </plurals>
     <plurals name="agents_pr_detail_older">
         <item quantity="other">%1$d bình luận cũ hơn không được hiện.</item>
+    </plurals>
+    <!-- A new thread, direction C: where it works, what it runs with, browsing the PC (plans/new-thread-c-contract.md). -->
+    <string name="agents_where_title">Agent nên làm việc ở đâu?</string>
+    <string name="agents_where_all">Mọi thư mục trên %1$s</string>
+    <string name="agents_where_note">Thư mục mới sẽ được duyệt trên %1$s ở lần đầu.</string>
+    <string name="agents_where_not_used">Chưa dùng</string>
+    <string name="agents_where_shared">Hãy chọn nơi làm việc, rồi gửi nội dung bạn đã chia sẻ.</string>
+    <string name="agents_no_folders_start">Chưa có thư mục nào. Hãy bắt đầu một luồng để chọn.</string>
+    <string name="agents_run_with">Chạy với</string>
+    <string name="agents_pick_here">Dùng lần cuối ở đây</string>
+    <string name="agents_pick_used_in">Đã dùng trong %1$s</string>
+    <string name="agents_agent_default">Mặc định của %1$s</string>
+    <string name="agents_pick_yours">Lựa chọn của bạn</string>
+    <string name="agents_pick_delisted">Không còn trong danh sách của %1$s</string>
+    <string name="agents_agent_signed_out_on">%1$s đã đăng xuất trên %2$s.</string>
+    <string name="agents_agent_missing_on">%1$s chưa được cài trên %2$s.</string>
+    <string name="agents_run_other">Agent, mô hình hoặc mức suy nghĩ khác…</string>
+    <string name="agents_thinking">Suy nghĩ</string>
+    <string name="agents_reasoning">Suy luận</string>
+    <string name="agents_effort_auto">Tự động</string>
+    <string name="agents_asks_before">Hỏi trước khi</string>
+    <string name="agents_asks_edits">Sửa và chạy lệnh</string>
+    <string name="agents_asks_plan">Lập kế hoạch trước</string>
+    <string name="agents_add_picture">Thêm ảnh</string>
+    <string name="agents_places_home">Thư mục cá nhân</string>
+    <string name="agents_places_in_folders">Trong thư mục agent của bạn</string>
+    <string name="agents_places_use_short">Dùng</string>
+    <string name="agents_places_use">Dùng thư mục này</string>
+    <string name="agents_places_show_more">Xem thêm</string>
+    <string name="agents_places_empty">Không có thư mục nào ở đây.</string>
+    <string name="agents_places_approve">Hãy duyệt trên %1$s</string>
+    <string name="agents_places_add_denied">%1$s đã không thêm thư mục đó.</string>
+    <string name="agents_places_gone">Thư mục đó không còn nữa.</string>
+    <string name="agents_places_busy">%1$s đọc thư mục đó quá lâu. Hãy thử lại.</string>
+    <string name="agents_places_limit">%1$s đã có tối đa số thư mục agent. Hãy xoá bớt một thư mục ở đó trước.</string>
+    <plurals name="agents_where_more">
+        <item quantity="one">Thêm %1$d thư mục gần đây</item>
+        <item quantity="other">Thêm %1$d thư mục gần đây</item>
     </plurals>
 </resources>

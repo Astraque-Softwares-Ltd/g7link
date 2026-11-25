@@ -57,7 +57,7 @@ internal fun AgentDetailsSheet(
         ) {
             Text(stringResource(R.string.agents_details), style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(bottom = 8.dp))
             DetailLine(G7Icons.folder, stringResource(R.string.agents_folder_on, thread.folder, pcName))
-            val model = AgentSettings.modelName(models, control.model)
+            val model = AgentSettings.settingName(models, control.model)
             val effort = AgentSettings.effectiveEffort(models, AgentSettings.of(control))?.let(AgentSettings::effortLabel)
             DetailLine(G7Icons.sparkle, listOfNotNull(model ?: stringResource(R.string.agents_default_model), effort).joinToString(" · "))
             val answered = control.answeredModel?.takeIf { it.isNotBlank() && it != control.model }

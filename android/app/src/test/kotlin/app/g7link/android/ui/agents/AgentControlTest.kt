@@ -155,9 +155,9 @@ class AgentControlTest {
         val sections = AgentSettings.sections(claude)
         assertEquals(listOf("opus", "haiku"), sections.first.map { it.id })
         assertEquals(listOf("claude-opus-4-1", "claude-text-only"), sections.more.map { it.id })
-        // Codex reports no short names: all of them are listed.
+        // Codex reports no short names: all of them are listed, its default once (as the Default row, the same row again under More).
         val codex = listOf(ModelOption("gpt-5", "GPT-5", isDefault = true), ModelOption("gpt-5-mini", "GPT-5 mini"))
-        assertEquals(ModelSections(codex, emptyList()), AgentSettings.sections(codex))
+        assertEquals(ModelSections(listOf(codex[1]), listOf(codex[0])), AgentSettings.sections(codex))
         assertEquals("GPT-5", AgentSettings.defaultModel(codex)?.name)
     }
 
@@ -230,14 +230,150 @@ class AgentControlTest {
         assertFalse(AgentSettings.takesImages(abilities(), ThreadSettings(model = "opus")))
     }
 
+    // ---- Exact names and quick picks (contract C §2, §3) ----
+
+    /** Claude as a CLI with `resolvedModel` reports it: every alias knows its exact model. */
+    private val opus5 = listOf(
+        ModelOption("default", "Default (recommended)", isDefault = true, efforts = listOf("low", "medium", "high", "xhigh", "max"), images = true, short = true, exact = "Opus 5"),
+        ModelOption("opus", "Opus", efforts = listOf("low", "medium", "high", "xhigh", "max"), images = true, short = true, exact = "Opus 5"),
+        ModelOption("sonnet", "Sonnet", efforts = listOf("low", "high"), images = true, short = true, exact = "Sonnet 4.6"),
+        ModelOption("haiku", "Haiku", images = true, short = true, exact = "Haiku 4.5"),
+        ModelOption("claude-opus-5", "Opus 5", efforts = listOf("low", "medium", "high", "xhigh", "max"), images = true, exact = "Opus 5"),
+    )
+
+    private val gpt = listOf(
+        ModelOption("gpt-5.5-codex", "GPT-5.5 Codex", isDefault = true, efforts = listOf("low", "medium", "high", "xhigh"), defaultEffort = "medium", exact = "GPT-5.5 Codex"),
+        ModelOption("gpt-5.4-mini", "GPT-5.4 mini", efforts = listOf("low", "medium"), defaultEffort = "low", exact = "GPT-5.4 mini"),
+    )
+
+    private val claudeAgent = PickAgent("claude", "Claude", ready = true, models = opus5)
+    private val codexAgent = PickAgent("codex", "Codex", ready = true, models = gpt)
+
+    private fun used(id: String, ms: Long, agent: String? = null, model: String? = null, effort: String? = null) =
+        FolderUse(id = id, label = "label-$id", usedMs = ms, last = agent?.let { FolderLast(it, model, effort, title = "Fix it", branch = "main") })
+
     @Test
-    fun `the model chosen last is kept per agent and folder, without the mode`() {
-        AgentChoices.forgetPc("pc-choices")
-        AgentChoices.set("pc-choices", "claude", "g7linux", ThreadSettings(model = "opus", effort = "high", mode = ThreadMode.PLAN))
-        assertEquals(ThreadSettings(model = "opus", effort = "high"), AgentChoices.get("pc-choices", "claude", "g7linux"))
-        assertEquals(ThreadSettings(), AgentChoices.get("pc-choices", "codex", "g7linux"))
-        AgentChoices.forgetPc("pc-choices")
-        assertEquals(ThreadSettings(), AgentChoices.get("pc-choices", "claude", "g7linux"))
+    fun `a model is shown by its exact name, and the default by its own without a word for it`() {
+        assertEquals("Opus 5", AgentSettings.shownName(opus5[1]))
+        assertEquals("Opus 5", AgentSettings.modelName(opus5, "opus"))
+        assertEquals("Opus 5", AgentSettings.settingName(opus5, null))
+        assertEquals("Sonnet 4.6", AgentSettings.settingName(opus5, "sonnet"))
+        // No model set: what answered there when the list has it, else the default's.
+        assertEquals("Sonnet 4.6", AgentSettings.settingName(opus5, null, answered = "sonnet"))
+        assertEquals("Opus 5", AgentSettings.settingName(opus5, null, answered = "claude-gone-1"))
+        assertEquals("my-model", AgentSettings.settingName(opus5, "my-model"))
+        assertEquals("GPT-5.5 Codex", AgentSettings.settingName(gpt, null))
+    }
+
+    @Test
+    fun `without the exact model the alias keeps its name and the default isn't guessed`() {
+        // `claude` above is a CLI that doesn't say which model an alias stands for.
+        assertNull(AgentSettings.shownName(claude[0]))
+        assertNull(AgentSettings.settingName(claude, null))
+        assertEquals("Opus", AgentSettings.settingName(claude, "opus"))
+        assertNull(AgentSettings.pickName(claude, RunChoice("claude")))
+        // Nothing reported at all.
+        assertNull(AgentSettings.settingName(emptyList(), null))
+        // Codex's default is a real model with its own name.
+        assertEquals("GPT-5", AgentSettings.shownName(ModelOption("gpt-5", "GPT-5", isDefault = true)))
+    }
+
+    @Test
+    fun `rows that read the same are shown once up top, all of them under More with their ids`() {
+        val sections = AgentSettings.sections(opus5)
+        // "Opus 5" is the Default row's: the opus alias moves under More.
+        assertEquals(listOf("sonnet", "haiku"), sections.first.map { it.id })
+        assertEquals(listOf("opus", "claude-opus-5"), sections.more.map { it.id })
+        assertEquals(setOf("opus", "claude-opus-5"), AgentSettings.sameNamed(opus5))
+        assertTrue(AgentSettings.sameNamed(claude).isEmpty())
+    }
+
+    @Test
+    fun `quick picks are this folder's last, then other folders' by use, then the defaults, three at most`() {
+        val folders = listOf(
+            used("here", 100L, "claude", "opus", "high"),
+            used("old", 50L, "claude", "haiku"),
+            used("newest", 300L, "codex", "gpt-5.4-mini", "low"),
+            used("middle", 200L, "claude", "sonnet", "high"),
+        )
+        val picks = AgentSettings.quickPicks(folders, listOf(claudeAgent, codexAgent), "here")
+        assertEquals(
+            listOf(
+                QuickPick(RunChoice("claude", "opus", "high"), PickFrom.HERE),
+                QuickPick(RunChoice("codex", "gpt-5.4-mini", "low"), PickFrom.FOLDER, folder = "label-newest"),
+                QuickPick(RunChoice("claude", "sonnet", "high"), PickFrom.FOLDER, folder = "label-middle"),
+            ),
+            picks,
+        )
+        assertEquals(AgentSettings.MAX_PICKS, picks.size)
+    }
+
+    @Test
+    fun `the same pick from two folders is shown once, and the agents' defaults fill the rest`() {
+        val folders = listOf(used("here", 100L, "claude", "opus", "high"), used("other", 200L, "claude", "opus", "high"), used("new", 0L))
+        val picks = AgentSettings.quickPicks(folders, listOf(claudeAgent, codexAgent), "here")
+        assertEquals(listOf(PickFrom.HERE, PickFrom.DEFAULT), picks.map { it.from })
+        assertEquals(RunChoice("codex"), picks[1].choice)
+        // No history at all: one default per ready agent, in the catalog's order.
+        assertEquals(
+            listOf(QuickPick(RunChoice("claude"), PickFrom.DEFAULT), QuickPick(RunChoice("codex"), PickFrom.DEFAULT)),
+            AgentSettings.quickPicks(listOf(used("new", 0L)), listOf(claudeAgent, codexAgent), "new"),
+        )
+    }
+
+    @Test
+    fun `an agent that can't start a thread gives no pick and a line says why`() {
+        val signedOut = codexAgent.copy(ready = false)
+        val folders = listOf(used("here", 100L, "codex", "gpt-5.4-mini"), used("other", 90L, "claude", "sonnet"))
+        val picks = AgentSettings.quickPicks(folders, listOf(claudeAgent, signedOut), "here")
+        assertEquals(listOf("claude"), picks.map { it.choice.agent }.distinct())
+        assertEquals(PickFrom.FOLDER, picks.first().from)
+        assertEquals(listOf(signedOut), AgentSettings.leftOut(folders, listOf(claudeAgent, signedOut)))
+        assertTrue(AgentSettings.leftOut(folders, listOf(claudeAgent, codexAgent)).isEmpty())
+    }
+
+    @Test
+    fun `a model gone from the list is still offered, sent as typed, and an effort it no longer takes is dropped`() {
+        val folders = listOf(used("here", 100L, "claude", "claude-opus-4-1", "high"), used("b", 90L, "claude", "sonnet", "max"))
+        val picks = AgentSettings.quickPicks(folders, listOf(claudeAgent), "here")
+        val gone = picks[0].choice
+        assertEquals(RunChoice("claude", "claude-opus-4-1", "high", custom = true), gone)
+        assertTrue(AgentSettings.delisted(opus5, gone))
+        assertEquals("claude-opus-4-1", AgentSettings.pickName(opus5, gone))
+        assertEquals(ThreadSettings(model = "claude-opus-4-1", effort = "high", customModel = true), gone.settings())
+        // Sonnet takes low and high only.
+        assertEquals(RunChoice("claude", "sonnet", null), picks[1].choice)
+        assertFalse(AgentSettings.delisted(opus5, picks[1].choice))
+        // The list's default by name is no model set.
+        assertEquals(RunChoice("codex", null, "high"), AgentSettings.normalized(codexAgent, "gpt-5.5-codex", "high"))
+        assertEquals(RunChoice("claude", null, "max"), AgentSettings.normalized(claudeAgent, "default", "max"))
+    }
+
+    @Test
+    fun `a pick reads agent, exact model and effort, the model's own effort when none is set`() {
+        val claudeDefault = RunChoice("claude")
+        assertEquals("Opus 5", AgentSettings.pickName(opus5, claudeDefault))
+        assertNull("Claude reports no default effort", AgentSettings.pickEffort(opus5, claudeDefault))
+        assertEquals("High", AgentSettings.pickEffort(opus5, RunChoice("claude", "opus", "high")))
+        assertEquals("GPT-5.5 Codex", AgentSettings.pickName(gpt, RunChoice("codex")))
+        assertEquals("Medium", AgentSettings.pickEffort(gpt, RunChoice("codex")))
+    }
+
+    @Test
+    fun `Run with selects the first pick, a chosen one, or adds the choice as Your choice`() {
+        val picks = listOf(QuickPick(RunChoice("claude", "opus", "high"), PickFrom.HERE), QuickPick(RunChoice("codex"), PickFrom.DEFAULT))
+        assertEquals(listOf(true, false), AgentSettings.runRows(picks, null).map { it.selected })
+        assertEquals(listOf(false, true), AgentSettings.runRows(picks, RunChoice("codex")).map { it.selected })
+        val yours = RunChoice("claude", "sonnet", "low")
+        val rows = AgentSettings.runRows(picks, yours)
+        assertEquals(listOf(false, false, true), rows.map { it.selected })
+        assertEquals(QuickPick(yours, PickFrom.YOURS), rows.last().pick)
+        assertEquals(yours, AgentSettings.runWith(picks, yours))
+        assertEquals(picks[0].choice, AgentSettings.runWith(picks, null))
+        assertNull(AgentSettings.runWith(emptyList(), null))
+        // The sheet's choice, as a start sends it: Codex's default model by name is no model set; a typed one stays typed.
+        assertEquals(RunChoice("codex", null, "low"), AgentSettings.choiceOf(codexAgent, ThreadSettings(model = "gpt-5.5-codex", effort = "low")))
+        assertEquals(RunChoice("claude", "opus", null, custom = true), AgentSettings.choiceOf(claudeAgent, ThreadSettings(model = "opus", customModel = true)))
     }
 
     // ---- Sending while it works, and the queue ----

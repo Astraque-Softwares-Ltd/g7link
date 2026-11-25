@@ -1416,8 +1416,6 @@
     <string name="action_agents_pc">Agentes</string>
     <string name="agents_title">Agentes</string>
     <string name="agents_new_thread">Nova conversa</string>
-    <string name="agents_new_thread_on">Nova conversa em %1$s</string>
-    <string name="agents_new_thread_note">O agente trabalha no PC, na pasta que você escolher.</string>
     <string name="agents_empty">Nenhuma conversa ainda.</string>
     <string name="agents_access_title">Este celular ainda não pode usar agentes em %1$s.</string>
     <string name="agents_access_body">Ative nas Configurações do G7 Link no PC, em Agentes.</string>
@@ -1429,7 +1427,6 @@
     <string name="agents_login_hint">No PC, execute: %1$s</string>
     <string name="agents_no_folders">Nenhuma pasta ainda. Adicione uma em %1$s, nas Configurações do G7 Link, em Agentes.</string>
     <string name="agents_pick_agent">Agente</string>
-    <string name="agents_pick_folder">Pasta</string>
     <string name="agents_prompt_hint">O que ele deve fazer?</string>
     <string name="agents_supervised_note">Iniciado pelo celular, ele pergunta antes de alterar um arquivo ou executar um comando que possa mudar algo.</string>
     <string name="agents_start">Iniciar</string>
@@ -1749,7 +1746,6 @@
     <string name="agents_mode_default_note">Seu padrão</string>
     <string name="agents_settings_title">%1$s, para esta conversa</string>
     <string name="agents_settings_model">Modelo</string>
-    <string name="agents_settings_effort">Esforço</string>
     <string name="agents_settings_mode">Modo</string>
     <string name="agents_settings_done">Concluir</string>
     <string name="agents_settings_later">Você pode mudar isso quando %1$s parar.</string>
@@ -2351,5 +2347,43 @@
     <plurals name="agents_pr_detail_older">
         <item quantity="one">%1$d comentário anterior não aparece.</item>
         <item quantity="other">%1$d comentários anteriores não aparecem.</item>
+    </plurals>
+    <!-- A new thread, direction C: where it works, what it runs with, browsing the PC (plans/new-thread-c-contract.md). -->
+    <string name="agents_where_title">Onde ele deve trabalhar?</string>
+    <string name="agents_where_all">Todas as pastas em %1$s</string>
+    <string name="agents_where_note">Uma pasta nova é aprovada em %1$s na primeira vez.</string>
+    <string name="agents_where_not_used">Ainda não usada</string>
+    <string name="agents_where_shared">Escolha onde e depois envie o que você compartilhou.</string>
+    <string name="agents_no_folders_start">Nenhuma pasta ainda. Inicie uma conversa para escolher uma.</string>
+    <string name="agents_run_with">Executar com</string>
+    <string name="agents_pick_here">Usado aqui por último</string>
+    <string name="agents_pick_used_in">Usado em %1$s</string>
+    <string name="agents_agent_default">Padrão do %1$s</string>
+    <string name="agents_pick_yours">Sua escolha</string>
+    <string name="agents_pick_delisted">Não está mais na lista do %1$s</string>
+    <string name="agents_agent_signed_out_on">%1$s está desconectado em %2$s.</string>
+    <string name="agents_agent_missing_on">%1$s não está instalado em %2$s.</string>
+    <string name="agents_run_other">Outro agente, modelo ou pensamento…</string>
+    <string name="agents_thinking">Pensamento</string>
+    <string name="agents_reasoning">Raciocínio</string>
+    <string name="agents_effort_auto">Auto</string>
+    <string name="agents_asks_before">Pergunta antes de</string>
+    <string name="agents_asks_edits">Edições e comandos</string>
+    <string name="agents_asks_plan">Planejar primeiro</string>
+    <string name="agents_add_picture">Adicionar uma foto</string>
+    <string name="agents_places_home">Pasta pessoal</string>
+    <string name="agents_places_in_folders">Nas suas pastas de agentes</string>
+    <string name="agents_places_use_short">Usar</string>
+    <string name="agents_places_use">Usar esta pasta</string>
+    <string name="agents_places_show_more">Mostrar mais</string>
+    <string name="agents_places_empty">Nenhuma pasta aqui.</string>
+    <string name="agents_places_approve">Aprove em %1$s</string>
+    <string name="agents_places_add_denied">%1$s não adicionou essa pasta.</string>
+    <string name="agents_places_gone">Essa pasta não existe mais.</string>
+    <string name="agents_places_busy">%1$s demorou demais para ler essa pasta. Tente de novo.</string>
+    <string name="agents_places_limit">%1$s já tem o máximo de pastas de agentes. Remova uma lá primeiro.</string>
+    <plurals name="agents_where_more">
+        <item quantity="one">Mais %1$d pasta recente</item>
+        <item quantity="other">Mais %1$d pastas recentes</item>
     </plurals>
 </resources>

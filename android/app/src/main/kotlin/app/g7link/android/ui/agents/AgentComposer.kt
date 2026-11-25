@@ -74,7 +74,7 @@ import java.util.Date
 data class ComposerSettings(
     /** The PC offers control: the model control is shown. */
     val shown: Boolean,
-    /** The model's name; null for the CLI's default ("Default"). */
+    /** The model's shown name; null for the CLI's default when no version is known ("<Agent>'s default"). */
     val model: String?,
     /** The effort, as the CLI names it (first letter capitalised); null when none applies. */
     val effort: String?,
@@ -194,7 +194,7 @@ internal fun AgentComposer(
                         tint = scheme.onSurfaceVariant,
                     )
                 }
-                if (settings.shown) SettingsChip(settings, view.settings, onSettings, Modifier.weight(1f, fill = false))
+                if (settings.shown) SettingsChip(settings, agentName, view.settings, onSettings, Modifier.weight(1f, fill = false))
                 Spacer(Modifier.weight(1f))
                 if (view.showStop) {
                     ComposerPill(G7Icons.stop, stringResource(R.string.agents_stop), accent = false, enabled = !stopping, onClick = onStop)
@@ -303,9 +303,9 @@ private fun FollowUpButton(view: ComposerView, onSend: (FollowUp?) -> Unit) {
 
 /** "Opus · High ˅": opens the sheet; while it works a tap says why it can't, while a question waits nothing happens. */
 @Composable
-private fun SettingsChip(settings: ComposerSettings, access: SettingsAccess, onClick: () -> Unit, modifier: Modifier = Modifier) {
+private fun SettingsChip(settings: ComposerSettings, agentName: String, access: SettingsAccess, onClick: () -> Unit, modifier: Modifier = Modifier) {
     val scheme = MaterialTheme.colorScheme
-    val model = settings.model ?: stringResource(R.string.agents_model_default)
+    val model = settings.model ?: stringResource(R.string.agents_agent_default, agentName)
     val label = listOfNotNull(model, settings.effort).joinToString(" · ")
     val inert = access == SettingsAccess.INERT
     Row(modifier, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
