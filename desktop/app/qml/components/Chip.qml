@@ -12,7 +12,8 @@ Rectangle {
     signal clicked()
 
     implicitHeight: 24
-    implicitWidth: row.implicitWidth + 20
+    // Its whole text; given less room, the text ends in "…".
+    implicitWidth: label.implicitWidth + (chip.iconPath.length > 0 ? 20 : 0) + 20
     radius: Theme.radiusSm
     color: selected ? Theme.activeFill : (interactive ? "transparent" : Theme.raised)
     Behavior on color { enabled: !Theme.reduceMotion; ColorAnimation { duration: Theme.fadeFast } }
@@ -63,6 +64,7 @@ Rectangle {
         }
         Txt {
             id: label
+            width: Math.min(implicitWidth, Math.max(0, chip.width - (chip.iconPath.length > 0 ? 20 : 0) - 20))
             anchors.verticalCenter: parent.verticalCenter
             text: chip.text
             role: "bodySmall"

@@ -3,18 +3,17 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import app.g7link
 
-// The model control's panel: the models the agent's own CLI reported on
-// this PC (short names first, the rest under "More models", then a name you
-// type), the chosen model's effort levels as the CLI names them, and the
-// modes. Before the CLI has reported a list: "Default" and a typed name.
-// Over the page, it closes on Esc or a click outside; each pick applies to
-// the thread's next message (or the thread you're starting).
+// The open thread's model control: the models the agent's own CLI reported
+// on this PC by their exact names ("Opus 5", the CLI's default tagged
+// "Default"; short names first, the rest under "More models", then a name
+// you type), the chosen model's thinking (Claude) or reasoning (Codex)
+// levels as the CLI names them, and the modes. Before the CLI has reported
+// a list: the agent's default and a typed name. Over the page, it closes on
+// Esc or a click outside; each pick applies to the thread's next message.
 Item {
     id: panelRoot
-    // `Agents.composer.picker` or `Agents.newPicker`, parsed.
+    // `Agents.composer.picker`, parsed.
     property var picker: ({})
-    // For the new-thread form (no modes here: the form has its own).
-    property bool newForm: false
     property bool opened: false
     property real anchorX: 0
     property real anchorY: 0
@@ -30,6 +29,10 @@ Item {
     readonly property bool known: picker.known === true
     readonly property string agentName: picker.agentName || ""
     readonly property bool custom: (picker.custom || "").length > 0
+    // A row's name: "" is the CLI's default when the CLI doesn't say which model it is.
+    function rowName(row) {
+        return row.name.length > 0 ? row.name : qsTr("%1's default").arg(agentName)
+    }
 
     function openAt(x, y) {
         anchorX = x
@@ -42,7 +45,7 @@ Item {
     }
     function close() { opened = false }
     function pick(what, value) {
-        Agents.pick(newForm, what, value)
+        Agents.pick(false, what, value)
     }
 
     anchors.fill: parent
@@ -67,7 +70,7 @@ Item {
 
     Rectangle {
         id: panel
-        width: Math.min(panelRoot.newForm ? 300 : 580, panelRoot.width - 24)
+        width: Math.min(580, panelRoot.width - 24)
         height: Math.min(body.height + footer.height + 16, panelRoot.height - 24)
         x: Math.max(12, Math.min(panelRoot.width - width - 12, panelRoot.anchorX))
         y: Math.max(12, panelRoot.anchorY - height - 6)
@@ -97,7 +100,7 @@ Item {
                 // ---- Models ----
                 Column {
                     id: modelColumn
-                    width: panelRoot.newForm ? body.width : (body.width - 11) / 2
+                    width: (body.width - 11) / 2
                     spacing: 2
                     Txt {
                         x: 8
@@ -112,10 +115,9 @@ Item {
                         delegate: AgentPickRow {
                             required property var modelData
                             width: modelColumn.width
-                            label: modelData.id === "" ? qsTr("Default") : modelData.name
+                            label: panelRoot.rowName(modelData)
                             note: modelData.note
-                            tag: modelData.isDefault && modelData.id !== "" && modelData.id !== "default"
-                                ? qsTr("Default") : ""
+                            tag: modelData.isDefault && modelData.name.length > 0 ? qsTr("Default") : ""
                             checked: modelData.checked && !panelRoot.custom
                             onPicked: {
                                 panelRoot.typing = false
@@ -136,7 +138,7 @@ Item {
                         delegate: AgentPickRow {
                             required property var modelData
                             width: modelColumn.width
-                            label: modelData.name
+                            label: panelRoot.rowName(modelData)
                             note: modelData.note
                             checked: modelData.checked && !panelRoot.custom
                             onPicked: {
@@ -166,31 +168,9 @@ Item {
                                 panelRoot.pick("custom", customField.text.trim())
                         }
                     }
-                    // The new-thread form's efforts sit under its models.
-                    Txt {
-                        visible: panelRoot.newForm && panelRoot.efforts.length > 0
-                        x: 8
-                        height: 24
-                        verticalAlignment: Text.AlignVCenter
-                        text: panelRoot.picker.agent === "codex" ? qsTr("Reasoning") : qsTr("Effort")
-                        role: "label"
-                        muted: true
-                    }
-                    Repeater {
-                        model: panelRoot.newForm ? panelRoot.efforts : []
-                        delegate: AgentPickRow {
-                            required property var modelData
-                            width: modelColumn.width
-                            label: modelData.label
-                            tag: modelData.isDefault ? qsTr("Default") : ""
-                            checked: modelData.checked
-                            onPicked: panelRoot.pick("effort", modelData.value)
-                        }
-                    }
                 }
 
                 Rectangle {
-                    visible: !panelRoot.newForm
                     width: 1
                     height: Math.max(modelColumn.height, sideColumn.height)
                     color: Theme.line
@@ -199,7 +179,6 @@ Item {
                 // ---- Effort and mode ----
                 Column {
                     id: sideColumn
-                    visible: !panelRoot.newForm
                     width: (body.width - 11) / 2
                     spacing: 2
                     Txt {
@@ -207,7 +186,7 @@ Item {
                         x: 8
                         height: 24
                         verticalAlignment: Text.AlignVCenter
-                        text: panelRoot.picker.agent === "codex" ? qsTr("Reasoning") : qsTr("Effort")
+                        text: panelRoot.picker.effortWord === "reasoning" ? qsTr("Reasoning") : qsTr("Thinking")
                         role: "label"
                         muted: true
                     }
@@ -258,7 +237,7 @@ Item {
                     muted: true
                 }
                 Txt {
-                    visible: panelRoot.known && !panelRoot.newForm
+                    visible: panelRoot.known
                     anchors.right: parent.right
                     anchors.rightMargin: 16
                     anchors.verticalCenter: parent.verticalCenter

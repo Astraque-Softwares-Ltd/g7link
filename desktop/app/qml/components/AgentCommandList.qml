@@ -11,6 +11,8 @@ Rectangle {
     id: list
     // `Agents.popup` (kind "commands"), parsed.
     property var popup: ({})
+    // The thread's agent: Claude thinks, Codex reasons.
+    property string agentId
     signal chosen(int index)
 
     readonly property var rows: popup.rows || []
@@ -19,7 +21,7 @@ Rectangle {
     function ownNote(name) {
         switch (name) {
         case "model": return qsTr("Choose the model")
-        case "effort": return qsTr("Choose the effort")
+        case "effort": return agentId === "codex" ? qsTr("Choose how much it reasons") : qsTr("Choose how much it thinks")
         case "plan": return qsTr("Plan: it changes nothing until you say so")
         default: return ""
         }

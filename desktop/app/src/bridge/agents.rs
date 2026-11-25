@@ -81,8 +81,13 @@ pub mod qobject {
         #[qproperty(QString, popup)]
         /// Text the composer must take: `{ gen, n, text, cursor }` (JSON).
         #[qproperty(QString, composer_set)]
-        /// The new-thread form's model control (JSON).
+        /// The new-thread form's model control, quick picks and folder (JSON).
         #[qproperty(QString, new_picker)]
+        /// The new-thread form's folder tree: `{ "<place>": { entries, more, loading, failed } }` (JSON).
+        #[qproperty(QString, places)]
+        /// A phone's folder add someone at this PC is asked about:
+        /// `{ id, device, deviceName, place, name }` (JSON, `{}` for none).
+        #[qproperty(QString, folder_prompt)]
         /// The Archived or Snoozed shelf's threads (JSON; `null` for the main list).
         #[qproperty(QString, shelf)]
         /// The list's search and its hits by thread (JSON).
@@ -128,6 +133,18 @@ pub mod qobject {
         /// Adds the folder a session runs in (confirmed), then continues the session.
         #[qinvokable]
         fn add_folder_and_continue(self: &Agents, path: &QString, session_id: &QString);
+        /// The new-thread form's "Open the folder dialog…": adds the folder and selects it.
+        #[qinvokable]
+        fn add_folder_for_new_thread(self: &Agents, path: &QString);
+        /// Reads the folders in a place of the form's tree ("": the roots) from `offset`.
+        #[qinvokable]
+        fn read_places(self: &Agents, place: &QString, offset: i32);
+        /// Adds a folder of the form's tree (by place) and selects it.
+        #[qinvokable]
+        fn add_place(self: &Agents, place: &QString);
+        /// The answer to a phone's folder add: Allow, or Not now.
+        #[qinvokable]
+        fn folder_prompt_answer(self: &Agents, allow: bool);
         /// Turns following sessions started outside G7 on or off.
         #[qinvokable]
         fn set_following(self: &Agents, on: bool);
@@ -693,6 +710,8 @@ pub struct AgentsRust {
     popup: QString,
     composer_set: QString,
     new_picker: QString,
+    places: QString,
+    folder_prompt: QString,
     shelf: QString,
     search: QString,
     bring_in: QString,
@@ -767,6 +786,12 @@ impl qobject::Agents {
         }
         if differs(|v| &v.new_picker) {
             self.as_mut().set_new_picker(QString::from(&view.new_picker));
+        }
+        if differs(|v| &v.places) {
+            self.as_mut().set_places(QString::from(&view.places));
+        }
+        if differs(|v| &v.folder_prompt) {
+            self.as_mut().set_folder_prompt(QString::from(&view.folder_prompt));
         }
         if differs(|v| &v.shelf) {
             self.as_mut().set_shelf(QString::from(&view.shelf));
@@ -858,6 +883,25 @@ impl qobject::Agents {
         if !path.is_empty() {
             agents::add_folder_and_continue(path, String::from(session_id));
         }
+    }
+
+    pub fn add_folder_for_new_thread(&self, path: &QString) {
+        let path = String::from(path);
+        if !path.is_empty() {
+            agents::new_thread::add_folder(path);
+        }
+    }
+
+    pub fn read_places(&self, place: &QString, offset: i32) {
+        agents::new_thread::places(String::from(place), usize::try_from(offset).unwrap_or(0));
+    }
+
+    pub fn add_place(&self, place: &QString) {
+        agents::new_thread::add_place(String::from(place));
+    }
+
+    pub fn folder_prompt_answer(&self, allow: bool) {
+        agents::folder_prompt_answer(allow);
     }
 
     pub fn set_following(&self, on: bool) {

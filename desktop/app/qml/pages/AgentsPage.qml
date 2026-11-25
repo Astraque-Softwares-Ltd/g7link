@@ -117,7 +117,7 @@ Item {
         page.reviewChip = { repo: repo, number: number, folderId: folderId }
         page.openNew()
         if (folderId.length > 0 && page.usableFolders.some((f) => f.id === folderId))
-            newView.folder = folderId
+            newView.chooseFolder(folderId)
     }
     function openPrs() {
         Agents.close()
@@ -182,7 +182,8 @@ Item {
     readonly property var readyAgents: connected
         ? (setup.agents || []).filter((a) => a.installed && a.signedIn && a.problem.length === 0) : []
     readonly property var usableFolders: connected ? (setup.folders || []).filter((f) => f.exists) : []
-    readonly property bool ready: readyAgents.length > 0 && usableFolders.length > 0
+    // An agent can start a thread: the form opens (a folder is chosen in it).
+    readonly property bool ready: readyAgents.length > 0
     readonly property string openKind: Agents.openKind
     readonly property bool isThread: openKind === "thread"
     readonly property bool isSession: openKind === "session"
@@ -500,7 +501,7 @@ Item {
     function openNew() {
         Agents.close()
         page.pane = "new"
-        Qt.callLater(() => page.reviewing ? newView.forceActiveFocus() : taskInput.forceActiveFocus())
+        Qt.callLater(() => newView.focusFirst())
     }
     function openSetup() {
         Agents.close()
@@ -631,7 +632,16 @@ Item {
         // The review chip belongs to the form it was put in.
         if (shown !== "new")
             reviewChip = ({})
+        else
+            newView.opened()
     }
+    // While the form shows: a folder that went (or an agent that can't
+    // start any more) is replaced by what the form would open on.
+    onUsableFoldersChanged: {
+        if (shown === "new" && newView.folder.length > 0 && !newView.hasFolder)
+            Agents.newForm("", usableFolders.length > 0 ? usableFolders[0].id : "")
+    }
+    onReadyAgentsChanged: if (shown === "new") Agents.newForm("", newView.folder)
     onWindowActiveChanged: Agents.windowActive(windowActive)
     // Code, tool targets, outputs and diff words, coloured by the agent
     // palette (plans/agent-colour.md §2).
@@ -641,6 +651,8 @@ Item {
         Agents.setCodeColors(codeColors)
         Agents.windowActive(windowActive)
         Agents.pageVisible(active)
+        if (shown === "new")
+            newView.opened()
     }
     Component.onDestruction: Agents.pageVisible(false)
 
@@ -763,6 +775,22 @@ Item {
         enabled: page.active && page.isSession && page.info.can_continue === true && !continueSheet.opened
         onActivated: continueSheet.open()
     }
+    // The new thread starts from anywhere in its form (the task box takes its own).
+    Shortcut {
+        sequences: ["Ctrl+Return", "Ctrl+Enter"]
+        enabled: page.active && page.shown === "new" && !taskInput.activeFocus && page.keysFree
+        onActivated: newView.start()
+    }
+    // Alt+1..3: a quick pick.
+    Instantiator {
+        model: 3
+        delegate: Shortcut {
+            required property int index
+            sequence: "Alt+" + (index + 1)
+            enabled: page.active && page.shown === "new" && page.keysFree
+            onActivated: runWith.choose(index)
+        }
+    }
     // Allow the shown request: only while the composer is empty, so a habit
     // of Ctrl+Enter to send can never allow a command.
     Shortcut {
@@ -788,7 +816,8 @@ Item {
         enabled: page.active && (page.openKind.length > 0 || page.pane.length > 0)
                  && !continueSheet.opened && !folderSheet.opened && !deleteSheet.opened && !restartSheet.opened
                  && !linkSheet.opened && !dockMenu.opened && !planMenu.opened && !threadPicker.opened
-                 && !newFormPicker.opened && !composer.popupOpen && !AppController.commandPaletteOpen
+                 && !composer.popupOpen && !AppController.commandPaletteOpen
+                 && !(filterField.input.activeFocus && filterField.text.length > 0)
                  && !rewindDialog.opened && !rowMenu.opened && !snoozeMenu.opened && !bulkMenu.opened
                  && !attachMenu.opened && !headMenu.opened && page.renamingId.length === 0
         onActivated: page.back()
@@ -800,7 +829,7 @@ Item {
         && !rowMenu.opened && !snoozeMenu.opened && !bulkMenu.opened && !diffMenu.opened && !planMenu.opened
         && !gitMenu.opened && !modeMenu.opened && !runMenu.opened && !rewindDialog.opened && !branchMenu.opened
         && !switchDialog.opened && !worktreeDialog.opened && !mergeDialog.opened && !prDialog.opened
-        && !threadPicker.opened && !newFormPicker.opened && page.renamingId.length === 0
+        && !threadPicker.opened && page.renamingId.length === 0
     // Deny the shown request: only while the composer is empty (with words
     // in it, Enter denies and says why).
     Shortcut {
@@ -874,6 +903,17 @@ Item {
         id: folderPicker
         title: qsTr("Add a folder for agents")
         onAccepted: folderSheet.ask(Preferences.localFolder(selectedFolder.toString()))
+    }
+    // The new thread's "Open the folder dialog…": added at once and chosen
+    // (the form's note says what that allows).
+    FolderDialog {
+        id: newFolderPicker
+        title: qsTr("Add a folder for agents")
+        onAccepted: {
+            const path = Preferences.localFolder(selectedFolder.toString())
+            if (path.length > 0)
+                Agents.addFolderForNewThread(path)
+        }
     }
 
     // Export…: opens once the Markdown is here, on the name the host suggests.
@@ -1785,7 +1825,7 @@ Item {
                     visible: page.shown === "setup" || page.shown === "new"
                     width: parent.width
                     text: page.shown === "new"
-                        ? qsTr("It runs on this PC, in one of your agent folders.")
+                        ? qsTr("It runs on this PC, in the folder you choose.")
                         : (page.narrow ? qsTr("Agents, folders and phones")
                                        : qsTr("Agents, the folders they may work in, and your phones"))
                     role: "bodySmall"
@@ -3015,37 +3055,74 @@ Item {
             onAskInNewThread: (repo, number, folderId) => page.askInNewThread(repo, number, folderId)
         }
 
-        // ---- A new thread ----
-        Flickable {
+        // ---- A new thread: where first, then what (direction C) ----
+        FocusScope {
             id: newView
             visible: page.shown === "new"
             anchors.top: headLine.bottom
             anchors.bottom: parent.bottom
             width: parent.width
-            contentHeight: form.height + 32
-            boundsBehavior: Flickable.StopAtBounds
-            clip: true
-            property string agent: page.readyAgents.length > 0 ? page.readyAgents[0].id : ""
-            property string folder: page.usableFolders.length > 0 ? page.usableFolders[0].id : ""
+            // The form's folder and agent are the relay's: the folder chosen
+            // here, and the agent of the quick pick (for a folder, what its
+            // newest thread ran).
+            readonly property string folder: page.newPicker.folder || ""
+            readonly property string agent: page.newPicker.agent || ""
             property string mode: "supervised"
-            readonly property var agentInfo: page.readyAgents.find((a) => a.id === newView.agent) || ({})
+            readonly property var folderInfo: page.usableFolders.find((f) => f.id === newView.folder) || null
+            readonly property bool hasFolder: folderInfo !== null
+            readonly property bool hasAgent: agent.length > 0 && page.readyAgents.some((a) => a.id === newView.agent)
             // Plan, when the host and the agent can.
             readonly property bool planAvailable: page.newPicker.control === true && page.newPicker.plan === true
-            onAgentChanged: Agents.newForm(newView.agent, newView.folder)
-            onFolderChanged: Agents.newForm(newView.agent, newView.folder)
-            Component.onCompleted: Agents.newForm(newView.agent, newView.folder)
             onPlanAvailableChanged: if (!planAvailable && mode === "plan") mode = "supervised"
+            // Where and What side by side while both fit; else one at a time, Where first.
+            readonly property bool twoColumns: width >= 700
+            property string step: "what"
+            readonly property bool whereShown: twoColumns || step === "where"
+            readonly property bool whatShown: twoColumns || step === "what"
+            readonly property real whereWidth: twoColumns ? Math.round(Math.min(320, Math.max(264, width * 0.34))) : width
+            // The cards' order when the form opened: they don't move while it's open.
+            property var order: []
+            property bool allCards: false
+            // The card the filter's Up and Down are on (-1: none).
+            property int cursor: -1
+
+            function chooseFolder(id) {
+                Agents.newForm("", id)
+                if (!twoColumns)
+                    step = "what"
+            }
+            // The form opens: the cards keep this order, the tree is read
+            // afresh, and the folder used last is chosen when none is.
+            function opened() {
+                order = page.usableFolders.map((f) => f.id)
+                allCards = false
+                cursor = -1
+                filterField.text = ""
+                placeTree.reset()
+                const keep = hasFolder ? folder : (order.length > 0 ? order[0] : "")
+                Agents.newForm("", keep)
+                step = keep.length > 0 ? "what" : "where"
+            }
+            // Ctrl+N: the task box when a folder is chosen, else the filter.
+            function focusFirst() {
+                if (page.reviewing)
+                    newView.forceActiveFocus()
+                else if (hasFolder || order.length > 0)
+                    taskInput.forceActiveFocus()
+                else
+                    filterField.input.forceActiveFocus()
+            }
             function start() {
+                if (!hasAgent || !hasFolder)
+                    return
                 // "Ask in a new thread…": the host writes the review message itself.
                 if (page.reviewing) {
-                    if (newView.agent.length === 0 || newView.folder.length === 0)
-                        return
                     Agents.prReviewNewThread(newView.agent, newView.folder, newView.mode,
                                              page.reviewChip.repo || "", page.reviewChip.number || 0)
                     return
                 }
                 const task = taskInput.text.trim()
-                if (task.length === 0 || newView.agent.length === 0 || newView.folder.length === 0)
+                if (task.length === 0)
                     return
                 if (worktreeFields.worktree) {
                     if (!worktreeFields.branchOk)
@@ -3057,227 +3134,458 @@ Item {
                 }
                 taskInput.text = ""
             }
+            readonly property bool canStart: hasAgent && hasFolder && (page.reviewing || (taskInput.text.trim().length > 0
+                                             && (!worktreeFields.worktree || worktreeFields.branchOk)))
 
-            Column {
-                id: form
-                x: 16
-                y: 16
-                width: Math.min(720, newView.width - 32)
-                spacing: 16
-
-                // In place of the prompt: the pull request this thread reviews.
-                Row {
-                    visible: page.reviewing
-                    spacing: 6
-                    Chip {
-                        anchors.verticalCenter: parent.verticalCenter
-                        iconPath: AgentGitGlyphs.pullRequest
-                        text: qsTr("Review pull request #%1").arg(page.reviewChip.number || 0)
-                        selected: true
+            // A folder the filter finds: its label or path holds the words in
+            // order, ranked label first, then a run of letters, then scattered.
+            function rank(f, q) {
+                const label = (f.label || "").toLowerCase()
+                const path = (f.shownPath || "").toLowerCase()
+                if (label.startsWith(q)) return 0
+                if (label.includes(q)) return 1
+                if (path.includes(q)) return 2
+                const scattered = (s) => {
+                    let at = 0
+                    for (const c of s) {
+                        if (at < q.length && c === q[at])
+                            at++
                     }
-                    IconButton {
-                        anchors.verticalCenter: parent.verticalCenter
-                        iconPath: Icons.close
-                        iconSize: 14
-                        label: qsTr("Remove")
-                        onClicked: page.reviewChip = ({})
-                    }
+                    return at === q.length
                 }
-                Rectangle {
-                    visible: !page.reviewing
-                    width: parent.width
-                    height: Math.min(Math.max(taskInput.contentHeight + 24, 110), 260)
-                    radius: Theme.rowRadius
-                    color: Theme.raised
-                    border.width: taskInput.activeFocus ? 1 : 0
-                    border.color: Theme.focusRing
-                    Flickable {
-                        id: taskScroll
-                        anchors.fill: parent
-                        anchors.margins: 12
-                        contentHeight: taskInput.contentHeight
-                        clip: true
-                        boundsBehavior: Flickable.StopAtBounds
-                        TextEdit {
-                            id: taskInput
-                            width: taskScroll.width
-                            wrapMode: TextEdit.Wrap
-                            textFormat: TextEdit.PlainText
-                            font.family: Theme.fontUi
-                            font.pixelSize: Theme.typography.body.size
-                            color: Theme.surfaceContent
-                            selectionColor: Theme.selection
-                            selectedTextColor: Theme.surfaceContent
-                            Accessible.name: qsTr("What should it do?")
-                            // Ctrl+Enter starts it; Enter starts a new line.
-                            Keys.onPressed: (event) => {
-                                if ((event.key === Qt.Key_Return || event.key === Qt.Key_Enter)
-                                    && (event.modifiers & Qt.ControlModifier)) {
-                                    newView.start()
-                                    event.accepted = true
-                                }
-                            }
-                            onCursorRectangleChanged: {
-                                if (cursorRectangle.y + cursorRectangle.height > taskScroll.contentY + taskScroll.height)
-                                    taskScroll.contentY = cursorRectangle.y + cursorRectangle.height - taskScroll.height
-                            }
-                            Txt {
-                                visible: taskInput.text.length === 0
-                                width: taskInput.width
-                                text: qsTr("What should it do?")
-                                muted: true
+                if (scattered(label)) return 3
+                return scattered(path) ? 4 : -1
+            }
+            readonly property string query: filterField.text.trim().toLowerCase()
+            readonly property var cards: {
+                const position = (id) => newView.order.indexOf(id)
+                // A folder added while the form is open comes first.
+                return page.usableFolders.slice().sort((a, b) => position(a.id) - position(b.id))
+            }
+            readonly property var shownCards: {
+                if (query.length > 0) {
+                    return cards.map((f) => ({ f: f, r: newView.rank(f, newView.query) }))
+                        .filter((x) => x.r >= 0).sort((a, b) => a.r - b.r).map((x) => x.f)
+                }
+                if (allCards)
+                    return cards
+                const first = cards.slice(0, 6)
+                const chosen = cards.find((f) => f.id === newView.folder)
+                return chosen && !first.includes(chosen) ? first.concat([chosen]) : first
+            }
+            readonly property int hiddenCards: query.length > 0 || allCards ? 0 : cards.length - shownCards.length
+            onShownCardsChanged: cursor = Math.min(cursor, shownCards.length - 1)
+            // The branch the header shows: the one being branched from while
+            // a worktree is chosen, else the folder's as its newest thread saw it.
+            readonly property string branchShown: {
+                if (worktreeFields.worktree && worktreeFields.bases.length > 0)
+                    return (worktreeFields.bases.find((b) => b.current === true) || {}).name || ""
+                return folderInfo && folderInfo.last ? (folderInfo.last.branch || "") : ""
+            }
+
+            // ---- Where ----
+            Flickable {
+                id: whereView
+                visible: newView.whereShown
+                width: newView.whereWidth
+                height: parent.height
+                contentHeight: whereColumn.height + 32
+                boundsBehavior: Flickable.StopAtBounds
+                clip: true
+                Column {
+                    id: whereColumn
+                    x: 16
+                    y: 16
+                    width: whereView.width - (newView.twoColumns ? 24 : 32)
+                    spacing: 8
+
+                    Field {
+                        id: filterField
+                        width: parent.width
+                        iconPath: Icons.search
+                        placeholder: qsTr("Find a folder")
+                        onTextChanged: newView.cursor = text.trim().length > 0 && newView.shownCards.length > 0 ? 0 : -1
+                        onAccepted: {
+                            const f = newView.shownCards[Math.max(0, newView.cursor)]
+                            if (f) {
+                                newView.chooseFolder(f.id)
+                                filterField.text = ""
+                                Qt.callLater(() => taskInput.forceActiveFocus())
                             }
                         }
-                    }
-                }
-
-                Column {
-                    width: parent.width
-                    spacing: 6
-                    visible: page.readyAgents.length > 0
-                    Txt {
-                        text: qsTr("Agent")
-                        role: "label"
-                        muted: true
-                    }
-                    Segmented {
-                        options: page.readyAgents.map((a) => ({ value: a.id, label: a.name }))
-                        value: newView.agent
-                        onPicked: (value) => { newView.agent = value }
-                    }
-                }
-
-                Column {
-                    width: parent.width
-                    spacing: 6
-                    visible: page.usableFolders.length > 0
-                    Txt {
-                        text: qsTr("Folder")
-                        role: "label"
-                        muted: true
-                    }
-                    Flow {
-                        width: parent.width
-                        spacing: 6
-                        Repeater {
-                            model: page.usableFolders
-                            delegate: Chip {
-                                id: folderChip
-                                required property var modelData
-                                interactive: true
-                                iconPath: Icons.folder
-                                text: modelData.label
-                                selected: newView.folder === modelData.id
-                                onClicked: newView.folder = folderChip.modelData.id
-                            }
+                        Keys.onDownPressed: newView.cursor = Math.min(newView.cursor + 1, newView.shownCards.length - 1)
+                        Keys.onUpPressed: newView.cursor = Math.max(newView.cursor - 1, newView.query.length > 0 ? 0 : -1)
+                        Keys.onEscapePressed: (event) => {
+                            event.accepted = filterField.text.length > 0
+                            filterField.text = ""
                         }
                     }
-                }
 
-                // Work in this folder, or in a new worktree on its own branch.
-                AgentWorktreeFields {
-                    id: worktreeFields
-                    visible: !page.reviewing
-                    width: parent.width
-                    folderId: newView.folder
-                    gitSetup: page.gitSetup
-                    words: taskInput.text
-                    onBasesMenu: (x, y, actions) => {
-                        const p = page.mapFromItem(null, x, y)
-                        gitMenu.actions = actions
-                        gitMenu.openAt(p.x, p.y, false, false)
+                    Repeater {
+                        model: newView.shownCards
+                        delegate: AgentFolderCard {
+                            id: card
+                            required property var modelData
+                            required property int index
+                            width: whereColumn.width
+                            folder: modelData
+                            when: modelData.last ? page.ago(modelData.usedMs || 0) : ""
+                            selected: newView.folder === modelData.id
+                            current: newView.cursor === index
+                            onPicked: newView.chooseFolder(card.modelData.id)
+                        }
                     }
-                }
-
-                Column {
-                    width: parent.width
-                    spacing: 6
                     Txt {
-                        text: qsTr("Asks before")
-                        role: "label"
+                        visible: newView.query.length > 0 && newView.shownCards.length === 0
+                        width: parent.width
+                        text: qsTr("No folder of yours matches. Browse below, or open the folder dialog.")
+                        role: "bodySmall"
                         muted: true
+                        wrapMode: Text.WordWrap
+                        elide: Text.ElideNone
                     }
-                    Segmented {
-                        options: [
-                            { value: "supervised", label: qsTr("Edits and commands") },
-                            { value: "auto_edit", label: qsTr("Commands only") }
-                        ].concat(newView.planAvailable ? [{ value: "plan", label: qsTr("Plan") }] : [])
-                        value: newView.mode
-                        onPicked: (value) => { newView.mode = value }
+                    TextAction {
+                        visible: newView.hiddenCards > 0 || (newView.allCards && newView.query.length === 0 && newView.cards.length > 6)
+                        iconPath: newView.allCards ? Icons.chevronUp : Icons.chevronDown
+                        text: newView.allCards ? qsTr("Show less") : qsTr("%n more folder(s)", "", newView.hiddenCards)
+                        onClicked: newView.allCards = !newView.allCards
                     }
+
                     Txt {
                         width: parent.width
-                        text: newView.mode === "auto_edit"
-                            ? qsTr("It changes files without asking, and asks before a command that could change something.")
-                            : newView.mode === "plan"
-                                ? qsTr("Plan: it changes nothing until you say so.")
-                                : qsTr("It asks before it changes a file or runs a command that could change something.")
+                        topPadding: 8
+                        text: qsTr("All folders on %1").arg(AppController.deviceName)
+                        role: "label"
+                        muted: true
+                        maximumLineCount: 1
+                    }
+                    AgentPlaceTree {
+                        id: placeTree
+                        width: parent.width
+                        places: page.parse(Agents.places, ({}))
+                        flickable: whereView
+                        onUse: (place, folderId) => {
+                            if (folderId.length > 0)
+                                newView.chooseFolder(folderId)
+                            else
+                                Agents.addPlace(place)
+                        }
+                    }
+                    TextAction {
+                        iconPath: Icons.folder
+                        iconColor: Theme.tintAmber
+                        text: qsTr("Open the folder dialog…")
+                        onClicked: newFolderPicker.open()
+                    }
+                    Txt {
+                        visible: newView.folder.length > 0 && page.newPicker.added === newView.folder
+                        width: parent.width
+                        text: qsTr("Agents can read, change and run things here; its own hooks run too.")
                         role: "bodySmall"
                         muted: true
                         wrapMode: Text.WordWrap
                         elide: Text.ElideNone
                     }
                 }
-
-                // The model and effort it starts with, from the agent's own list.
-                Column {
-                    width: parent.width
-                    spacing: 6
-                    visible: page.newPicker.control === true
-                    Txt {
-                        text: qsTr("Model")
-                        role: "label"
-                        muted: true
-                    }
-                    Chip {
-                        id: newModelChip
-                        interactive: true
-                        iconPath: Icons.sparkle
-                        text: {
-                            const label = page.newPicker.label
-                            if (!label || label.model.length === 0)
-                                return label && label.effort.length > 0 ? qsTr("Default") + " · " + label.effort : qsTr("Default")
-                            return label.effort.length > 0 ? label.model + " · " + label.effort : label.model
-                        }
-                        onClicked: {
-                            const p = newModelChip.mapToItem(page, 0, 0)
-                            newFormPicker.openAt(p.x, p.y)
-                        }
-                    }
-                }
-
-                Item {
-                    width: parent.width
-                    height: startButton.height
-                    Txt {
-                        visible: !page.ready
-                        anchors.left: parent.left
-                        anchors.right: startButton.left
-                        anchors.rightMargin: 12
-                        anchors.verticalCenter: parent.verticalCenter
-                        text: qsTr("Set up an agent and a folder first.")
-                        role: "bodySmall"
-                        muted: true
-                        wrapMode: Text.WordWrap
-                    }
-                    Button {
-                        id: startButton
-                        anchors.right: parent.right
-                        text: qsTr("Start")
-                        busy: Agents.busy || (page.gitSetup.creating || {}).running === true
-                        enabled: page.ready && (page.reviewing || (taskInput.text.trim().length > 0
-                                 && (!worktreeFields.worktree || worktreeFields.branchOk)))
-                        onClicked: newView.start()
-                    }
-                }
+                TouchpadGlide { view: whereView }
             }
-            TouchpadGlide { view: newView }
-        }
-        G7ScrollBar {
-            flickable: newView
-            anchors.top: newView.top
-            anchors.bottom: newView.bottom
-            anchors.right: newView.right
+            G7ScrollBar {
+                visible: newView.whereShown
+                flickable: whereView
+                anchors.top: whereView.top
+                anchors.bottom: whereView.bottom
+                anchors.right: whereView.right
+            }
+            Rectangle {
+                visible: newView.twoColumns
+                x: newView.whereWidth
+                width: 1
+                height: parent.height
+                color: Theme.line
+            }
+
+            // ---- What ----
+            Flickable {
+                id: whatView
+                visible: newView.whatShown
+                x: newView.twoColumns ? newView.whereWidth + 1 : 0
+                width: parent.width - x
+                height: parent.height
+                contentHeight: form.height + 32
+                boundsBehavior: Flickable.StopAtBounds
+                clip: true
+
+                Column {
+                    id: form
+                    x: newView.twoColumns ? 24 : 16
+                    y: 16
+                    width: Math.min(720, whatView.width - x - 16)
+                    spacing: 16
+
+                    // The folder: its name, branch and path. In one column it goes back to Where.
+                    FocusScope {
+                        id: folderHead
+                        width: parent.width
+                        height: 44
+                        activeFocusOnTab: !newView.twoColumns
+                        Accessible.role: newView.twoColumns ? Accessible.StaticText : Accessible.Button
+                        Accessible.name: newView.hasFolder ? headName.text : qsTr("Choose a folder.")
+                        Accessible.onPressAction: if (!newView.twoColumns) newView.step = "where"
+                        Keys.onPressed: (event) => {
+                            if (!newView.twoColumns && (event.key === Qt.Key_Return || event.key === Qt.Key_Enter || event.key === Qt.Key_Space)) {
+                                newView.step = "where"
+                                event.accepted = true
+                            }
+                        }
+                        Rectangle {
+                            anchors.fill: parent
+                            anchors.margins: -4
+                            radius: Theme.rowRadius
+                            color: Theme.raised
+                            visible: !newView.twoColumns && headMouse.containsMouse
+                        }
+                        Rectangle {
+                            anchors.fill: parent
+                            anchors.margins: -4
+                            radius: Theme.rowRadius
+                            color: "transparent"
+                            border.width: 2
+                            border.color: Theme.focusRing
+                            visible: Theme.focusVisible(folderHead)
+                        }
+                        Icon {
+                            id: headIcon
+                            anchors.verticalCenter: parent.verticalCenter
+                            width: 20
+                            height: 20
+                            path: newView.twoColumns ? Icons.folder : Icons.chevronLeft
+                            color: newView.twoColumns ? Theme.tintAmber : Theme.surfaceContentVariant
+                        }
+                        Txt {
+                            id: headName
+                            anchors.left: headIcon.right
+                            anchors.leftMargin: 10
+                            anchors.right: parent.right
+                            y: newView.hasFolder ? 2 : (parent.height - height) / 2
+                            text: newView.hasFolder ? newView.folderInfo.label : qsTr("Choose a folder.")
+                            role: newView.hasFolder ? "title" : "body"
+                            muted: !newView.hasFolder
+                            maximumLineCount: 1
+                        }
+                        Row {
+                            visible: newView.hasFolder
+                            anchors.left: headName.left
+                            anchors.right: parent.right
+                            anchors.top: headName.bottom
+                            height: 18
+                            spacing: 4
+                            Icon {
+                                id: headBranchIcon
+                                visible: newView.branchShown.length > 0
+                                anchors.verticalCenter: parent.verticalCenter
+                                width: 12
+                                height: 12
+                                path: AgentGitGlyphs.branch
+                                color: Theme.surfaceContentVariant
+                            }
+                            Txt {
+                                width: parent.width - (headBranchIcon.visible ? headBranchIcon.width + parent.spacing : 0)
+                                anchors.verticalCenter: parent.verticalCenter
+                                text: [newView.branchShown, newView.folderInfo ? newView.folderInfo.shownPath : ""]
+                                    .filter((s) => s.length > 0).join(" · ")
+                                role: "bodySmall"
+                                muted: true
+                                elide: Text.ElideMiddle
+                                maximumLineCount: 1
+                            }
+                        }
+                        MouseArea {
+                            id: headMouse
+                            anchors.fill: parent
+                            enabled: !newView.twoColumns
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: newView.step = "where"
+                        }
+                    }
+
+                    // In place of the prompt: the pull request this thread reviews.
+                    Row {
+                        visible: page.reviewing
+                        spacing: 6
+                        Chip {
+                            anchors.verticalCenter: parent.verticalCenter
+                            iconPath: AgentGitGlyphs.pullRequest
+                            text: qsTr("Review pull request #%1").arg(page.reviewChip.number || 0)
+                            selected: true
+                        }
+                        IconButton {
+                            anchors.verticalCenter: parent.verticalCenter
+                            iconPath: Icons.close
+                            iconSize: 14
+                            label: qsTr("Remove")
+                            onClicked: page.reviewChip = ({})
+                        }
+                    }
+                    Rectangle {
+                        visible: !page.reviewing
+                        width: parent.width
+                        height: Math.min(Math.max(taskInput.contentHeight + 24, 110), 260)
+                        radius: Theme.rowRadius
+                        color: Theme.raised
+                        border.width: taskInput.activeFocus ? 1 : 0
+                        border.color: Theme.focusRing
+                        Flickable {
+                            id: taskScroll
+                            anchors.fill: parent
+                            anchors.margins: 12
+                            contentHeight: taskInput.contentHeight
+                            clip: true
+                            boundsBehavior: Flickable.StopAtBounds
+                            TextEdit {
+                                id: taskInput
+                                width: taskScroll.width
+                                wrapMode: TextEdit.Wrap
+                                textFormat: TextEdit.PlainText
+                                font.family: Theme.fontUi
+                                font.pixelSize: Theme.typography.body.size
+                                color: Theme.surfaceContent
+                                selectionColor: Theme.selection
+                                selectedTextColor: Theme.surfaceContent
+                                Accessible.name: qsTr("What should it do?")
+                                // Ctrl+Enter starts it; Enter starts a new line.
+                                Keys.onPressed: (event) => {
+                                    if ((event.key === Qt.Key_Return || event.key === Qt.Key_Enter)
+                                        && (event.modifiers & Qt.ControlModifier)) {
+                                        newView.start()
+                                        event.accepted = true
+                                    }
+                                }
+                                onCursorRectangleChanged: {
+                                    if (cursorRectangle.y + cursorRectangle.height > taskScroll.contentY + taskScroll.height)
+                                        taskScroll.contentY = cursorRectangle.y + cursorRectangle.height - taskScroll.height
+                                }
+                                Txt {
+                                    visible: taskInput.text.length === 0
+                                    width: taskInput.width
+                                    text: qsTr("What should it do?")
+                                    muted: true
+                                }
+                            }
+                        }
+                    }
+
+                    // What it runs with: quick picks and Other…; no agent that can start: Setup.
+                    AgentRunWith {
+                        id: runWith
+                        visible: page.readyAgents.length > 0
+                        width: parent.width
+                        picker: page.newPicker
+                        pcName: AppController.deviceName
+                        onMenu: (x, y, actions) => {
+                            const p = page.mapFromItem(null, x, y)
+                            gitMenu.actions = actions
+                            gitMenu.openAt(p.x, p.y, false, false)
+                        }
+                    }
+                    Row {
+                        visible: page.readyAgents.length === 0
+                        width: parent.width
+                        spacing: 12
+                        Txt {
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: qsTr("Set up an agent first.")
+                            role: "body"
+                            muted: true
+                        }
+                        Button {
+                            anchors.verticalCenter: parent.verticalCenter
+                            variant: "tonal"
+                            size: "sm"
+                            iconPath: Icons.settings
+                            text: qsTr("Setup")
+                            onClicked: page.openSetup()
+                        }
+                    }
+
+                    Column {
+                        width: parent.width
+                        spacing: 6
+                        Txt {
+                            text: qsTr("Asks before")
+                            role: "label"
+                            muted: true
+                        }
+                        Segmented {
+                            options: [
+                                { value: "supervised", label: qsTr("Edits and commands") },
+                                { value: "auto_edit", label: qsTr("Commands only") }
+                            ].concat(newView.planAvailable ? [{ value: "plan", label: qsTr("Plan") }] : [])
+                            value: newView.mode
+                            onPicked: (value) => { newView.mode = value }
+                        }
+                        Txt {
+                            width: parent.width
+                            text: newView.mode === "auto_edit"
+                                ? qsTr("It changes files without asking, and asks before a command that could change something.")
+                                : newView.mode === "plan"
+                                    ? qsTr("Plan: it changes nothing until you say so.")
+                                    : qsTr("It asks before it changes a file or runs a command that could change something.")
+                            role: "bodySmall"
+                            muted: true
+                            wrapMode: Text.WordWrap
+                            elide: Text.ElideNone
+                        }
+                    }
+
+                    // Work in this folder, or in a new worktree on its own branch.
+                    AgentWorktreeFields {
+                        id: worktreeFields
+                        visible: worktreeFields.available && !page.reviewing
+                        width: parent.width
+                        folderId: newView.folder
+                        gitSetup: page.gitSetup
+                        words: taskInput.text
+                        onBasesMenu: (x, y, actions) => {
+                            const p = page.mapFromItem(null, x, y)
+                            gitMenu.actions = actions
+                            gitMenu.openAt(p.x, p.y, false, false)
+                        }
+                    }
+
+                    Item {
+                        width: parent.width
+                        height: startButton.height
+                        Txt {
+                            visible: newView.hasAgent && !newView.hasFolder
+                            anchors.left: parent.left
+                            anchors.right: startButton.left
+                            anchors.rightMargin: 12
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: qsTr("Choose a folder.")
+                            role: "bodySmall"
+                            muted: true
+                            maximumLineCount: 1
+                        }
+                        Button {
+                            id: startButton
+                            anchors.right: parent.right
+                            text: qsTr("Start")
+                            busy: Agents.busy || (page.gitSetup.creating || {}).running === true
+                            enabled: newView.canStart
+                            onClicked: newView.start()
+                        }
+                    }
+                }
+                TouchpadGlide { view: whatView }
+            }
+            G7ScrollBar {
+                visible: newView.whatShown
+                flickable: whatView
+                anchors.top: whatView.top
+                anchors.bottom: whatView.bottom
+                anchors.right: whatView.right
+            }
         }
 
         // ---- What a turn, or the whole thread, changed ----
@@ -4005,12 +4313,6 @@ Item {
         picker: page.composerState.picker || ({})
         pcName: AppController.deviceName
         onOpenedChanged: if (!opened) composer.focusInput()
-    }
-    AgentModelPicker {
-        id: newFormPicker
-        newForm: true
-        picker: page.newPicker
-        pcName: AppController.deviceName
     }
 
     // Deleting a thread: it can't be brought back.

@@ -9,6 +9,7 @@
 //! (`qsTr`), except the agent's names and the CLI's model and effort names.
 
 use std::{
+    collections::HashMap,
     io::{self, Write as _},
     path::{Path, PathBuf},
 };
@@ -134,38 +135,94 @@ pub(crate) fn takes_images(agent: &AgentInfo, model: Option<&str>) -> bool {
     agent.can(Can::Images) && chosen(agent, model).is_none_or(|m| m.images)
 }
 
-/// The control's label: the model's name ("" for the CLI's default, which
-/// the page calls "Default") and an effort set by hand ("" for none).
-pub(crate) fn model_label(agent: &AgentInfo, setting: &Setting) -> (String, String) {
-    let model = match setting.model.as_deref() {
-        None => String::new(),
-        Some(id) => agent.model(id).map_or_else(|| id.to_owned(), |m| m.name.clone()),
-    };
+/// A model's name as the page shows it: the exact model it stands for when
+/// the CLI says ("Opus 5"), else its listed name ("Opus"). `None` for the
+/// CLI's default when the CLI doesn't say which model that is: the page then
+/// writes "<Agent>'s default" rather than guess a version.
+pub(crate) fn shown_name(m: &ModelInfo) -> Option<String> {
+    match &m.exact {
+        Some(exact) => Some(exact.clone()),
+        None if m.default => None,
+        None => Some(m.name.clone()),
+    }
+}
+
+/// The shown name of what a setting's `model` runs: the listed model's, the
+/// id itself for one the list doesn't hold, and for no model set the model
+/// that answered there (`answered`, when the list has it), else the
+/// default's. `None`: "<Agent>'s default", version unknown.
+pub(crate) fn setting_name(agent: &AgentInfo, model: Option<&str>, answered: Option<&str>) -> Option<String> {
+    match model {
+        Some(id) => agent.model(id).map_or_else(|| Some(id.to_owned()), shown_name),
+        None => {
+            answered.and_then(|id| agent.model(id)).or_else(|| agent.default_model()).and_then(shown_name)
+        }
+    }
+}
+
+/// The control's label: the model's shown name ("" when no version is
+/// known for the CLI's default, which the page calls "Default") and an
+/// effort set by hand ("" for none). `answered`: the model that answered
+/// a thread with no model set.
+pub(crate) fn model_label(agent: &AgentInfo, setting: &Setting, answered: Option<&str>) -> (String, String) {
+    let model = setting_name(agent, setting.model.as_deref(), answered).unwrap_or_default();
     (model, setting.effort.as_deref().map(capitalized).unwrap_or_default())
 }
 
-fn model_row(m: &ModelInfo, setting: &Setting) -> Value {
+fn model_row(m: &ModelInfo, setting: &Setting, note: Option<&str>) -> Value {
     let checked = match setting.model.as_deref() {
         Some(id) => id == m.id,
         None => m.default,
     };
     json!({
         "id": m.id,
-        "name": m.name,
-        "note": m.note.clone().unwrap_or_default(),
+        "name": shown_name(m).unwrap_or_default(),
+        "note": note.map_or_else(|| m.note.clone().unwrap_or_default(), str::to_owned),
         "isDefault": m.default,
         "checked": checked,
     })
 }
 
+/// Model chips the new-thread form shows before "More…".
+pub(crate) const MAX_CHIPS: usize = 4;
+
+/// The agent's models as rows: the short ones (the default first, then the
+/// CLI's short names, each shown name once) and the rest. A short name that
+/// reads like one already listed ("Opus 5" for both `default` and `opus`)
+/// moves to the rest; there, rows that share a name carry their id as the
+/// note.
+fn model_rows(agent: &AgentInfo, setting: &Setting) -> (Vec<Value>, Vec<Value>) {
+    let name = |m: &ModelInfo| shown_name(m).unwrap_or_default();
+    let mut short_models: Vec<&ModelInfo> = agent.models.iter().filter(|m| m.default).collect();
+    short_models.extend(agent.models.iter().filter(|m| m.short && !m.default));
+    let mut seen: Vec<String> = Vec::new();
+    let mut short = Vec::new();
+    let mut rest: Vec<&ModelInfo> = Vec::new();
+    for m in short_models {
+        let n = name(m);
+        if seen.contains(&n) {
+            rest.push(m);
+        } else {
+            seen.push(n);
+            short.push(model_row(m, setting, None));
+        }
+    }
+    rest.extend(agent.models.iter().filter(|m| !m.short && !m.default));
+    let shared = |m: &ModelInfo| agent.models.iter().filter(|o| name(o) == name(m)).count() > 1;
+    let more = rest.into_iter().map(|m| model_row(m, setting, shared(m).then_some(m.id.as_str()))).collect();
+    (short, more)
+}
+
 /// The picker: the agent's models as its CLI listed them (short names
 /// first, the rest under "More models"), the chosen model's efforts, and the
 /// three modes with whether Plan is there. Before the CLI has listed any,
-/// only "Default" and a typed name.
-pub(crate) fn picker_json(agent: &AgentInfo, setting: &Setting) -> Value {
-    let models: Vec<&ModelInfo> = agent.models.iter().collect();
-    let known = !models.is_empty();
-    let has_default = models.iter().any(|m| m.default);
+/// only "Default" and a typed name. The new-thread form also reads `chips`
+/// (the first rows, and the chosen model when it isn't among them), `menu`
+/// (the rows behind "More…"), `effortAuto` ("Auto" comes first: the model
+/// says no default effort) and `effortWord` ("thinking" or "reasoning").
+pub(crate) fn picker_json(agent: &AgentInfo, setting: &Setting, answered: Option<&str>) -> Value {
+    let known = !agent.models.is_empty();
+    let has_default = agent.models.iter().any(|m| m.default);
     // The CLI's default stands for "no model set"; one the list doesn't
     // flag gets a row of its own.
     let mut short: Vec<Value> = Vec::new();
@@ -178,11 +235,33 @@ pub(crate) fn picker_json(agent: &AgentInfo, setting: &Setting) -> Value {
             "checked": setting.model.is_none(),
         }));
     }
-    let short_models = models.iter().filter(|m| m.short || m.default);
-    short.extend(short_models.map(|m| model_row(m, setting)));
-    let more: Vec<Value> =
-        models.iter().filter(|m| !m.short && !m.default).map(|m| model_row(m, setting)).collect();
+    let (listed_short, more) = model_rows(agent, setting);
+    short.extend(listed_short);
     let custom = setting.model.as_deref().filter(|id| agent.model(id).is_none()).unwrap_or_default();
+    // The new form's chips: the first short rows, and the chosen model in
+    // the last place when it isn't among them; the rest go behind "More…".
+    let rows: Vec<&Value> = short.iter().chain(&more).collect();
+    let chosen_at = rows.iter().position(|r| r["checked"] == true && custom.is_empty());
+    let mut shown = MAX_CHIPS.min(short.len());
+    let hidden_choice = !custom.is_empty() || chosen_at.is_some_and(|i| i >= shown);
+    if hidden_choice {
+        shown = shown.min(MAX_CHIPS - 1);
+    }
+    let mut chips: Vec<Value> = rows[..shown].iter().map(|r| (*r).clone()).collect();
+    let menu: Vec<Value> = rows
+        .iter()
+        .enumerate()
+        .skip(shown)
+        .filter(|(i, _)| Some(*i) != chosen_at)
+        .map(|(_, r)| (*r).clone())
+        .collect();
+    match chosen_at.filter(|&i| i >= shown) {
+        Some(i) => chips.push(rows[i].clone()),
+        None if !custom.is_empty() => chips.push(json!({
+            "id": custom, "name": custom, "note": "", "isDefault": false, "checked": true, "custom": true,
+        })),
+        None => {}
+    }
     let model = chosen(agent, setting.model.as_deref());
     let efforts: Vec<Value> = model
         .map(|m| {
@@ -199,21 +278,34 @@ pub(crate) fn picker_json(agent: &AgentInfo, setting: &Setting) -> Value {
                 .collect()
         })
         .unwrap_or_default();
+    let effort_auto = model.is_some_and(|m| !m.efforts.is_empty() && m.default_effort.is_none());
     let mode = setting.mode.unwrap_or(Mode::Supervised);
-    let (label_model, label_effort) = model_label(agent, setting);
+    let (label_model, label_effort) = model_label(agent, setting, answered);
     json!({
         "agent": agent.id.as_str(),
         "agentName": agent.name,
         "known": known,
         "short": short,
         "more": more,
+        "chips": chips,
+        "menu": menu,
         "custom": custom,
         "efforts": efforts,
+        "effortAuto": effort_auto,
+        "effortWord": effort_word(agent.id),
         "mode": api_word(&mode),
         "plan": agent.can(Can::Plan),
         "images": takes_images(agent, setting.model.as_deref()),
         "label": { "model": label_model, "effort": label_effort },
     })
+}
+
+/// What the agent calls its effort: Claude thinks, Codex reasons.
+pub(crate) fn effort_word(agent: AgentId) -> &'static str {
+    match agent {
+        AgentId::Claude => "thinking",
+        AgentId::Codex => "reasoning",
+    }
 }
 
 fn api_word<T: Serialize>(value: &T) -> String {
@@ -238,8 +330,12 @@ pub(crate) fn type_model(setting: &Setting, id: &str) -> Option<Setting> {
     valid_model_id(id).then(|| Setting { model: Some(id.to_owned()), effort: None, mode: setting.mode })
 }
 
-/// The setting after picking an effort the chosen model lists.
+/// The setting after picking an effort the chosen model lists, or "" (the
+/// new-thread form's "Auto": the model's own).
 pub(crate) fn pick_effort(agent: &AgentInfo, setting: &Setting, effort: &str) -> Option<Setting> {
+    if effort.is_empty() {
+        return Some(Setting { effort: None, ..setting.clone() });
+    }
     let model = chosen(agent, setting.model.as_deref())?;
     model
         .efforts
@@ -256,6 +352,275 @@ pub(crate) fn mode_of(word: &str, agent: &AgentInfo) -> Option<Mode> {
         "plan" if agent.can(Can::Plan) => Some(Mode::Plan),
         _ => None,
     }
+}
+
+// ---- The new thread: what each folder last ran, and quick picks ----
+
+/// What a folder's newest thread ran with, and what it was about.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct FolderLast {
+    pub agent: AgentId,
+    pub model: Option<String>,
+    pub effort: Option<String>,
+    /// The model that answered, for a thread with no model set.
+    pub answered: Option<String>,
+    pub title: String,
+    /// The folder's branch as the thread last read it; never a worktree's.
+    pub branch: Option<String>,
+    pub used_ms: u64,
+}
+
+impl FolderLast {
+    fn of(t: &ThreadInfo) -> Self {
+        Self {
+            agent: t.agent,
+            model: t.model.clone(),
+            effort: t.effort.clone(),
+            answered: t.answered_model.clone(),
+            title: t.title.clone(),
+            branch: t.branch.clone().filter(|_| t.worktree.is_none()),
+            used_ms: t.updated_ms,
+        }
+    }
+}
+
+/// Which of two threads is the newer (ties settled by start, then id).
+fn newer(t: &ThreadInfo) -> (u64, u64, &str) {
+    (t.updated_ms, t.created_ms, t.id.as_str())
+}
+
+/// The newest thread in `folder_id`, as [`FolderLast`].
+pub(crate) fn folder_last<'a>(
+    threads: impl IntoIterator<Item = &'a ThreadInfo>,
+    folder_id: &str,
+) -> Option<FolderLast> {
+    threads
+        .into_iter()
+        .filter(|t| t.folder_id == folder_id)
+        .max_by(|a, b| newer(a).cmp(&newer(b)))
+        .map(FolderLast::of)
+}
+
+/// [`folder_last`] for every folder at once, by folder id.
+pub(crate) fn lasts<'a>(threads: impl IntoIterator<Item = &'a ThreadInfo>) -> HashMap<String, FolderLast> {
+    let mut newest: HashMap<&str, &ThreadInfo> = HashMap::new();
+    for t in threads {
+        let slot = newest.entry(t.folder_id.as_str()).or_insert(t);
+        if newer(t) > newer(slot) {
+            *slot = t;
+        }
+    }
+    newest.into_iter().map(|(id, t)| (id.to_owned(), FolderLast::of(t))).collect()
+}
+
+/// A folder as quick picks read it.
+#[derive(Debug, Clone)]
+pub(crate) struct FolderUse<'a> {
+    pub id: &'a str,
+    pub label: &'a str,
+    pub used_ms: u64,
+    pub last: Option<FolderLast>,
+}
+
+/// Where a quick pick comes from: its sub-label.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum PickFrom {
+    /// "Last used here".
+    Here,
+    /// "Used in <folder>".
+    Folder(String),
+    /// "<Agent>'s default".
+    Default,
+    /// "Your choice": picked under "Other…".
+    Yours,
+}
+
+/// What a new thread runs with: exactly what `thread.start` takes, without
+/// the mode (that's chosen per task).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct QuickPick {
+    pub agent: AgentId,
+    pub model: Option<String>,
+    pub effort: Option<String>,
+    /// For no model set: the model that answered there, to name it.
+    pub answered: Option<String>,
+    pub from: PickFrom,
+}
+
+/// Quick picks shown at most.
+pub(crate) const MAX_PICKS: usize = 3;
+
+/// The agent can start a thread: installed, signed in, nothing wrong.
+pub(crate) fn usable(agent: &AgentInfo) -> bool {
+    agent.ready() && agent.problem.as_deref().is_none_or(str::is_empty)
+}
+
+/// A model and effort as a start sends them: the list's default model is no
+/// model set, and an effort the (listed) model doesn't take now is dropped.
+/// A model the list doesn't hold keeps its effort: nothing says it can't.
+pub(crate) fn normalized(
+    agent: &AgentInfo,
+    model: Option<&str>,
+    effort: Option<&str>,
+) -> (Option<String>, Option<String>) {
+    let model = model.filter(|id| !agent.model(id).is_some_and(|m| m.default)).map(str::to_owned);
+    let listed = match model.as_deref() {
+        Some(id) => agent.model(id),
+        None => agent.default_model(),
+    };
+    let effort =
+        effort.filter(|e| listed.is_none_or(|m| m.efforts.iter().any(|x| x == e))).map(str::to_owned);
+    (model, effort)
+}
+
+/// The quick picks for folder `folder_id`, distinct by agent, model and
+/// effort, at most [`MAX_PICKS`]: what its newest thread ran, then what
+/// other folders' newest threads ran (the most recently used folder first),
+/// then each ready agent's default not yet among them. Agents that can't
+/// start a thread are left out.
+pub(crate) fn quick_picks(
+    folders: &[FolderUse<'_>],
+    agents: &[AgentInfo],
+    folder_id: &str,
+) -> Vec<QuickPick> {
+    let mut others: Vec<&FolderUse<'_>> = folders.iter().filter(|f| f.id != folder_id).collect();
+    others.sort_by(|a, b| b.used_ms.cmp(&a.used_ms).then_with(|| a.id.cmp(b.id)));
+    let here = folders.iter().filter(|f| f.id == folder_id).map(|f| (f, PickFrom::Here));
+    let elsewhere = others.into_iter().map(|f| (f, PickFrom::Folder(f.label.to_owned())));
+    let history = here.chain(elsewhere).filter_map(|(f, from)| {
+        let last = f.last.as_ref()?;
+        let agent = agents.iter().find(|a| a.id == last.agent).filter(|a| usable(a))?;
+        let (model, effort) = normalized(agent, last.model.as_deref(), last.effort.as_deref());
+        let answered = model.is_none().then(|| last.answered.clone()).flatten();
+        Some(QuickPick { agent: agent.id, model, effort, answered, from })
+    });
+    let mut picks: Vec<QuickPick> = Vec::with_capacity(MAX_PICKS);
+    let same =
+        |a: &QuickPick, b: &QuickPick| a.agent == b.agent && a.model == b.model && a.effort == b.effort;
+    for pick in history {
+        if picks.len() == MAX_PICKS {
+            return picks;
+        }
+        if !picks.iter().any(|p| same(p, &pick)) {
+            picks.push(pick);
+        }
+    }
+    for agent in agents.iter().filter(|a| usable(a)) {
+        if picks.len() == MAX_PICKS {
+            break;
+        }
+        if !picks.iter().any(|p| p.agent == agent.id) {
+            let pick = QuickPick {
+                agent: agent.id,
+                model: None,
+                effort: None,
+                answered: None,
+                from: PickFrom::Default,
+            };
+            picks.push(pick);
+        }
+    }
+    picks
+}
+
+/// Agents whose pick would be among the folder's history but can't start a
+/// thread now: a line under Run with says why.
+pub(crate) fn left_out(folders: &[FolderUse<'_>], agents: &[AgentInfo]) -> Vec<AgentId> {
+    AgentId::ALL
+        .into_iter()
+        .filter(|id| folders.iter().any(|f| f.last.as_ref().is_some_and(|l| l.agent == *id)))
+        .filter(|id| agents.iter().find(|a| a.id == *id).is_none_or(|a| !usable(a)))
+        .collect()
+}
+
+/// The effort a pick shows: its own, else its model's default.
+pub(crate) fn shown_effort(agent: &AgentInfo, model: Option<&str>, effort: Option<&str>) -> String {
+    let default = || chosen(agent, model).and_then(|m| m.default_effort.clone());
+    effort.map(str::to_owned).or_else(default).as_deref().map(capitalized).unwrap_or_default()
+}
+
+/// A pick as Run with shows it: `name` is the model's shown name ("" when
+/// no version is known for the CLI's default), `delisted` a model the list
+/// doesn't hold now, `checked` the one the form is set to.
+fn pick_json(agent: &AgentInfo, pick: &QuickPick, index: usize, checked: bool) -> Value {
+    let (from, folder) = match &pick.from {
+        PickFrom::Here => ("here", ""),
+        PickFrom::Folder(label) => ("folder", label.as_str()),
+        PickFrom::Default => ("default", ""),
+        PickFrom::Yours => ("yours", ""),
+    };
+    let model = pick.model.as_deref();
+    json!({
+        "index": index,
+        "agent": agent.id.as_str(),
+        "agentName": agent.name,
+        "model": model.unwrap_or_default(),
+        "name": setting_name(agent, model, pick.answered.as_deref()).unwrap_or_default(),
+        "effort": shown_effort(agent, model, pick.effort.as_deref()),
+        "from": from,
+        "folder": folder,
+        "delisted": !agent.models.is_empty() && model.is_some_and(|id| agent.model(id).is_none()),
+        "checked": checked,
+    })
+}
+
+/// Run with's pills: the quick picks, and the form's own setting as "Your
+/// choice" when it is none of them (`current`: its agent and setting).
+pub(crate) fn picks_json(
+    picks: &[QuickPick],
+    agents: &[AgentInfo],
+    current: Option<(AgentId, &Setting)>,
+) -> Value {
+    let wanted = current.and_then(|(id, setting)| {
+        let agent = agents.iter().find(|a| a.id == id)?;
+        let (model, effort) = normalized(agent, setting.model.as_deref(), setting.effort.as_deref());
+        Some((id, model, effort))
+    });
+    let is_wanted = |p: &QuickPick| {
+        wanted.as_ref().is_some_and(|(id, m, e)| p.agent == *id && p.model == *m && p.effort == *e)
+    };
+    let mut out: Vec<Value> = picks
+        .iter()
+        .enumerate()
+        .filter_map(|(i, p)| {
+            agents.iter().find(|a| a.id == p.agent).map(|a| pick_json(a, p, i, is_wanted(p)))
+        })
+        .collect();
+    if let Some((id, model, effort)) = wanted.as_ref().filter(|_| !picks.iter().any(is_wanted))
+        && let Some(agent) = agents.iter().find(|a| a.id == *id)
+    {
+        let yours = QuickPick {
+            agent: *id,
+            model: model.clone(),
+            effort: effort.clone(),
+            answered: None,
+            from: PickFrom::Yours,
+        };
+        out.push(pick_json(agent, &yours, picks.len(), true));
+    }
+    Value::Array(out)
+}
+
+/// Every agent and whether it can start a thread, for "Other…": "ready",
+/// "signed_out", "missing" or "problem".
+pub(crate) fn agents_json(agents: &[AgentInfo]) -> Value {
+    Value::Array(
+        agents
+            .iter()
+            .map(|a| {
+                let state = if !a.installed {
+                    "missing"
+                } else if !a.signed_in {
+                    "signed_out"
+                } else if !usable(a) {
+                    "problem"
+                } else {
+                    "ready"
+                };
+                json!({ "id": a.id.as_str(), "name": a.name, "state": state, "loginHint": a.login_hint })
+            })
+            .collect(),
+    )
 }
 
 // ---- Queue, context, limits ----
@@ -873,6 +1238,7 @@ mod tests {
             default_effort: None,
             images: true,
             short,
+            exact: None,
         }
     }
 
@@ -904,7 +1270,7 @@ mod tests {
         let agent = claude();
         let setting =
             Setting { model: Some("opus".into()), effort: Some("high".into()), mode: Some(Mode::Plan) };
-        let p = picker_json(&agent, &setting);
+        let p = picker_json(&agent, &setting, None);
         let ids = |key: &str| -> Vec<String> {
             p[key].as_array().unwrap().iter().map(|m| m["id"].as_str().unwrap().to_owned()).collect()
         };
@@ -920,7 +1286,7 @@ mod tests {
         assert_eq!((p["mode"].as_str(), p["plan"].as_bool()), (Some("plan"), Some(true)));
 
         // Nothing set: the CLI's default is the checked row, and the label says so.
-        let p = picker_json(&agent, &Setting::default());
+        let p = picker_json(&agent, &Setting::default(), None);
         assert_eq!(p["short"][0]["checked"], true);
         assert_eq!(p["label"]["model"], "");
         assert_eq!(p["efforts"].as_array().unwrap().len(), 3, "the default model's efforts");
@@ -929,7 +1295,7 @@ mod tests {
     #[test]
     fn codex_marks_its_default_and_has_no_plan_without_the_switch() {
         let agent = codex();
-        let p = picker_json(&agent, &Setting::default());
+        let p = picker_json(&agent, &Setting::default(), None);
         assert_eq!(p["short"][0]["id"], "gpt-x", "the default model comes first");
         assert_eq!(p["short"][0]["isDefault"], true);
         assert_eq!(p["more"][0]["id"], "gpt-y");
@@ -945,7 +1311,7 @@ mod tests {
     fn before_a_list_there_is_default_and_a_typed_name() {
         let mut agent = claude();
         agent.models.clear();
-        let p = picker_json(&agent, &Setting::default());
+        let p = picker_json(&agent, &Setting::default(), None);
         assert_eq!(p["known"], false);
         assert_eq!(p["short"].as_array().unwrap().len(), 1);
         assert_eq!(
@@ -954,7 +1320,7 @@ mod tests {
         );
         let typed = type_model(&Setting::default(), " my-model ").unwrap();
         assert_eq!(typed.model.as_deref(), Some("my-model"));
-        let p = picker_json(&agent, &typed);
+        let p = picker_json(&agent, &typed, None);
         assert_eq!(p["custom"], "my-model");
         assert_eq!(p["label"]["model"], "my-model");
         for bad in ["", "-rf", "two words", "a\u{7}", &"x".repeat(65)] {
@@ -1001,6 +1367,322 @@ mod tests {
         assert_eq!(saved, prefs);
         let old: Prefs = serde_json::from_str("{}").unwrap();
         assert_eq!(old.follow_up, FollowUp::Steer, "steering is the default");
+    }
+
+    fn exact(mut m: ModelInfo, name: &str) -> ModelInfo {
+        m.exact = Some(name.into());
+        m
+    }
+
+    /// Claude as a CLI that says which model each alias runs.
+    fn claude_exact() -> AgentInfo {
+        let mut a = claude();
+        a.models = vec![
+            exact(
+                model("default", "Default (recommended)", &["low", "medium", "high"], true, true),
+                "Opus 5",
+            ),
+            exact(model("opus", "Opus", &["low", "medium", "high", "max"], false, true), "Opus 5"),
+            exact(model("sonnet", "Sonnet", &["low", "high"], false, true), "Sonnet 4.6"),
+            exact(model("haiku", "Haiku", &[], false, true), "Haiku 4.5"),
+            exact(model("fable", "Fable", &[], false, true), "Fable 1"),
+            exact(model("claude-opus-5", "Opus 5", &["low", "high"], false, false), "Opus 5"),
+            exact(model("claude-opus-4-7", "Opus 4.7", &[], false, false), "Opus 4.7"),
+        ];
+        a
+    }
+
+    fn names(rows: &Value) -> Vec<String> {
+        rows.as_array().unwrap().iter().map(|r| r["name"].as_str().unwrap().to_owned()).collect()
+    }
+
+    #[test]
+    fn models_show_their_exact_names_and_say_plainly_when_none_is_known() {
+        let opus = model("opus", "Opus", &[], false, true);
+        assert_eq!(shown_name(&opus), Some("Opus".into()), "no version reported: the listed name");
+        assert_eq!(shown_name(&exact(opus, "Opus 5")), Some("Opus 5".into()));
+        let default = model("default", "Default (recommended)", &[], true, true);
+        assert_eq!(
+            shown_name(&default),
+            None,
+            "never 'Default (recommended)': the page says '<Agent>'s default'"
+        );
+        assert_eq!(shown_name(&exact(default, "Opus 5")), Some("Opus 5".into()));
+
+        let agent = claude_exact();
+        assert_eq!(
+            setting_name(&agent, None, None).as_deref(),
+            Some("Opus 5"),
+            "no model set: the default's"
+        );
+        assert_eq!(
+            setting_name(&agent, None, Some("claude-opus-4-7")).as_deref(),
+            Some("Opus 4.7"),
+            "what answered"
+        );
+        assert_eq!(setting_name(&agent, None, Some("gone")).as_deref(), Some("Opus 5"));
+        assert_eq!(setting_name(&agent, Some("sonnet"), None).as_deref(), Some("Sonnet 4.6"));
+        assert_eq!(
+            setting_name(&agent, Some("my-model"), None).as_deref(),
+            Some("my-model"),
+            "typed: as typed"
+        );
+        assert_eq!(setting_name(&claude(), None, None), None);
+        let (label, _) = model_label(&agent, &Setting::default(), None);
+        assert_eq!(label, "Opus 5", "the composer's chip names the version too");
+    }
+
+    #[test]
+    fn a_name_two_rows_share_shows_once_up_front_and_with_its_id_in_the_full_list() {
+        let agent = claude_exact();
+        let p = picker_json(&agent, &Setting::default(), None);
+        assert_eq!(
+            names(&p["short"]),
+            ["Opus 5", "Sonnet 4.6", "Haiku 4.5", "Fable 1"],
+            "the opus alias reads like the default"
+        );
+        assert_eq!(p["short"][0]["isDefault"], true);
+        let more = p["more"].as_array().unwrap();
+        let ids: Vec<&str> = more.iter().map(|m| m["id"].as_str().unwrap()).collect();
+        assert_eq!(ids, ["opus", "claude-opus-5", "claude-opus-4-7"]);
+        assert_eq!(
+            (more[0]["note"].as_str(), more[1]["note"].as_str()),
+            (Some("opus"), Some("claude-opus-5"))
+        );
+        assert_eq!(more[2]["note"], "", "a name of its own needs no id");
+        // Picking the alias still sends the alias.
+        assert_eq!(pick_model(&agent, &Setting::default(), "opus").model.as_deref(), Some("opus"));
+    }
+
+    #[test]
+    fn the_form_shows_four_chips_and_the_chosen_model_always_among_them() {
+        let agent = claude_exact();
+        let p = picker_json(&agent, &Setting::default(), None);
+        assert_eq!(names(&p["chips"]), ["Opus 5", "Sonnet 4.6", "Haiku 4.5", "Fable 1"]);
+        assert_eq!(p["menu"].as_array().unwrap().len(), 3);
+
+        let set = Setting { model: Some("claude-opus-4-7".into()), ..Setting::default() };
+        let p = picker_json(&agent, &set, None);
+        assert_eq!(names(&p["chips"]), ["Opus 5", "Sonnet 4.6", "Haiku 4.5", "Opus 4.7"]);
+        assert_eq!(p["chips"][3]["checked"], true);
+        let menu: Vec<&str> =
+            p["menu"].as_array().unwrap().iter().map(|m| m["id"].as_str().unwrap()).collect();
+        assert_eq!(menu, ["fable", "opus", "claude-opus-5"], "nothing lost, nothing twice");
+
+        let typed = type_model(&Setting::default(), "my-model").unwrap();
+        let p = picker_json(&agent, &typed, None);
+        assert_eq!(names(&p["chips"]), ["Opus 5", "Sonnet 4.6", "Haiku 4.5", "my-model"]);
+        assert_eq!(p["chips"][3]["custom"], true);
+        assert_eq!(p["chips"][0]["checked"], false);
+
+        let few = codex();
+        let p = picker_json(&few, &Setting { model: Some("gpt-y".into()), ..Setting::default() }, None);
+        let chips: Vec<&str> =
+            p["chips"].as_array().unwrap().iter().map(|c| c["id"].as_str().unwrap()).collect();
+        assert_eq!(chips, ["gpt-x", "gpt-y"]);
+        assert!(p["menu"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn claude_thinks_with_auto_first_and_codex_reasons_from_its_default() {
+        let agent = claude_exact();
+        let p = picker_json(&agent, &Setting::default(), None);
+        assert_eq!((p["effortWord"].as_str(), p["effortAuto"].as_bool()), (Some("thinking"), Some(true)));
+        let p = picker_json(&codex(), &Setting::default(), None);
+        assert_eq!((p["effortWord"].as_str(), p["effortAuto"].as_bool()), (Some("reasoning"), Some(false)));
+        let haiku = Setting { model: Some("haiku".into()), ..Setting::default() };
+        assert_eq!(picker_json(&agent, &haiku, None)["effortAuto"], false, "no efforts: no Auto either");
+
+        let high = pick_effort(&agent, &Setting::default(), "high").unwrap();
+        assert_eq!(high.effort.as_deref(), Some("high"));
+        assert_eq!(pick_effort(&agent, &high, "").unwrap().effort, None, "Auto: the model's own");
+    }
+
+    fn at(
+        folder: &str,
+        updated_ms: u64,
+        agent: AgentId,
+        model: Option<&str>,
+        effort: Option<&str>,
+    ) -> ThreadInfo {
+        let mut t = thread();
+        t.id = format!("{folder}{updated_ms:024}");
+        t.folder_id = folder.into();
+        t.updated_ms = updated_ms;
+        t.agent = agent;
+        t.model = model.map(str::to_owned);
+        t.effort = effort.map(str::to_owned);
+        t.title = format!("Thread at {updated_ms}");
+        t.branch = Some("main".into());
+        t
+    }
+
+    #[test]
+    fn a_folders_last_is_its_newest_thread_and_a_worktree_gives_no_branch() {
+        let mut worktree = at("f1", 30, AgentId::Claude, Some("sonnet"), Some("high"));
+        worktree.worktree = Some(api::WorktreeTag {
+            id: "0123456789ab".into(),
+            branch: "g7/fix".into(),
+            label: "fix".into(),
+            missing: false,
+        });
+        worktree.branch = Some("g7/fix".into());
+        worktree.answered_model = Some("claude-sonnet-4-6".into());
+        let threads =
+            [at("f1", 10, AgentId::Codex, None, None), worktree, at("f2", 50, AgentId::Codex, None, None)];
+        let last = folder_last(&threads, "f1").unwrap();
+        assert_eq!(
+            (last.agent, last.model.as_deref(), last.effort.as_deref()),
+            (AgentId::Claude, Some("sonnet"), Some("high"))
+        );
+        assert_eq!(last.title, "Thread at 30");
+        assert_eq!(last.branch, None, "a worktree's branch isn't the folder's");
+        assert_eq!((last.used_ms, last.answered.as_deref()), (30, Some("claude-sonnet-4-6")));
+        assert_eq!(folder_last(&threads, "f2").unwrap().branch.as_deref(), Some("main"));
+        assert_eq!(folder_last(&threads, "f3"), None);
+        let all = lasts(&threads);
+        assert_eq!(all.len(), 2);
+        assert_eq!(all["f1"], last, "the same answer for every folder at once");
+    }
+
+    fn uses<'a>(folders: &'a [(&'a str, u64)], threads: &[ThreadInfo]) -> Vec<FolderUse<'a>> {
+        let lasts = lasts(threads);
+        folders
+            .iter()
+            .map(|(id, used)| FolderUse { id, label: id, used_ms: *used, last: lasts.get(*id).cloned() })
+            .collect()
+    }
+
+    fn summary(picks: &[QuickPick]) -> Vec<(AgentId, Option<&str>, Option<&str>, PickFrom)> {
+        picks.iter().map(|p| (p.agent, p.model.as_deref(), p.effort.as_deref(), p.from.clone())).collect()
+    }
+
+    fn ready_codex() -> AgentInfo {
+        let mut a = codex();
+        a.installed = true;
+        a.signed_in = true;
+        a
+    }
+
+    #[test]
+    fn quick_picks_are_this_folders_last_then_other_folders_then_defaults() {
+        let agents = [claude_exact(), ready_codex()];
+        let threads = [
+            at("here", 10, AgentId::Claude, Some("sonnet"), Some("high")),
+            at("b", 40, AgentId::Codex, Some("gpt-y"), Some("low")),
+            at("c", 30, AgentId::Claude, Some("sonnet"), Some("high")),
+            at("d", 20, AgentId::Claude, Some("opus"), Some("max")),
+        ];
+        let folders = [("here", 10), ("c", 90), ("b", 80), ("d", 70), ("never", 100)];
+        let f = uses(&folders, &threads);
+        let picks = quick_picks(&f, &agents, "here");
+        assert_eq!(
+            summary(&picks),
+            [
+                (AgentId::Claude, Some("sonnet"), Some("high"), PickFrom::Here),
+                (AgentId::Codex, Some("gpt-y"), Some("low"), PickFrom::Folder("b".into())),
+                (AgentId::Claude, Some("opus"), Some("max"), PickFrom::Folder("d".into())),
+            ],
+            "c ran the same as here: it's shown once; at most three"
+        );
+
+        // No history at all: each ready agent's default, in the agents' order.
+        let picks = quick_picks(&uses(&[("here", 1)], &[]), &agents, "here");
+        assert_eq!(
+            summary(&picks),
+            [
+                (AgentId::Claude, None, None, PickFrom::Default),
+                (AgentId::Codex, None, None, PickFrom::Default)
+            ]
+        );
+        // A folder never used: what others ran, then the defaults of agents not among them.
+        let threads = [at("b", 40, AgentId::Codex, Some("gpt-y"), None)];
+        let picks = quick_picks(&uses(&[("new", 1), ("b", 40)], &threads), &agents, "new");
+        assert_eq!(
+            summary(&picks),
+            [
+                (AgentId::Codex, Some("gpt-y"), None, PickFrom::Folder("b".into())),
+                (AgentId::Claude, None, None, PickFrom::Default)
+            ]
+        );
+    }
+
+    #[test]
+    fn an_agent_that_cant_start_is_left_out_and_said_so() {
+        let mut signed_out = claude_exact();
+        signed_out.signed_in = false;
+        let agents = [signed_out, ready_codex()];
+        let threads = [at("here", 10, AgentId::Claude, Some("sonnet"), None)];
+        let f = uses(&[("here", 10)], &threads);
+        let picks = quick_picks(&f, &agents, "here");
+        assert_eq!(summary(&picks), [(AgentId::Codex, None, None, PickFrom::Default)]);
+        assert_eq!(left_out(&f, &agents), [AgentId::Claude]);
+        let mut troubled = ready_codex();
+        troubled.problem = Some("It crashed".into());
+        assert!(!usable(&troubled));
+        assert_eq!(
+            left_out(&uses(&[("here", 10)], &[]), &agents),
+            Vec::<AgentId>::new(),
+            "no history, nothing to say"
+        );
+        assert_eq!(agents_json(&agents)[0]["state"], "signed_out");
+        assert_eq!(agents_json(&[troubled, AgentInfo::missing(AgentId::Claude)])[0]["state"], "problem");
+        assert_eq!(agents_json(&[AgentInfo::missing(AgentId::Claude)])[0]["state"], "missing");
+    }
+
+    #[test]
+    fn a_pick_drops_an_effort_its_model_lost_and_keeps_a_model_the_list_lost() {
+        let agents = [claude_exact()];
+        let threads = [
+            at("here", 30, AgentId::Claude, Some("sonnet"), Some("max")),
+            at("b", 20, AgentId::Claude, Some("claude-opus-4-1"), Some("high")),
+            at("c", 10, AgentId::Claude, Some("default"), Some("medium")),
+        ];
+        let f = uses(&[("here", 30), ("b", 20), ("c", 10)], &threads);
+        let picks = quick_picks(&f, &agents, "here");
+        assert_eq!(
+            summary(&picks),
+            [
+                (AgentId::Claude, Some("sonnet"), None, PickFrom::Here),
+                (AgentId::Claude, Some("claude-opus-4-1"), Some("high"), PickFrom::Folder("b".into())),
+                (AgentId::Claude, None, Some("medium"), PickFrom::Folder("c".into())),
+            ],
+            "Sonnet takes no max now; the default row is no model set"
+        );
+        let json = picks_json(&picks, &agents, Some((AgentId::Claude, &Setting::default())));
+        assert_eq!(
+            (json[1]["name"].as_str(), json[1]["delisted"].as_bool()),
+            (Some("claude-opus-4-1"), Some(true))
+        );
+        assert_eq!((json[2]["name"].as_str(), json[2]["effort"].as_str()), (Some("Opus 5"), Some("Medium")));
+        assert_eq!(json[0]["from"], "here");
+        assert_eq!(json[1]["folder"], "b");
+        assert_eq!(
+            json.as_array().unwrap().len(),
+            4,
+            "the form's own setting is none of them: 'Your choice'"
+        );
+        assert_eq!((json[3]["from"].as_str(), json[3]["checked"].as_bool()), (Some("yours"), Some(true)));
+
+        let set = Setting { model: Some("sonnet".into()), effort: None, mode: Some(Mode::Plan) };
+        let json = picks_json(&picks, &agents, Some((AgentId::Claude, &set)));
+        assert_eq!(json.as_array().unwrap().len(), 3);
+        assert_eq!((json[0]["checked"].as_bool(), json[1]["checked"].as_bool()), (Some(true), Some(false)));
+    }
+
+    #[test]
+    fn a_pick_names_what_answered_and_its_models_default_effort() {
+        let mut codex = ready_codex();
+        codex.models[0].exact = Some("GPT-X 5".into());
+        let agents = [codex];
+        let mut t = at("here", 10, AgentId::Codex, None, None);
+        t.answered_model = Some("gpt-y".into());
+        let f = uses(&[("here", 10)], &[t]);
+        let picks = quick_picks(&f, &agents, "here");
+        let json = picks_json(&picks, &agents, None);
+        assert_eq!((json[0]["name"].as_str(), json[0]["effort"].as_str()), (Some("GPT Y"), Some("Medium")));
+        let json = picks_json(&quick_picks(&uses(&[("here", 1)], &[]), &agents, "here"), &agents, None);
+        assert_eq!((json[0]["name"].as_str(), json[0]["from"].as_str()), (Some("GPT-X 5"), Some("default")));
     }
 
     #[test]

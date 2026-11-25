@@ -30,6 +30,7 @@ const QML: &[&str] = &[
     "qml/components/AgentDiffView.qml",
     "qml/components/AgentDock.qml",
     "qml/components/AgentFoldLine.qml",
+    "qml/components/AgentFolderCard.qml",
     "qml/components/AgentFoundRow.qml",
     "qml/components/AgentGitFileRow.qml",
     "qml/components/AgentGitPanel.qml",
@@ -40,6 +41,7 @@ const QML: &[&str] = &[
     "qml/components/AgentImport.qml",
     "qml/components/AgentJobOutput.qml",
     "qml/components/AgentLiveLine.qml",
+    "qml/components/AgentMark.qml",
     "qml/components/AgentMarkLine.qml",
     "qml/components/AgentMentionList.qml",
     "qml/components/AgentMergeDialog.qml",
@@ -47,6 +49,7 @@ const QML: &[&str] = &[
     "qml/components/AgentModelPicker.qml",
     "qml/components/AgentPickRow.qml",
     "qml/components/AgentPlanCard.qml",
+    "qml/components/AgentPlaceTree.qml",
     "qml/components/AgentPlanFrame.qml",
     "qml/components/AgentPopupLegend.qml",
     "qml/components/AgentPrCard.qml",
@@ -64,6 +67,7 @@ const QML: &[&str] = &[
     "qml/components/AgentRowActions.qml",
     "qml/components/AgentRunMenu.qml",
     "qml/components/AgentRunPanel.qml",
+    "qml/components/AgentRunWith.qml",
     "qml/components/AgentScriptRows.qml",
     "qml/components/AgentSearch.qml",
     "qml/components/AgentSetup.qml",
@@ -141,6 +145,7 @@ const QML_SINGLETONS: &[&str] = &[
     "qml/components/AgentPalette.qml",
     "qml/components/AgentGitGlyphs.qml",
     "qml/components/AgentProjects.qml",
+    "qml/components/AgentMarks.qml",
 ];
 
 /// Bundled fonts (in `assets/fonts`), compiled in under `:/fonts/`.

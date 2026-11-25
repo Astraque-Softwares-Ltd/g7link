@@ -228,6 +228,7 @@ Item {
         width: box.width
         height: visible ? implicitHeight : 0
         popup: composer.popup
+        agentId: composer.picker.agent || ""
         z: 20
         onChosen: (index) => composer.choose(index)
     }

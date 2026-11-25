@@ -647,6 +647,7 @@ impl AppState {
             | NodeEvent::TextWatch { .. }
             | NodeEvent::PcClip { .. }
             | NodeEvent::PcCapturePrompt { .. }
+            | NodeEvent::AgentFolderPrompt { .. }
             | NodeEvent::PcCaptureRecordEnded { .. }
             | NodeEvent::WakeInfoChanged { .. }
             | NodeEvent::DeckLayout { .. }

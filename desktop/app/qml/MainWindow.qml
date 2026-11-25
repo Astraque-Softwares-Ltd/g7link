@@ -1081,6 +1081,101 @@ NativeWindow {
         }
     }
 
+    // A phone asks to add one of this PC's folders as an agent folder while
+    // its "Add agent folders without asking" is off: Allow, or Not now (also
+    // when the sheet is closed). The phone waits; no answer is a refusal.
+    Sheet {
+        id: folderPromptSheet
+        readonly property var prompt: {
+            try {
+                return JSON.parse(Agents.folderPrompt) || ({})
+            } catch (e) {
+                return ({})
+            }
+        }
+        readonly property bool asking: (prompt.place || "").length > 0
+        property bool always: false
+        cardWidth: 460
+        function follow() {
+            if (asking) {
+                always = false
+                open()
+            } else {
+                close()
+            }
+        }
+        onAskingChanged: follow()
+        Component.onCompleted: follow()
+        onDismissed: Agents.folderPromptAnswer(false)
+        Column {
+            width: parent.width
+            spacing: 16
+            Avatar {
+                anchors.horizontalCenter: parent.horizontalCenter
+                width: 56; height: 56
+                iconPath: Icons.folder
+                emphasized: true
+            }
+            Txt {
+                width: parent.width
+                horizontalAlignment: Text.AlignHCenter
+                text: qsTr("Let %1 start agents in %2?").arg(folderPromptSheet.prompt.deviceName || "")
+                                                          .arg(folderPromptSheet.prompt.name || "")
+                role: "headline"
+                wrapMode: Text.WordWrap
+                elide: Text.ElideNone
+            }
+            Txt {
+                width: parent.width
+                horizontalAlignment: Text.AlignHCenter
+                text: folderPromptSheet.prompt.place || ""
+                role: "code"
+                muted: true
+                wrapMode: Text.WrapAnywhere
+                elide: Text.ElideNone
+            }
+            Txt {
+                width: parent.width
+                text: qsTr("Agents can read, change and run things in this folder. Its own agent settings, such as hooks and instructions, run there too. It joins your agent folders, and you can remove it in Setup.")
+                role: "body"
+                muted: true
+                wrapMode: Text.WordWrap
+                elide: Text.ElideNone
+            }
+            Row {
+                spacing: 8
+                Toggle {
+                    anchors.verticalCenter: parent.verticalCenter
+                    label: qsTr("Don't ask again for this phone")
+                    checked: folderPromptSheet.always
+                    onToggled: (on) => folderPromptSheet.always = on
+                }
+                Txt {
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: qsTr("Don't ask again for this phone")
+                    role: "body"
+                }
+            }
+            Row {
+                anchors.right: parent.right
+                spacing: 10
+                Button {
+                    variant: "text"
+                    text: qsTr("Not now")
+                    onClicked: Agents.folderPromptAnswer(false)
+                }
+                Button {
+                    text: qsTr("Allow")
+                    onClicked: {
+                        if (folderPromptSheet.always)
+                            AppController.setDeviceToggle(folderPromptSheet.prompt.device, "agent_folders", true)
+                        Agents.folderPromptAnswer(true)
+                    }
+                }
+            }
+        }
+    }
+
     Sheet {
         id: agentSessionsPromptSheet
         opened: AppController.agentSessionsPromptDeviceId.length > 0

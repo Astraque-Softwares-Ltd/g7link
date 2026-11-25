@@ -206,6 +206,10 @@ pub fn compute_capabilities(node: Option<&Node>) -> Vec<String> {
         if crate::agents::offers_control() {
             caps.push(g7link_core::agent::CONTROL.into());
         }
+        // Browsing this PC's folders and adding one from a phone (§15), while the host runs.
+        if crate::agents::offers_places() {
+            caps.push(g7link_core::agent_places::CAP.into());
+        }
         // Replies typed into sessions here while the window backend and the
         // virtual keyboard can do it, else the one thing they need (§9); a
         // move to G7 beside them while the host can close a session (§9.1).

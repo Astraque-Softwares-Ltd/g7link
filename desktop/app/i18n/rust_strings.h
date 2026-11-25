@@ -52,7 +52,7 @@ static const char *const g7link_rust_strings[] = {
     QT_TRANSLATE_NOOP("Agents", "Too many worktrees. Remove one in Setup first."), // desktop/app/src/agents/source.rs
     QT_TRANSLATE_NOOP("Agents", "Up to 5 quotes in a message."), // desktop/app/src/agents/source.rs
     QT_TRANSLATE_NOOP("Agents", "Wait until it finishes."), // desktop/app/src/agents/source.rs
-    QT_TRANSLATE_NOOP("Agents", "You can add up to 64 folders."), // desktop/app/src/agents.rs
+    QT_TRANSLATE_NOOP("Agents", "You can add up to %1 folders."), // desktop/app/src/agents.rs
     QT_TRANSLATE_NOOP("Agents", "You can change it when the agent stops."), // desktop/app/src/agents/history_page.rs
     QT_TRANSLATE_NOOP("Agents", "changed after the agent finished"), // desktop/app/src/agents/history.rs
     QT_TRANSLATE_NOOP("Agents", "changed into a folder"), // desktop/app/src/agents/history.rs

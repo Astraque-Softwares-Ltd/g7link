@@ -42,8 +42,8 @@ use g7link_core::{
     QueueAction, agent,
 };
 use g7link_core::{
-    AgentCut, AgentImportJob, AgentImportProgress, AgentPatchPage, AgentPort, AgentPresence, AgentRunBrief,
-    AgentScript, history as wire_history,
+    AgentCut, AgentFolderLast, AgentImportJob, AgentImportProgress, AgentPatchPage, AgentPort, AgentPresence,
+    AgentRunBrief, AgentScript, history as wire_history,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -58,6 +58,8 @@ mod history;
 mod history_page;
 #[cfg(test)]
 mod history_tests;
+pub(crate) mod new_thread;
+mod phone_folders;
 mod photo;
 mod ports;
 mod presence;
@@ -1274,6 +1276,12 @@ struct BridgeState {
     scripts: scripts::Scripts,
     /// A pull request read in detail, while its view is open (`cap::PR_DETAIL`).
     review: review::Review,
+    /// The new-thread form's folder tree (`places.list`).
+    places: new_thread::Places,
+    /// A phone's folder add someone at this PC is asked about (§15).
+    folder_prompt: Option<phone_folders::Prompt>,
+    /// Each folder's newest thread as the catalog phones have says it.
+    sent_lasts: HashMap<String, AgentFolderLast>,
 }
 
 /// What the new-thread form is set to.
@@ -1282,6 +1290,8 @@ struct NewForm {
     agent: Option<AgentId>,
     folder: String,
     setting: control::Setting,
+    /// The folder last added from the form: a note says what that allows.
+    added: Option<String>,
 }
 
 /// Markdown fetched for "Export…", kept until it's saved or the dialog is closed.
@@ -1389,8 +1399,22 @@ impl Bridge {
     }
 
     fn catalog(&self) -> AgentCatalog {
-        let s = self.lock();
-        catalog(&s.agents, &s.folders)
+        let mut s = self.lock();
+        let lasts = wire_lasts(s.threads.values());
+        let catalog = catalog(&s.agents, &s.folders, &lasts);
+        s.sent_lasts = lasts;
+        catalog
+    }
+
+    /// The catalog again when a folder's newest thread, or what it ran,
+    /// changed since phones were sent one (a start, a delete, a new model);
+    /// `None` otherwise, so a turn sends nothing.
+    fn catalog_if_lasts_changed(&self) -> Option<AgentCatalog> {
+        let changed = {
+            let s = self.lock();
+            wire_lasts(s.threads.values()) != s.sent_lasts
+        };
+        changed.then(|| self.catalog())
     }
 
     /// Sends an update to the timeline model, if one is on screen; the rows
@@ -1593,7 +1617,62 @@ fn word<T: Serialize>(value: &T) -> String {
 
 /// What phones may start: every agent, the folders that exist (id and
 /// label only), and supervised threads only.
-pub(crate) fn catalog(agents: &[AgentInfo], folders: &[Folder]) -> AgentCatalog {
+/// A folder's newest thread as phones get it (§15); `None` when it can't be sent.
+fn wire_last(l: control::FolderLast) -> Option<AgentFolderLast> {
+    AgentFolderLast {
+        agent: l.agent.as_str().to_owned(),
+        model: l.model,
+        effort: l.effort,
+        title: l.title,
+        branch: l.branch,
+    }
+    .sanitized()
+}
+
+/// Each folder's newest thread as phones get it, by folder id.
+fn wire_lasts<'a>(threads: impl IntoIterator<Item = &'a ThreadInfo>) -> HashMap<String, AgentFolderLast> {
+    control::lasts(threads).into_iter().filter_map(|(id, l)| Some((id, wire_last(l)?))).collect()
+}
+
+/// Folder `id`'s newest thread as phones get it.
+fn wire_last_of(id: &str) -> Option<AgentFolderLast> {
+    control::folder_last(lock().threads.values(), id).and_then(wire_last)
+}
+
+/// A folder as phones get it: its id and name, never its path; `last`, its
+/// newest thread.
+pub(crate) fn catalog_folder(f: &Folder, last: Option<AgentFolderLast>) -> AgentCatalogFolder {
+    AgentCatalogFolder {
+        id: f.id.clone(),
+        label: f.label.clone(),
+        checkpoints: f.checkpoints,
+        follow_remote: f.follow_remote,
+        phone_scripts: f.phone_scripts,
+        script_count: u8::try_from(f.scripts.len().min(api::MAX_SCRIPTS)).unwrap_or(u8::MAX),
+        // A command reaches a phone only from a folder whose phones may run it.
+        scripts: if f.phone_scripts {
+            f.scripts
+                .iter()
+                .take(api::MAX_SCRIPTS)
+                .map(|x| AgentScript { id: x.id.clone(), name: x.name.clone(), command: x.command.clone() })
+                .collect()
+        } else {
+            Vec::new()
+        },
+        used: f.used_ms,
+        repo: f.repo,
+        last,
+    }
+}
+
+/// The catalog phones get: the agents, and the folders on this PC now, the
+/// most recently used first and at most the wire's limit, each with its
+/// newest thread (`lasts`, from [`wire_lasts`]).
+pub(crate) fn catalog(
+    agents: &[AgentInfo],
+    folders: &[Folder],
+    lasts: &HashMap<String, AgentFolderLast>,
+) -> AgentCatalog {
     AgentCatalog {
         agents: agents
             .iter()
@@ -1609,35 +1688,17 @@ pub(crate) fn catalog(agents: &[AgentInfo], folders: &[Folder]) -> AgentCatalog 
                 limits: a.limits.iter().take(agent::MAX_LIMITS).map(wire_limit).collect(),
             })
             .collect(),
-        folders: folders
-            .iter()
+        folders: new_thread::by_use(folders)
+            .into_iter()
             .filter(|f| f.exists)
-            .map(|f| AgentCatalogFolder {
-                id: f.id.clone(),
-                label: f.label.clone(),
-                checkpoints: f.checkpoints,
-                follow_remote: f.follow_remote,
-                phone_scripts: f.phone_scripts,
-                script_count: u8::try_from(f.scripts.len().min(api::MAX_SCRIPTS)).unwrap_or(u8::MAX),
-                // A command reaches a phone only from a folder whose phones may run it.
-                scripts: if f.phone_scripts {
-                    f.scripts
-                        .iter()
-                        .take(api::MAX_SCRIPTS)
-                        .map(|x| AgentScript {
-                            id: x.id.clone(),
-                            name: x.name.clone(),
-                            command: x.command.clone(),
-                        })
-                        .collect()
-                } else {
-                    Vec::new()
-                },
-            })
+            .take(agent::MAX_FOLDERS)
+            .map(|f| catalog_folder(f, lasts.get(&f.id).cloned()))
             .collect(),
         modes: vec![agent::mode::SUPERVISED.to_owned()],
         // Each phone's own `agent_push`: the core sets it for the phone it sends to.
         push: false,
+        // Each phone's own `agent_folders`, likewise.
+        add_folders: false,
     }
 }
 
@@ -1652,6 +1713,7 @@ fn wire_model(m: &api::ModelInfo) -> AgentModel {
         default_effort: m.default_effort.clone(),
         images: m.images,
         short: m.short,
+        exact: m.exact.clone(),
     }
 }
 
@@ -2554,6 +2616,9 @@ async fn relay_event<R: Relay>(bridge: &Bridge, relay: &R, client: &Client, even
                 rerender();
             }
             lists_changed();
+            if let Some(catalog) = bridge.catalog_if_lasts_changed() {
+                relay.catalog(Some(catalog)).await;
+            }
         }
         Event::ThreadItem(e) => {
             open_item(bridge, OpenKind::Thread, &e.thread_id, &e.item);
@@ -2594,6 +2659,9 @@ async fn relay_event<R: Relay>(bridge: &Bridge, relay: &R, client: &Client, even
             }
             lists_changed();
             relay.event(AgentEvent::removed(e.thread_id), None).await;
+            if let Some(catalog) = bridge.catalog_if_lasts_changed() {
+                relay.catalog(Some(catalog)).await;
+            }
         }
         Event::ApprovalRequested(e) => {
             let mut info = bridge.known(&e.approval.thread_id);
@@ -2956,10 +3024,15 @@ fn device_name(device: &DeviceId) -> String {
 pub fn handle_request(from: &DeviceId, request: AgentRequest) -> Result<AgentReply, AgentFailure> {
     let (tx, rx) = std::sync::mpsc::sync_channel(1);
     let from = *from;
+    // An add someone here is asked about waits for them (§15).
+    let limit = match &request {
+        AgentRequest::FolderAdd { ask: true, .. } => phone_folders::ASK_WAIT + REQUEST_LIMIT,
+        _ => REQUEST_LIMIT,
+    };
     core_host::spawn(async move {
         let _ = tx.send(run_request(from, request).await);
     });
-    rx.recv_timeout(REQUEST_LIMIT).unwrap_or(Err(AgentFailure::Internal))
+    rx.recv_timeout(limit).unwrap_or(Err(AgentFailure::Internal))
 }
 
 async fn run_request(from: DeviceId, request: AgentRequest) -> Result<AgentReply, AgentFailure> {
@@ -3222,6 +3295,10 @@ async fn run_request(from: DeviceId, request: AgentRequest) -> Result<AgentReply
         | AgentRequest::ScriptStop { .. }
         | AgentRequest::ScriptRuns { .. }
         | AgentRequest::ScriptOutput { .. }) => return scripts::phone(from, &client, request).await,
+        // New thread in any folder (§15): browse by name, add (asking here first
+        // unless the phone's switch is on).
+        AgentRequest::Places { place, offset } => return phone_folders::places(&client, place, offset).await,
+        AgentRequest::FolderAdd { place, ask } => return phone_folders::add(&client, from, place, ask).await,
         // Hand-off (§V8.5): the page opens the thread, now or when the PC is
         // unlocked; nothing is typed, sent or unlocked.
         AgentRequest::Handoff { thread: thread_id, seq } => {
@@ -3396,8 +3473,12 @@ pub(crate) struct View {
     pub popup: String,
     /// Text the composer must take: `{ gen, n, text, cursor }`.
     pub composer_set: String,
-    /// The new-thread form's model control (JSON).
+    /// The new-thread form's model control, quick picks and folder (JSON).
     pub new_picker: String,
+    /// The new-thread form's folder tree, by place (JSON).
+    pub places: String,
+    /// A phone's folder add being asked about here (JSON, `{}` for none).
+    pub folder_prompt: String,
     /// The Archived or Snoozed shelf's threads (JSON; `null` for the main list).
     pub shelf: String,
     /// The list's search and its hits, grouped by thread (JSON).
@@ -3525,7 +3606,9 @@ pub(crate) fn view() -> View {
                 },
             )
             .to_string(),
-        new_picker: new_picker_json(&s).to_string(),
+        new_picker: new_thread::picker_json(&s).to_string(),
+        places: s.places.json().to_string(),
+        folder_prompt: phone_folders::prompt_json(s.folder_prompt.as_ref()).to_string(),
         shelf: s
             .shelf
             .as_ref()
@@ -3629,7 +3712,8 @@ fn composer_json(s: &BridgeState, open: &OpenView, cameras: &[(usize, DeviceId, 
         .collect();
     json!({
         "control": s.control,
-        "picker": agent.map_or_else(|| json!({}), |a| control::picker_json(a, &setting)),
+        "picker": agent
+            .map_or_else(|| json!({}), |a| control::picker_json(a, &setting, info.answered_model.as_deref())),
         "canSteer": agent.is_some_and(|a| a.can(Can::Steer)),
         "images": takes_images,
         // "Take a photo with <phone>", and the phone a photo is awaited from.
@@ -3676,16 +3760,6 @@ fn editing(open: &OpenView, info: &ThreadInfo) -> bool {
             .is_some_and(|n| n == api::NoticeKind::EditFromHere)
 }
 
-/// The new-thread form's model control, for its agent.
-fn new_picker_json(s: &BridgeState) -> Value {
-    let Some(agent) = s.new_form.agent.and_then(|id| s.agents.iter().find(|a| a.id == id)) else {
-        return json!({});
-    };
-    let mut picker = control::picker_json(agent, &s.new_form.setting);
-    picker["control"] = json!(s.control);
-    picker
-}
-
 /// Whether the host takes a denial with the user's words: phones are then
 /// offered `agent.say_why`.
 pub fn says_why() -> bool {
@@ -3701,6 +3775,17 @@ pub fn offers_control() -> bool {
 /// beside a reply (`agent.move`).
 pub fn offers_move() -> bool {
     lock().moves
+}
+
+/// The host is connected, so phones may browse this PC's folders and add
+/// one (`agent.places`, §15).
+pub fn offers_places() -> bool {
+    lock().client.is_some()
+}
+
+/// Someone at this PC answered a phone's folder add: Allow or Not now.
+pub fn folder_prompt_answer(allow: bool) {
+    phone_folders::answer(allow);
 }
 
 /// The timeline model is on screen: `waker` queues [`take_ui`] on the GUI
@@ -3740,9 +3825,10 @@ fn setup_json(s: &BridgeState, home: Option<&std::path::Path>) -> String {
             })
         })
         .collect();
-    let folders: Vec<_> = s
-        .folders
-        .iter()
+    // The most recently used first, with what its newest thread ran.
+    let lasts = control::lasts(s.threads.values());
+    let folders: Vec<_> = new_thread::by_use(&s.folders)
+        .into_iter()
         .map(|f| {
             json!({
                 "id": f.id,
@@ -3750,6 +3836,9 @@ fn setup_json(s: &BridgeState, home: Option<&std::path::Path>) -> String {
                 "path": f.path,
                 "shownPath": shown_path(&f.path, home),
                 "exists": f.exists,
+                "usedMs": f.used_ms,
+                "repo": f.repo,
+                "last": lasts.get(&f.id).map_or(Value::Null, |l| new_thread::last_json(s, l)),
                 "mcp": f.mcp,
                 "mcpSeen": f.mcp_seen.iter().map(|m| json!({ "agent": m.agent.as_str(), "names": m.names })).collect::<Vec<_>>(),
                 "checkpoints": f.checkpoints,
@@ -3936,7 +4025,7 @@ fn folder_error(e: &ClientError) -> String {
         Some(ErrorCode::BadRequest) => {
             tr!("Agents", "That folder can't be used. Pick a folder you can read, other than the whole disk.")
         }
-        Some(ErrorCode::Limit) => tr!("Agents", "You can add up to 64 folders."),
+        Some(ErrorCode::Limit) => tr!("Agents", "You can add up to %1 folders.", api::MAX_FOLDERS),
         Some(ErrorCode::NotFound) => tr!("Agents", "That folder is no longer in the list."),
         _ if e.is_unreachable() => tr!("Agents", "Couldn't reach the agent host"),
         _ => tr!("Agents", "Couldn't change the folders"),
@@ -3951,25 +4040,25 @@ pub fn add_folder(path: String) {
     });
 }
 
-/// Adds a folder; false (after saying why) when it couldn't.
-async fn added_folder(path: String) -> bool {
+/// Adds a folder; `None` (after saying why) when it couldn't.
+async fn added_folder(path: String) -> Option<Folder> {
     let Some(client) = connected_client().await else {
         crate::bridge::app::show_message(tr!("Agents", "Couldn't reach the agent host"));
-        return false;
+        return None;
     };
     match client.folders_add(path, None).await {
         Ok(folder) => {
             let mut s = lock();
             if !s.folders.iter().any(|f| f.id == folder.id) {
-                s.folders.push(folder);
+                s.folders.push(folder.clone());
             }
             drop(s);
             changed();
-            true
+            Some(folder)
         }
         Err(e) => {
             crate::bridge::app::show_message(folder_error(&e));
-            false
+            None
         }
     }
 }
@@ -5374,26 +5463,86 @@ fn new_form_setting(s: &BridgeState, agent: AgentId, folder: &str) -> control::S
         .unwrap_or_default()
 }
 
-/// The new-thread form shows `agent` and `folder`: its model control
-/// follows (with what the user chose for them last).
+/// The new-thread form shows `folder`, with `agent` the user chose under
+/// "Other…" ("": the agent and setting the folder opens on, its newest
+/// thread's; kept while the folder stays and its agent can start).
 pub fn new_form(agent: String, folder: String) {
-    let Some(agent) = AgentId::parse(&agent) else { return };
+    let agent = match agent.as_str() {
+        "" => None,
+        word => match AgentId::parse(word) {
+            Some(id) => Some(id),
+            None => return,
+        },
+    };
     {
         let mut s = lock();
-        if s.new_form.agent == Some(agent) && s.new_form.folder == folder {
+        let same_folder = s.new_form.folder == folder;
+        let usable =
+            s.new_form.agent.is_some_and(|id| s.agents.iter().any(|a| a.id == id && control::usable(a)));
+        let next = match agent {
+            Some(id) if same_folder && s.new_form.agent == Some(id) => return,
+            Some(id) => Some((id, new_thread::agent_setting(&s, id, &folder))),
+            None if same_folder && usable => return,
+            None => new_thread::preselect(&s, &folder),
+        };
+        let added = s.new_form.added.clone().filter(|id| *id == folder);
+        let (agent, setting) = next.map_or((None, control::Setting::default()), |(a, set)| (Some(a), set));
+        let form = NewForm { agent, folder, setting, added };
+        if s.new_form.agent == form.agent
+            && s.new_form.folder == form.folder
+            && s.new_form.setting == form.setting
+        {
             return;
         }
-        let setting = new_form_setting(&s, agent, &folder);
-        s.new_form = NewForm { agent: Some(agent), folder, setting };
+        s.new_form = form;
+    }
+    changed();
+}
+
+/// "Run with": the form takes quick pick `index` (its agent, model and effort).
+fn pick_quick(index: &str) {
+    let Ok(index) = index.parse::<usize>() else { return };
+    {
+        let mut s = lock();
+        let folder = s.new_form.folder.clone();
+        let Some(pick) = new_thread::picks(&s, &folder).into_iter().nth(index) else { return };
+        let setting = control::Setting {
+            model: pick.model.clone(),
+            effort: pick.effort.clone(),
+            mode: s.new_form.setting.mode,
+        };
+        if s.new_form.agent == Some(pick.agent) && s.new_form.setting == setting {
+            return;
+        }
+        let custom = pick.model.as_deref().is_some_and(|m| {
+            s.agents.iter().find(|a| a.id == pick.agent).is_none_or(|a| a.model(m).is_none())
+        });
+        let choice =
+            control::Choice { agent: pick.agent, folder, model: pick.model, effort: pick.effort, custom };
+        if s.prefs.remember(choice) {
+            s.prefs_set = true;
+            core_host::spawn(save_prefs());
+        }
+        s.new_form.agent = Some(pick.agent);
+        s.new_form.setting = setting;
     }
     changed();
 }
 
 /// The user picked in the model control: `what` is "model" (an id from the
-/// list; "" for the CLI's default), "custom" (a typed name), "effort" or
-/// "mode", for the open thread or the new-thread form (`new`). A thread's
-/// takes effect at its next turn; a running thread's can't change.
+/// list; "" for the CLI's default), "custom" (a typed name), "effort" ("" in
+/// the new-thread form: the model's own) or "mode", for the open thread or
+/// the new-thread form (`new`), which also takes "pick" (a quick pick's
+/// index). A thread's takes effect at its next turn; a running thread's
+/// can't change.
 pub fn pick(new: bool, what: &str, value: String) {
+    if new && what == "pick" {
+        pick_quick(&value);
+        return;
+    }
+    if !new && what == "effort" && value.is_empty() {
+        return;
+    }
     let mut s = lock();
     let (agent_id, folder, current) = if new {
         let Some(agent) = s.new_form.agent else { return };
@@ -5851,7 +6000,7 @@ pub fn continue_session(id: String) {
 pub fn add_folder_and_continue(path: String, session_id: String) {
     lock().user_started = true;
     core_host::spawn(async move {
-        if added_folder(path).await {
+        if added_folder(path).await.is_some() {
             continue_session(session_id);
         }
     });
@@ -6023,6 +6172,8 @@ mod tests {
             path: "/home/me/Code/g7linux".into(),
             exists,
             added_ms: 1,
+            used_ms: 0,
+            repo: false,
             mcp: true,
             mcp_seen: vec![api::FolderMcp { agent: AgentId::Claude, names: vec!["github".into()] }],
             checkpoints: true,
@@ -6146,6 +6297,7 @@ mod tests {
         let wire = catalog(
             &[claude, AgentInfo::missing(AgentId::Codex)],
             &[folder("f1", true), folder("f2", false)],
+            &HashMap::new(),
         );
         assert_eq!(wire.folders.len(), 1, "a folder that's gone is left out");
         assert_eq!(wire.folders[0].label, "g7linux");
@@ -6156,6 +6308,90 @@ mod tests {
         assert_eq!(wire.agents[1].auth, None);
         let shown = serde_json::to_string(&wire).unwrap();
         assert!(!shown.contains("/home") && !shown.contains("max") && !shown.contains("2.1.310"), "{shown}");
+    }
+
+    #[test]
+    fn phones_get_the_most_recently_used_folders_each_with_its_newest_thread() {
+        let folders: Vec<Folder> = (0..70u64)
+            .map(|i| {
+                let mut f = folder(&format!("f{i:012x}"), i != 3);
+                f.used_ms = 1_000 + (i * 7) % 70;
+                f.repo = i == 69;
+                f
+            })
+            .collect();
+        let mut newest = info(Origin::launcher());
+        newest.folder_id = folders[69].id.clone();
+        newest.agent = AgentId::Claude;
+        newest.model = Some("sonnet".into());
+        newest.effort = Some("high".into());
+        newest.title = "Port the relay".into();
+        newest.branch = Some("main".into());
+        newest.updated_ms = 50;
+        let mut older = newest.clone();
+        older.id = "1".repeat(32);
+        older.updated_ms = 10;
+        older.title = "Older".into();
+        let mut in_worktree = info(Origin::launcher());
+        in_worktree.id = "2".repeat(32);
+        in_worktree.folder_id = folders[1].id.clone();
+        in_worktree.branch = Some("g7/fix".into());
+        in_worktree.worktree = Some(api::WorktreeTag {
+            id: "0123456789ab".into(),
+            branch: "g7/fix".into(),
+            label: "fix".into(),
+            missing: false,
+        });
+        let lasts = wire_lasts([&newest, &older, &in_worktree]);
+        let wire = catalog(&[], &folders, &lasts);
+        assert_eq!(wire.folders.len(), agent::MAX_FOLDERS, "the wire's limit");
+        let used: Vec<u64> = wire.folders.iter().map(|f| f.used).collect();
+        assert!(used.windows(2).all(|w| w[0] >= w[1]), "the most recently used first: {used:?}");
+        assert!(!wire.folders.iter().any(|f| f.id == folders[3].id), "a folder that's gone isn't sent");
+        let top = wire.folders.iter().find(|f| f.id == folders[69].id).unwrap();
+        assert!(top.repo);
+        let last = top.last.as_ref().unwrap();
+        assert_eq!(
+            (last.agent.as_str(), last.model.as_deref(), last.effort.as_deref(), last.title.as_str()),
+            ("claude", Some("sonnet"), Some("high"), "Port the relay"),
+            "the newest thread there"
+        );
+        assert_eq!(last.branch.as_deref(), Some("main"));
+        let wt = wire.folders.iter().find(|f| f.id == folders[1].id).unwrap();
+        assert_eq!(wt.last.as_ref().unwrap().branch, None, "a worktree's branch isn't the folder's");
+        assert!(wire.folders.iter().filter(|f| f.last.is_none()).count() > 60, "no thread there: no last");
+        let shown = serde_json::to_string(&wire).unwrap();
+        assert!(!shown.contains("/home"), "still no path");
+    }
+
+    #[test]
+    fn the_catalog_goes_again_only_when_a_folders_newest_thread_changes() {
+        let bridge = Bridge::new();
+        {
+            let mut s = bridge.lock();
+            s.folders = vec![folder("f0123456789ab", true)];
+            let mut t = info(Origin::launcher());
+            t.folder_id = "f0123456789ab".into();
+            s.threads.insert(t.id.clone(), t);
+        }
+        assert!(bridge.catalog_if_lasts_changed().is_some(), "never sent: it goes");
+        assert!(bridge.catalog_if_lasts_changed().is_none(), "nothing changed");
+        let mut turn = bridge.lock().threads.values().next().unwrap().clone();
+        turn.updated_ms += 1_000;
+        turn.state = State::Done;
+        bridge.remember(&turn);
+        assert!(bridge.catalog_if_lasts_changed().is_none(), "a turn sends nothing");
+        turn.model = Some("gpt-5.5".into());
+        bridge.remember(&turn);
+        assert!(bridge.catalog_if_lasts_changed().is_some(), "a new model does");
+        let mut started = turn.clone();
+        started.id = "3".repeat(32);
+        started.title = "A new one".into();
+        started.updated_ms += 1;
+        bridge.remember(&started);
+        assert!(bridge.catalog_if_lasts_changed().is_some(), "a start does");
+        bridge.lock().threads.remove(&started.id);
+        assert!(bridge.catalog_if_lasts_changed().is_some(), "a delete does");
     }
 
     #[test]
@@ -6171,7 +6407,7 @@ mod tests {
         let mut on = folder("f2", true);
         on.scripts = vec![script("s0000000c", "serve", "python3 -m http.server")];
         on.phone_scripts = true;
-        let wire = catalog(&[], &[off, on]);
+        let wire = catalog(&[], &[off, on], &HashMap::new());
         assert!(!wire.folders[0].phone_scripts);
         assert_eq!(wire.folders[0].script_count, 2, "the phone knows there are scripts");
         assert!(wire.folders[0].scripts.is_empty(), "but not what they run");
@@ -6572,6 +6808,7 @@ mod tests {
             default_effort: None,
             images: true,
             short: true,
+            exact: None,
         }];
         claude.limits = vec![api::Limit {
             window: "five_hour".into(),
@@ -6579,7 +6816,7 @@ mod tests {
             resets_ms: Some(9),
             state: api::LimitState::Warn,
         }];
-        let wire = catalog(&[claude], &[folder("f1", true)]);
+        let wire = catalog(&[claude], &[folder("f1", true)], &HashMap::new());
         let agent = &wire.agents[0];
         assert_eq!(agent.can, ["plan", "mcp_switch"]);
         assert_eq!(
@@ -7352,6 +7589,54 @@ mod tests {
         assert_eq!(shown_path("/home/me", Some(home)), "~");
         assert_eq!(shown_path("/home/meg/x", Some(home)), "/home/meg/x");
         assert_eq!(shown_path("/srv/x", None), "/srv/x");
+    }
+
+    #[test]
+    fn setup_lists_folders_by_last_use_with_their_newest_thread() {
+        let mut claude = AgentInfo::missing(AgentId::Claude);
+        claude.models = vec![api::ModelInfo {
+            id: "default".into(),
+            name: "Default (recommended)".into(),
+            note: None,
+            default: true,
+            efforts: vec!["high".into()],
+            default_effort: None,
+            images: true,
+            short: true,
+            exact: Some("Opus 5".into()),
+        }];
+        let mut old = folder("f000000000001", true);
+        old.used_ms = 10;
+        let mut new = folder("f000000000002", true);
+        new.used_ms = 30;
+        new.repo = true;
+        let mut middle = folder("f000000000003", true);
+        middle.used_ms = 20;
+        let mut s =
+            BridgeState { agents: vec![claude], folders: vec![old, new, middle], ..BridgeState::default() };
+        let mut t = info(Origin::launcher());
+        t.folder_id = "f000000000002".into();
+        t.agent = AgentId::Claude;
+        t.effort = Some("high".into());
+        t.branch = Some("main".into());
+        s.threads.insert(t.id.clone(), t);
+        let json: Value = serde_json::from_str(&setup_json(&s, None)).unwrap();
+        let ids: Vec<&str> =
+            json["folders"].as_array().unwrap().iter().map(|f| f["id"].as_str().unwrap()).collect();
+        assert_eq!(ids, ["f000000000002", "f000000000003", "f000000000001"], "the most recently used first");
+        let top = &json["folders"][0];
+        assert_eq!((top["usedMs"].as_u64(), top["repo"].as_bool()), (Some(30), Some(true)));
+        assert_eq!(
+            (top["last"]["agent"].as_str(), top["last"]["model"].as_str(), top["last"]["effort"].as_str()),
+            (Some("claude"), Some("Opus 5"), Some("High")),
+            "what it ran, by its exact name"
+        );
+        assert_eq!(
+            (top["last"]["title"].as_str(), top["last"]["branch"].as_str()),
+            (Some("Fix the build"), Some("main"))
+        );
+        assert!(json["folders"][1]["last"].is_null(), "no thread there yet");
+        assert_eq!(json["folders"][1]["repo"], false);
     }
 
     #[test]

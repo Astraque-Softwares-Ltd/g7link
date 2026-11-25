@@ -788,6 +788,8 @@ mod tests {
             path: "/home/me/shop".into(),
             exists: true,
             added_ms: 1,
+            used_ms: 0,
+            repo: false,
             mcp: true,
             mcp_seen: Vec::new(),
             checkpoints: true,

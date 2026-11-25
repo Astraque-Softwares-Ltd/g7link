@@ -29,8 +29,8 @@ project. The full license texts are in the LICENSES/ directory.
 
   The Claude Spark and the OpenAI Blossom      Not licensed: trademarks of
   (android/app/src/main/res/drawable/          Anthropic PBC and OpenAI,
-  ic_agent_*)                                  shown to identify their agents.
-                                               See TRADEMARKS.md.
+  ic_agent_* and desktop/app/qml/components/   shown to identify their agents.
+  AgentMarks.qml)                              See TRADEMARKS.md.
 
   Anything not listed above                    GPL-3.0-or-later, with the
                                                additional permission in
