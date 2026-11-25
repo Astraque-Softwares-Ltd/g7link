@@ -4,6 +4,43 @@ All notable changes to G7 Link. Versions follow
 [semantic versioning](https://semver.org); before 1.0, a minor version may
 change things that need a step from you, and its notes say so.
 
+## 0.1.30 (unreleased)
+
+**Update both together** to browse and add the PC's folders from the phone.
+
+### Added
+
+- **Start a thread in any folder on the PC.** New thread opens on "Where
+  should it work?": your recent folders first, each with its branch, its
+  last thread and what that ran with, then every folder in your home and
+  on your mounted disks. Picking one adds it as an agent folder. From the
+  phone, the PC asks you the first time ("Let Pixel start agents in
+  barber?", with "Don't ask again for this phone"), and Settings has "Add
+  agent folders without asking" for each phone. The phone sees folder
+  names only, never a path or a hidden folder.
+- **Run with.** One tap picks the agent, model and thinking a folder's
+  newest thread used, or what you used in your other folders. "Other…"
+  still offers every agent, model and level, and a typed model.
+- **The Claude and OpenAI logos** on every agent choice on the PC too, and
+  on each pick on both.
+
+### Changed
+
+- **Exact model names.** "Opus 5" instead of "Opus" or "Default" wherever
+  a model is chosen or shown, as Claude's and Codex's own lists say. When
+  an older Claude doesn't say which model an alias stands for, it reads
+  "Opus" or "Claude's default", with no version guessed.
+- **"Thinking"** is what Claude's effort level is called now, everywhere
+  (Codex keeps "Reasoning"); "Auto" leaves it to Claude.
+- **The folder you used last comes first**, and a folder opens on what its
+  newest thread ran with, the same on the PC and the phone. The first
+  folder you ever added is no longer the default.
+- **The phone's New thread is a full screen** instead of a sheet, and a
+  plain new thread can take pictures too.
+- **Opening or closing a fold in the PC's Agents chat glides**, as on the
+  phone: only when you click it; rows that stream in while an agent works
+  don't move, and nothing moves with reduced motion.
+
 ## 0.1.29 (2026-11-24)
 
 **Update both together** for Move to G7.
