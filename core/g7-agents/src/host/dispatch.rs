@@ -883,6 +883,7 @@ mod tests {
             default_effort: None,
             images,
             short: false,
+            exact: None,
         };
         AgentInfo {
             installed: true,
@@ -973,6 +974,7 @@ mod flow {
             default_effort: Some("low".into()),
             images: true,
             short: true,
+            exact: None,
         };
         AgentInfo {
             installed: true,

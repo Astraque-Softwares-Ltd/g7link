@@ -7,6 +7,7 @@
 //! everything else in that answer (the account among it) is skipped by the
 //! parser without being kept. Codex lists models with `model/list`.
 
+use std::collections::HashMap;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -148,8 +149,49 @@ fn claude_model(entry: &Value) -> Option<ModelInfo> {
         default_effort: None,
         images: true,
         short: !id.chars().any(|c| c.is_ascii_digit()),
+        // Filled by `exact_names` once the whole list is read.
+        exact: None,
     }
     .sanitized()
+}
+
+/// Each model's exact name (§3.2 of the new-thread contract): an alias's is
+/// the display name of the entry its `resolvedModel` names, else a name made
+/// from that id; a full id's is its own display name. A description is free
+/// text and never read for a version.
+fn exact_names(models: &mut [ModelInfo], resolved: &[Option<String>]) {
+    let names: HashMap<String, String> =
+        models.iter().filter(|m| !m.short && !m.default).map(|m| (m.id.clone(), m.name.clone())).collect();
+    for (model, resolved) in models.iter_mut().zip(resolved) {
+        model.exact = match resolved {
+            Some(id) => {
+                Some(names.get(id).cloned().unwrap_or_else(|| name_from_id(id).unwrap_or_else(|| id.clone())))
+            }
+            None if !model.short && !model.default => Some(model.name.clone()),
+            None => None,
+        };
+    }
+}
+
+/// "Sonnet 4.6" from `claude-sonnet-4-6` (or `claude-sonnet-4-6-20260101`):
+/// lowercase letters, one or two numbers, an optional eight-digit date.
+/// `None` for any other shape.
+fn name_from_id(id: &str) -> Option<String> {
+    let mut parts = id.strip_prefix("claude-")?.split('-');
+    let family = parts.next().filter(|f| !f.is_empty() && f.chars().all(|c| c.is_ascii_lowercase()))?;
+    let rest: Vec<&str> = parts.collect();
+    let rest = match rest.last() {
+        Some(date) if date.len() == 8 && date.chars().all(|c| c.is_ascii_digit()) => &rest[..rest.len() - 1],
+        _ => &rest[..],
+    };
+    let numbers = (1..=2).contains(&rest.len())
+        && rest.iter().all(|n| (1..=2).contains(&n.len()) && n.chars().all(|c| c.is_ascii_digit()));
+    if !numbers {
+        return None;
+    }
+    let mut chars = family.chars();
+    let first = chars.next()?.to_ascii_uppercase();
+    Some(format!("{first}{} {}", chars.as_str(), rest.join(".")))
 }
 
 /// One of Claude's slash commands; `None` without a usable name.
@@ -185,17 +227,20 @@ pub fn parse_claude_answer(line: &[u8]) -> Option<ClaudeCatalog> {
         return Some(ClaudeCatalog::default());
     };
     let mut models: Vec<ModelInfo> = Vec::new();
+    let mut resolved: Vec<Option<String>> = Vec::new();
     let entries = |list: &Option<Value>| list.as_ref().and_then(Value::as_array).cloned().unwrap_or_default();
-    for model in entries(&answer.models) {
+    for entry in entries(&answer.models) {
         if models.len() >= api::MAX_MODELS {
             break;
         }
-        if let Some(model) = claude_model(&model)
+        if let Some(model) = claude_model(&entry)
             && !models.iter().any(|m| m.id == model.id)
         {
+            resolved.push(str_of(&entry, "resolvedModel").filter(|r| valid_model_id(r)).map(str::to_owned));
             models.push(model);
         }
     }
+    exact_names(&mut models, &resolved);
     let mut commands: Vec<api::Command> = Vec::new();
     for command in entries(&answer.commands) {
         if commands.len() >= api::MAX_COMMANDS {
@@ -398,22 +443,43 @@ fn codex_model(entry: &Value) -> Option<ModelInfo> {
         efforts,
         default_effort: str_of(entry, "defaultReasoningEffort").and_then(effort_word).map(str::to_owned),
         images,
+        // Set by `add_codex_models` once the order is known.
         short: false,
+        // Codex names each model exactly ("GPT-5.5 Codex").
+        exact: Some(str_of(entry, "displayName").unwrap_or(id).to_owned()),
     }
     .sanitized()
 }
 
+/// The first three models that aren't the default are offered inline, as
+/// Claude's aliases are.
+fn mark_short(models: &mut [ModelInfo]) {
+    let mut left = 3;
+    for model in models.iter_mut() {
+        model.short = !model.default && left > 0;
+        if model.short {
+            left -= 1;
+        }
+    }
+}
+
 /// Adds the models of one `model/list` page; its `nextCursor`.
 pub fn add_codex_models(models: &mut Vec<ModelInfo>, page: &Value) -> Option<String> {
+    let mut full = false;
     for entry in page.get("data").and_then(Value::as_array).into_iter().flatten() {
         if models.len() >= api::MAX_MODELS {
-            return None;
+            full = true;
+            break;
         }
         if let Some(model) = codex_model(entry)
             && !models.iter().any(|m| m.id == model.id)
         {
             models.push(model);
         }
+    }
+    mark_short(models);
+    if full {
+        return None;
     }
     str_of(page, "nextCursor").filter(|c| !c.is_empty()).map(str::to_owned)
 }
@@ -722,6 +788,20 @@ mod tests {
         assert!(catalog.models.iter().find(|m| m.id == "haiku").unwrap().efforts.is_empty());
         // A level we don't know is dropped, not passed on.
         assert_eq!(catalog.models.iter().find(|m| m.id == "sonnet").unwrap().efforts, ["low", "high"]);
+        // Exact names: an alias's from the entry its `resolvedModel` names,
+        // else from that id's shape; a full id's is its own.
+        let exact: Vec<Option<&str>> = catalog.models.iter().map(|m| m.exact.as_deref()).collect();
+        assert_eq!(
+            exact,
+            [
+                Some("Opus 5"),
+                Some("Opus 5"),
+                Some("Sonnet 5"),
+                Some("Haiku 5"),
+                Some("Opus 5"),
+                Some("Sonnet 4.6")
+            ]
+        );
         let names: Vec<&str> = catalog.commands.iter().map(|c| c.name.as_str()).collect();
         assert_eq!(names, ["compact", "context", "review", "login"]);
         assert_eq!(catalog.commands[2].hint.as_deref(), Some("[pr-number]"));
@@ -856,6 +936,35 @@ mod tests {
     }
 
     #[test]
+    fn exact_names_come_from_resolved_ids_never_descriptions() {
+        assert_eq!(name_from_id("claude-opus-5").as_deref(), Some("Opus 5"));
+        assert_eq!(name_from_id("claude-sonnet-4-6").as_deref(), Some("Sonnet 4.6"));
+        assert_eq!(name_from_id("claude-sonnet-4-6-20260101").as_deref(), Some("Sonnet 4.6"));
+        assert_eq!(name_from_id("claude-fable-5-2").as_deref(), Some("Fable 5.2"));
+        for odd in
+            ["claude-opus", "claude-Opus-5", "claude-opus-5-6-7", "claude-opus-123", "gpt-5", "claude--5", ""]
+        {
+            assert_eq!(name_from_id(odd), None, "{odd}");
+        }
+        let model = |id: &str| ModelInfo {
+            id: id.into(),
+            name: id.into(),
+            note: Some("Opus 4.9 for most work".into()),
+            default: id == "default",
+            efforts: Vec::new(),
+            default_effort: None,
+            images: true,
+            short: !id.chars().any(|c| c.is_ascii_digit()),
+            exact: None,
+        };
+        let mut models = vec![model("default"), model("opus"), model("odd"), model("claude-x-1")];
+        exact_names(&mut models, &[None, Some("claude-opus-9".into()), Some("weird-id".into()), None]);
+        let exact: Vec<Option<&str>> = models.iter().map(|m| m.exact.as_deref()).collect();
+        // No resolvedModel: nothing guessed, the description is never read.
+        assert_eq!(exact, [None, Some("Opus 9"), Some("weird-id"), Some("claude-x-1")]);
+    }
+
+    #[test]
     fn codex_models_pages_and_limits() {
         let text = fixture("codex-10-model-list.jsonl");
         let pages: Vec<Value> = text
@@ -875,6 +984,14 @@ mod tests {
         assert_eq!(first.efforts, ["low", "medium", "high", "xhigh", "max", "ultra"]);
         assert_eq!(first.default_effort.as_deref(), Some("medium"));
         assert!(!models[2].images, "text only");
+        assert!(models.iter().all(|m| m.exact.as_deref() == Some(m.name.as_str())), "Codex names are exact");
+        let short: Vec<bool> = models.iter().map(|m| m.short).collect();
+        assert_eq!(short, [false, true, true], "the ones after the default are offered inline");
+        let mut many: Vec<ModelInfo> =
+            (0..6).map(|n| ModelInfo { id: format!("m{n}"), default: n == 1, ..models[1].clone() }).collect();
+        mark_short(&mut many);
+        let short: Vec<bool> = many.iter().map(|m| m.short).collect();
+        assert_eq!(short, [true, false, true, true, false, false], "three at most");
 
         let snapshot = json!({"primary": {"usedPercent": 41, "windowDurationMins": 300, "resetsAt": 1795055175},
             "secondary": {"usedPercent": 85, "windowDurationMins": 10080, "resetsAt": 1795113266},

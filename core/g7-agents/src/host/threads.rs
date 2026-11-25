@@ -22,7 +22,7 @@ use crate::host::agents::{
 use crate::host::db::{Db, LoadedThread, ThreadCols};
 use crate::host::notify::Note;
 use crate::host::store::{ApprovalRecord, Store, now_ms};
-use crate::host::{Answered, Host, claude, codex, env, fork};
+use crate::host::{Answered, Host, claude, codex, env, fork, places};
 
 /// Whether Codex may run `auto_edit`. With `approvalPolicy: "on-request"`
 /// codex-cli 0.170.0 ran a command inside the workspace sandbox without
@@ -521,6 +521,33 @@ pub(crate) fn notify_unless_viewed(host: &Host, thread_id: &str, note: Note) {
     }
 }
 
+/// How long a listing or check of a place may take; a sleeping or network
+/// disk answers `BUSY` instead of holding the request.
+const PLACE_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// The folders as clients see them: whether each is there, holds a
+/// repository of its own, and when a thread there was last started or moved.
+fn listed_folders(reg: &Registry) -> Vec<Folder> {
+    let mut used: HashMap<&str, u64> = HashMap::new();
+    for entry in reg.threads.values() {
+        let at = entry.info.created_ms.max(entry.info.updated_ms);
+        let last = used.entry(entry.info.folder_id.as_str()).or_default();
+        *last = (*last).max(at);
+    }
+    reg.folders
+        .iter()
+        .map(|f| {
+            let path = Path::new(&f.path);
+            Folder {
+                exists: path.is_dir(),
+                repo: std::fs::symlink_metadata(path.join(".git")).is_ok(),
+                used_ms: used.get(f.id.as_str()).copied().unwrap_or(0).max(f.added_ms),
+                ..f.clone()
+            }
+        })
+        .collect()
+}
+
 pub(crate) fn err(code: ErrorCode, message: impl AsRef<str>) -> RpcError {
     RpcError::new(code, message)
 }
@@ -788,8 +815,11 @@ impl Host {
     // ---- Folders ----
 
     pub fn folders_list(&self) -> Vec<Folder> {
-        let reg = self.lock_reg();
-        reg.folders.iter().map(|f| Folder { exists: Path::new(&f.path).is_dir(), ..f.clone() }).collect()
+        listed_folders(&self.lock_reg())
+    }
+
+    fn listed_folder(&self, id: &str) -> Option<Folder> {
+        self.folders_list().into_iter().find(|f| f.id == id)
     }
 
     /// Sends `folders.changed` when a folder appeared or disappeared.
@@ -832,6 +862,97 @@ impl Host {
         .await
         .map_err(|_| err(ErrorCode::Internal, "The check failed."))?;
         let canonical = checked.map_err(|m| err(ErrorCode::BadRequest, m))?;
+        self.add_checked(canonical, label).await.map(|(folder, _)| folder)
+    }
+
+    /// Adds a phone's choice (new thread §2.4): a place below a fixed root,
+    /// never a root itself, hidden, a link or one of G7's own directories.
+    /// The PC is told when `by` is a phone and the folder is new.
+    pub async fn folders_add_place(
+        &self,
+        place: String,
+        label: Option<String>,
+        by: Option<Origin>,
+    ) -> Result<Folder, RpcError> {
+        if label.as_ref().is_some_and(|l| l.len() > MAX_LABEL) {
+            return Err(err(ErrorCode::BadRequest, "Too long."));
+        }
+        let _serial = self.folders_lock.lock().await;
+        let (home, media, refused) = self.place_inputs();
+        let shown = place.clone();
+        let job = tokio::task::spawn_blocking(move || {
+            let roots = places::roots(home.as_deref(), &media);
+            places::addable(&roots, &places::canonical_all(refused), &place)
+        });
+        let canonical = match tokio::time::timeout(PLACE_TIMEOUT, job).await {
+            Err(_) => return Err(err(ErrorCode::Busy, "That disk is slow to answer. Try again.")),
+            Ok(Err(_)) => return Err(err(ErrorCode::Internal, "The check failed.")),
+            Ok(Ok(result)) => result.map_err(places::PlaceError::into_rpc)?,
+        };
+        let (folder, added) = self.add_checked(canonical, label).await?;
+        if added && let Some(by) = by.filter(|o| o.kind == OriginKind::Phone) {
+            let device = by.device_name.unwrap_or_default();
+            notify(self, Note::PhoneAddedFolder { device, label: folder.label.clone(), place: shown });
+        }
+        Ok(folder)
+    }
+
+    /// The roots' folders in a place, or the roots for an empty one.
+    pub async fn places_list(&self, params: PlacesListParams) -> Result<PlacesListResult, RpcError> {
+        let (home, media, refused) = self.place_inputs();
+        let folders: Vec<(String, String)> =
+            self.lock_reg().folders.iter().map(|f| (f.path.clone(), f.id.clone())).collect();
+        let job = tokio::task::spawn_blocking(move || {
+            let roots = places::roots(home.as_deref(), &media);
+            places::list(
+                &roots,
+                &places::canonical_all(refused),
+                &folders,
+                &params.place,
+                params.offset.unwrap_or(0),
+            )
+        });
+        match tokio::time::timeout(PLACE_TIMEOUT, job).await {
+            Err(_) => Err(err(ErrorCode::Busy, "That disk is slow to answer. Try again.")),
+            Ok(Err(_)) => Err(err(ErrorCode::Internal, "The listing failed.")),
+            Ok(Ok(result)) => result.map_err(places::PlaceError::into_rpc),
+        }
+    }
+
+    /// Home, the folders disks are mounted in, and the directories a place
+    /// may never be in or hold: G7's own, the agents' and the user's keys.
+    fn place_inputs(&self) -> (Option<PathBuf>, Vec<PathBuf>, Vec<PathBuf>) {
+        let env = &self.config.env;
+        let home = env::lookup(env, "HOME").map(PathBuf::from).filter(|p| p.is_absolute());
+        let user = env::lookup(env, "USER").and_then(|u| u.to_str()).filter(|u| places::plain_name(u));
+        let media = user
+            .map(|u| vec![Path::new("/run/media").join(u), Path::new("/media").join(u)])
+            .unwrap_or_default();
+        let mut refused = vec![
+            self.config.data_dir.clone(),
+            self.config.claude_home.clone(),
+            self.config.codex_home.clone(),
+        ];
+        if let Some(config) =
+            env::lookup(env, "XDG_CONFIG_HOME").map(PathBuf::from).filter(|p| p.is_absolute())
+        {
+            refused.push(config);
+        }
+        if let Some(home) = &home {
+            for hidden in [".config", ".local", ".ssh", ".gnupg", ".claude", ".codex"] {
+                refused.push(home.join(hidden));
+            }
+        }
+        (home, media, refused)
+    }
+
+    /// Adds a folder already checked and canonical; whether it is new. The
+    /// caller holds `folders_lock`.
+    async fn add_checked(
+        &self,
+        canonical: PathBuf,
+        label: Option<String>,
+    ) -> Result<(Folder, bool), RpcError> {
         let Some(canonical_str) = canonical.to_str().map(str::to_owned) else {
             return Err(err(ErrorCode::BadRequest, "That path isn't valid text."));
         };
@@ -846,21 +967,27 @@ impl Host {
         let (folder, list) = {
             let reg = self.lock_reg();
             if let Some(existing) = reg.folders.iter().find(|f| f.path == canonical_str) {
-                return Ok(Folder { exists: true, ..existing.clone() });
+                let id = existing.id.clone();
+                drop(reg);
+                let folder = self.listed_folder(&id).ok_or_else(|| err(ErrorCode::Internal, "lost"))?;
+                return Ok((folder, false));
             }
             if reg.folders.len() >= MAX_FOLDERS {
-                return Err(err(ErrorCode::Limit, "You can list up to 64 folders."));
+                return Err(err(ErrorCode::Limit, format!("You can list up to {MAX_FOLDERS} folders.")));
             }
             let mut id = format!("f{}", random_hex(6));
             while reg.folders.iter().any(|f| f.id == id) {
                 id = format!("f{}", random_hex(6));
             }
+            let added_ms = now_ms();
             let folder = Folder {
                 id,
                 label,
+                repo: std::fs::symlink_metadata(canonical.join(".git")).is_ok(),
                 path: canonical_str,
                 exists: true,
-                added_ms: now_ms(),
+                added_ms,
+                used_ms: added_ms,
                 mcp: true,
                 mcp_seen: Vec::new(),
                 checkpoints: true,
@@ -883,7 +1010,7 @@ impl Host {
             self.free_brought_in(&mut reg);
         }
         self.hub.broadcast(&Event::FoldersChanged(FoldersListResult { folders: self.folders_list() }));
-        Ok(folder)
+        Ok((folder, true))
     }
 
     /// Threads brought in from outside every folder whose working directory
@@ -998,7 +1125,7 @@ impl Host {
         };
         self.hub.broadcast(&Event::FoldersChanged(FoldersListResult { folders: self.folders_list() }));
         let folder = folder.ok_or_else(|| err(ErrorCode::NotFound, "No such folder."))?;
-        Ok(Folder { exists: Path::new(&folder.path).is_dir(), ..folder })
+        self.listed_folder(&folder.id).ok_or_else(|| err(ErrorCode::NotFound, "No such folder."))
     }
 
     // ---- Threads ----
@@ -1224,6 +1351,8 @@ impl Host {
             self.remember_prompt(&p.prompt, &p.origin);
         }
         self.draft_sent(&format!("new:{}", p.folder_id), &p.origin);
+        // The folder is now the most recently used one.
+        self.hub.broadcast(&Event::FoldersChanged(FoldersListResult { folders: self.folders_list() }));
         Ok(info)
     }
 
@@ -3414,6 +3543,8 @@ impl Host {
             path: path.to_string_lossy().into_owned(),
             exists: true,
             added_ms: 0,
+            used_ms: 0,
+            repo: false,
             mcp: true,
             mcp_seen: Vec::new(),
             checkpoints: true,
@@ -3626,6 +3757,7 @@ mod tests {
                 }
                 Note::PhoneGit { device, .. } => format!("git {device}"),
                 Note::PhoneScript { device, script, .. } => format!("script {device} {script}"),
+                Note::PhoneAddedFolder { device, label, .. } => format!("folder {device} {label}"),
             });
         }
         seen

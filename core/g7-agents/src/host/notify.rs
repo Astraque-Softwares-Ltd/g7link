@@ -71,6 +71,13 @@ pub enum Note {
         device: String,
         did: GitDid,
     },
+    /// A phone added an agent folder (new thread §2.5).
+    PhoneAddedFolder {
+        device: String,
+        label: String,
+        /// Where it is, as the phone named it ("Local Disk/code/barber").
+        place: String,
+    },
     /// A phone ran one of the folder's scripts in a thread (phase 6, §X3.4).
     PhoneScript {
         thread: ThreadInfo,
@@ -103,6 +110,7 @@ impl Note {
             Note::LimitReset { agent, .. } => format!("limit:{}", agent.as_str()),
             Note::PhoneGit { thread, .. } => format!("git:{}", thread.id),
             Note::PhoneScript { thread, .. } => format!("script:{}", thread.id),
+            Note::PhoneAddedFolder { place, .. } => format!("folder:{place}"),
         }
     }
 
@@ -111,6 +119,7 @@ impl Note {
         match self {
             Note::LimitReset { thread, .. } => thread.as_ref().map(|t| t.id.clone()),
             Note::PhoneGit { thread, .. } | Note::PhoneScript { thread, .. } => Some(thread.id.clone()),
+            Note::PhoneAddedFolder { .. } => None,
             _ => Some(self.key()),
         }
     }
@@ -278,6 +287,17 @@ pub fn render(note: &Note) -> Option<Rendered> {
             ),
             body: first_line(&thread.title, MAX_BODY_LINE),
             actions: vec![("default", "Open")],
+            critical: false,
+            token: None,
+        }),
+        Note::PhoneAddedFolder { device, label, place } => Some(Rendered {
+            summary: format!(
+                "{} added \u{201c}{}\u{201d} to your agent folders",
+                first_line(device, MAX_BODY_LINE),
+                first_line(label, MAX_BODY_LINE)
+            ),
+            body: first_line(place, MAX_BODY_LINE),
+            actions: Vec::new(),
             critical: false,
             token: None,
         }),

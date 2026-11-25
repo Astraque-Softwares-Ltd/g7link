@@ -22,7 +22,15 @@ pub const MAX_CLIENTS: usize = 16;
 /// Lines queued for one client before deltas are dropped.
 pub const CLIENT_QUEUE: usize = 1024;
 /// Folders listed.
-pub const MAX_FOLDERS: usize = 64;
+pub const MAX_FOLDERS: usize = 256;
+/// A place (`places.list`, `folders.add` by place): bytes in all, segments
+/// below its root, and bytes per segment.
+pub const MAX_FOLDER_PLACE: usize = 1024;
+pub const MAX_FOLDER_PLACE_SEGMENTS: usize = 16;
+pub const MAX_FOLDER_PLACE_NAME: usize = 255;
+/// Folders one `places.list` answer holds, and directory entries it reads.
+pub const MAX_FOLDER_PLACE_ENTRIES: usize = 200;
+pub const MAX_FOLDER_PLACE_READ: usize = 4000;
 /// Threads kept on disk; the oldest not running are pruned first.
 pub const MAX_THREADS_KEPT: usize = 200;
 /// Threads `working` or `waiting` at once, all agents together.
@@ -464,6 +472,7 @@ pub mod method {
     pub const FOLDERS_LIST: &str = "folders.list";
     pub const FOLDERS_ADD: &str = "folders.add";
     pub const FOLDERS_REMOVE: &str = "folders.remove";
+    pub const PLACES_LIST: &str = "places.list";
     pub const THREADS_LIST: &str = "threads.list";
     pub const THREAD_START: &str = "thread.start";
     pub const THREAD_SEND: &str = "thread.send";
@@ -1350,6 +1359,10 @@ pub struct ModelInfo {
     /// A short name (Claude's `opus`, `sonnet`): listed first.
     #[serde(default)]
     pub short: bool,
+    /// The exact model it stands for ("Opus 5"), when the CLI says: shown in
+    /// place of `name`, which for an alias is only "Opus" or "Default".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exact: Option<String>,
 }
 
 impl ModelInfo {
@@ -1373,6 +1386,11 @@ impl ModelInfo {
             default_effort: self.default_effort.as_ref().and_then(effort),
             images: self.images,
             short: self.short,
+            exact: self
+                .exact
+                .as_ref()
+                .map(|e| clean_cut(e.trim(), MAX_MODEL_NAME).0)
+                .filter(|e| !e.is_empty()),
         })
     }
 }
@@ -1659,6 +1677,13 @@ pub struct Folder {
     #[serde(default)]
     pub exists: bool,
     pub added_ms: u64,
+    /// When a thread here was last started or last moved, else `added_ms`.
+    /// Computed when the list is read; never stored.
+    #[serde(default)]
+    pub used_ms: u64,
+    /// The folder holds a `.git` of its own. Computed when the list is read.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub repo: bool,
     /// Threads here load the user's own MCP servers (from their next process).
     #[serde(default = "yes")]
     pub mcp: bool,
@@ -3238,9 +3263,48 @@ pub struct FoldersListResult {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FoldersAddParams {
-    pub path: String,
+    /// Absolute: a PC client's choice. Exactly one of `path` and `place`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
+    /// A place from `places.list` (a phone's choice): never a root itself,
+    /// never hidden, never inside G7's own directories.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub place: Option<String>,
+    /// Who chose it; a phone's add is shown on the PC.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub by: Option<Origin>,
+}
+
+/// `places.list`: the roots for an empty `place`, else the folders in it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlacesListParams {
+    #[serde(default)]
+    pub place: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offset: Option<u32>,
+}
+
+/// One folder in a place: its name only.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Place {
+    pub name: String,
+    /// It holds a `.git` of its own.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub repo: bool,
+    /// It is already one of the agent folders.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folder_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlacesListResult {
+    pub place: String,
+    pub entries: Vec<Place>,
+    /// More folders than this answer holds.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub more: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -5630,6 +5694,8 @@ mod tests {
             path: "/a".into(),
             exists: true,
             added_ms: 9,
+            used_ms: 0,
+            repo: false,
             mcp: true,
             mcp_seen: Vec::new(),
             checkpoints: false,
@@ -6105,6 +6171,7 @@ mod tests {
             (method::IMPORT_CANCEL, "import.cancel"),
             (method::SESSION_PREVIEW, "session.preview"),
             (method::STORE_INFO, "store.info"),
+            (method::PLACES_LIST, "places.list"),
             (event::THREAD_TURN, "thread.turn"),
             (event::THREAD_CUT, "thread.cut"),
             (event::IMPORT_PROGRESS, "import.progress"),

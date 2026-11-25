@@ -331,6 +331,49 @@ async fn folders_add_list_remove() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_phone_browses_home_and_adds_a_folder_below_it() {
+    let host = TestHost::start(Options::default()).await;
+    let (client, _events) = host.client(ClientKind::Link).await;
+    let home = host.dir.path().join("home");
+    std::fs::create_dir_all(home.join("code/orbit/.git")).unwrap();
+    std::fs::create_dir_all(home.join("code/plain")).unwrap();
+    std::fs::create_dir_all(home.join(".hidden")).unwrap();
+    let names = |r: &PlacesListResult| r.entries.iter().map(|e| e.name.clone()).collect::<Vec<_>>();
+    // No USER in the test host's environment: Home is the only root.
+    let roots = client.places_list(String::new(), None).await.unwrap();
+    assert_eq!(names(&roots), ["Home"]);
+    let code = client.places_list("Home/code".into(), None).await.unwrap();
+    assert_eq!(names(&code), ["orbit", "plain"]);
+    assert!(code.entries[0].repo && !code.entries[1].repo);
+    assert!(!names(&client.places_list("Home".into(), None).await.unwrap()).contains(&".hidden".to_owned()));
+
+    let phone = Some(Origin::phone("d1", "Pixel"));
+    let added = client.folders_add_place("Home/code/orbit".into(), phone.clone()).await.unwrap();
+    assert_eq!(added.label, "orbit");
+    assert!(added.repo && added.exists && added.used_ms >= added.added_ms);
+    let code = client.places_list("Home/code".into(), None).await.unwrap();
+    assert_eq!(code.entries[0].folder_id.as_deref(), Some(added.id.as_str()));
+    // The same place again, or by its path from the PC, is the same folder.
+    assert_eq!(client.folders_add_place("Home/code/orbit".into(), phone.clone()).await.unwrap().id, added.id);
+    let by_path = home.join("code/orbit").to_string_lossy().into_owned();
+    assert_eq!(client.folders_add(by_path, None).await.unwrap().id, added.id);
+    for (place, code) in [
+        ("Home", ErrorCode::Denied),
+        ("Home/../work", ErrorCode::BadRequest),
+        ("Home/.hidden", ErrorCode::BadRequest),
+        ("Home/missing", ErrorCode::NotFound),
+        ("Elsewhere/code", ErrorCode::NotFound),
+    ] {
+        let err = client.folders_add_place(place.into(), phone.clone()).await.unwrap_err();
+        assert_eq!(err.code(), Some(code), "{place}");
+    }
+    let listed = client.folders_list().await.unwrap();
+    assert_eq!(listed.len(), 1);
+    assert!(listed[0].repo);
+    host.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn claude_streams_a_turn_to_done() {
     let host = TestHost::start(Options::default()).await;
     let (client, mut events) = host.subscribed().await;

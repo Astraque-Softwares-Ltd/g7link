@@ -22,6 +22,7 @@ pub mod git;
 pub mod marks;
 pub mod notify;
 pub mod phone;
+pub mod places;
 pub mod plan;
 pub mod ports;
 pub mod presence;
@@ -1326,8 +1327,16 @@ impl Host {
             method::FOLDERS_LIST => to_value(&FoldersListResult { folders: self.folders_list() }),
             method::FOLDERS_ADD => {
                 let p: FoldersAddParams = parse(params)?;
-                let folder = self.folders_add(p.path, p.label).await?;
+                let folder = match (p.path, p.place) {
+                    (Some(path), None) => self.folders_add(path, p.label).await?,
+                    (None, Some(place)) => self.folders_add_place(place, p.label, p.by).await?,
+                    _ => return Err(RpcError::new(ErrorCode::BadRequest, "Name a path or a place.")),
+                };
                 to_value(&FolderResult { folder })
+            }
+            method::PLACES_LIST => {
+                let p: PlacesListParams = parse(params)?;
+                to_value(&self.places_list(p).await?)
             }
             method::FOLDERS_REMOVE => {
                 let p: FoldersRemoveParams = parse(params)?;

@@ -467,9 +467,20 @@ pub mod calls {
     }
 
     pub fn folders_add(path: String, label: Option<String>) -> Call<Folder> {
-        Call::new(method::FOLDERS_ADD, &FoldersAddParams { path, label }, |v| {
-            parse_as::<FolderResult>(v).map(|r| r.folder)
-        })
+        let params = FoldersAddParams { path: Some(path), label, place: None, by: None };
+        Call::new(method::FOLDERS_ADD, &params, |v| parse_as::<FolderResult>(v).map(|r| r.folder))
+    }
+
+    /// Adds a place from [`places_list`]: the same rules as a phone's choice;
+    /// `by` names the phone that chose it, so the PC is told.
+    pub fn folders_add_place(place: String, by: Option<Origin>) -> Call<Folder> {
+        let params = FoldersAddParams { path: None, label: None, place: Some(place), by };
+        Call::new(method::FOLDERS_ADD, &params, |v| parse_as::<FolderResult>(v).map(|r| r.folder))
+    }
+
+    /// The roots for an empty `place`, else one page of the folders in it.
+    pub fn places_list(place: String, offset: Option<u32>) -> Call<PlacesListResult> {
+        Call::new(method::PLACES_LIST, &PlacesListParams { place, offset }, parse_as)
     }
 
     pub fn folders_remove(id: String) -> Call<()> {
@@ -983,6 +994,8 @@ macro_rules! with_calls {
             agents_list(refresh: bool) -> Vec<AgentInfo>;
             folders_list() -> Vec<Folder>;
             folders_add(path: String, label: Option<String>) -> Folder;
+            folders_add_place(place: String, by: Option<Origin>) -> Folder;
+            places_list(place: String, offset: Option<u32>) -> PlacesListResult;
             folders_remove(id: String) -> ();
             threads_list(limit: Option<u32>, before_ms: Option<u64>) -> Vec<ThreadInfo>;
             thread_start(params: ThreadStartParams) -> ThreadInfo;
