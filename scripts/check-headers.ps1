@@ -9,6 +9,8 @@ Push-Location (Split-Path -Parent $PSScriptRoot)
 
 # Which license a source file must declare (mirrors LICENSE).
 function Get-ExpectedLicense([string]$path) {
+    # Anthropic's and OpenAI's marks, drawn as paths: not licensed (TRADEMARKS.md).
+    if ($path -eq "desktop/app/qml/components/AgentMarks.qml") { return "LicenseRef-Trademark" }
     if ($path -like "core/g7link-cli/*") { return "GPL-3.0-or-later" }
     if ($path -like "core/*") { return "MPL-2.0" }
     return "GPL-3.0-or-later"
