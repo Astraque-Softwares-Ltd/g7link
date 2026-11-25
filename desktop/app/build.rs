@@ -146,6 +146,7 @@ const QML_SINGLETONS: &[&str] = &[
     "qml/components/AgentGitGlyphs.qml",
     "qml/components/AgentProjects.qml",
     "qml/components/AgentMarks.qml",
+    "qml/components/AgentMotion.qml",
 ];
 
 /// Bundled fonts (in `assets/fonts`), compiled in under `:/fonts/`.

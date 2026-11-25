@@ -122,7 +122,7 @@ Item {
                         if (changes.recorded)
                             changes.openDiff(changes.turn, file.modelData.path)
                         else
-                            Agents.toggle(file.fileKey)
+                            AgentMotion.toggle(file.fileKey)
                     }
                     Accessible.role: Accessible.Button
                     Accessible.name: modelData.path
@@ -139,7 +139,12 @@ Item {
                         anchors.verticalCenter: parent.verticalCenter
                         width: 13
                         height: 13
-                        path: file.modelData.open ? Icons.chevronDown : Icons.chevronRight
+                        path: Icons.chevronRight
+                        rotation: file.modelData.open ? 90 : 0
+                        Behavior on rotation {
+                            enabled: AgentMotion.gliding
+                            NumberAnimation { duration: AgentMotion.turnMs; easing.type: Easing.BezierSpline; easing.bezierCurve: Theme.easeMove }
+                        }
                         color: Theme.surfaceContentVariant
                     }
                     Txt {

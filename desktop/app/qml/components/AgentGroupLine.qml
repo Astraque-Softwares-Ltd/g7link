@@ -59,7 +59,7 @@ Item {
 
     Accessible.role: Accessible.Button
     Accessible.name: line
-    Accessible.onPressAction: Agents.toggle(group.key)
+    Accessible.onPressAction: AgentMotion.toggle(group.key)
 
     Rectangle {
         anchors.fill: parent
@@ -101,7 +101,7 @@ Item {
     MouseArea {
         anchors.fill: parent
         cursorShape: Qt.PointingHandCursor
-        onClicked: Agents.toggle(group.key)
+        onClicked: AgentMotion.toggle(group.key)
     }
     // The hairline of an opened group or fold: the only nesting mark.
     Rectangle {

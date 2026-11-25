@@ -104,7 +104,7 @@ Item {
 
     Accessible.role: openable ? Accessible.Button : Accessible.StaticText
     Accessible.name: parts[0] + parsed.object + parts[1]
-    Accessible.onPressAction: if (tool.openable) Agents.toggle(tool.key)
+    Accessible.onPressAction: if (tool.openable) AgentMotion.toggle(tool.key)
 
     Rectangle {
         anchors.fill: parent
@@ -231,7 +231,7 @@ Item {
         anchors.fill: parent
         enabled: tool.openable
         cursorShape: Qt.PointingHandCursor
-        onClicked: Agents.toggle(tool.key)
+        onClicked: AgentMotion.toggle(tool.key)
     }
     // The hairline of an opened group or fold: the only nesting mark.
     Rectangle {

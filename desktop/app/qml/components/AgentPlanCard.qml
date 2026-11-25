@@ -103,7 +103,7 @@ Item {
             height: parent.height
             enabled: card.status === "replaced"
             cursorShape: Qt.PointingHandCursor
-            onClicked: Agents.toggle(card.toggleKey)
+            onClicked: AgentMotion.toggle(card.toggleKey)
         }
     }
 
@@ -120,7 +120,7 @@ Item {
             text: card.isOpen ? qsTr("Show less") : qsTr("Show the whole plan")
             iconPath: card.isOpen ? Icons.chevronUp : Icons.chevronDown
             iconColor: Theme.surfaceContentVariant
-            onClicked: Agents.toggle(card.toggleKey)
+            onClicked: AgentMotion.toggle(card.toggleKey)
         }
         Rectangle {
             visible: card.proposed

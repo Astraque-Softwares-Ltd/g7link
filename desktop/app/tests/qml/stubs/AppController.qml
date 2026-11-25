@@ -8,6 +8,8 @@ QtObject {
     property list<string> ringingDevices
     property bool systemDark: false
     property bool reduceMotion: true
+    // KDE's animation speed (1: as designed).
+    property real motionFactor: 1
     property bool powerSaver: false
     property string launcherTheme: ""
     property string currentPage: "home"

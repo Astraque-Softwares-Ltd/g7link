@@ -27,7 +27,7 @@ Item {
 
     Accessible.role: Accessible.Button
     Accessible.name: label.text
-    Accessible.onPressAction: Agents.toggle(fold.key)
+    Accessible.onPressAction: AgentMotion.toggle(fold.key)
 
     Row {
         id: line
@@ -38,7 +38,13 @@ Item {
             anchors.verticalCenter: parent.verticalCenter
             width: 14
             height: 14
-            path: fold.isOpen ? Icons.chevronDown : Icons.chevronRight
+            // Turns as the fold opens, rather than swapping.
+            path: Icons.chevronRight
+            rotation: fold.isOpen ? 90 : 0
+            Behavior on rotation {
+                enabled: AgentMotion.gliding
+                NumberAnimation { duration: AgentMotion.turnMs; easing.type: Easing.BezierSpline; easing.bezierCurve: Theme.easeMove }
+            }
             color: Theme.surfaceContentVariant
         }
         Txt {
@@ -60,7 +66,7 @@ Item {
     MouseArea {
         anchors.fill: parent
         cursorShape: Qt.PointingHandCursor
-        onClicked: Agents.toggle(fold.key)
+        onClicked: AgentMotion.toggle(fold.key)
     }
     // The hairline of an opened group or fold: the only nesting mark.
     Rectangle {

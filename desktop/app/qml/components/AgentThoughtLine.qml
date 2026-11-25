@@ -21,7 +21,7 @@ Item {
 
     Accessible.role: thought.hasText ? Accessible.Button : Accessible.StaticText
     Accessible.name: line
-    Accessible.onPressAction: if (thought.hasText) Agents.toggle(thought.key)
+    Accessible.onPressAction: if (thought.hasText) AgentMotion.toggle(thought.key)
 
     Icon {
         visible: thought.hasText
@@ -29,7 +29,12 @@ Item {
         y: 7
         width: 14
         height: 14
-        path: thought.isOpen ? Icons.chevronDown : Icons.chevronRight
+        path: Icons.chevronRight
+        rotation: thought.isOpen ? 90 : 0
+        Behavior on rotation {
+            enabled: AgentMotion.gliding
+            NumberAnimation { duration: AgentMotion.turnMs; easing.type: Easing.BezierSpline; easing.bezierCurve: Theme.easeMove }
+        }
         color: Theme.surfaceContentVariant
     }
     Icon {
@@ -57,7 +62,7 @@ Item {
         anchors.fill: parent
         enabled: thought.hasText
         cursorShape: Qt.PointingHandCursor
-        onClicked: Agents.toggle(thought.key)
+        onClicked: AgentMotion.toggle(thought.key)
     }
     // The hairline of an opened group or fold: the only nesting mark.
     Rectangle {

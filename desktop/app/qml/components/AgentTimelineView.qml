@@ -62,6 +62,9 @@ ListView {
         return count > 0 ? AgentTimeline.itemIdAt(count - 1) : ""
     }
     function checkNewBelow() {
+        // What the reader opened isn't news from below.
+        if (AgentMotion.gliding)
+            return
         if (!follow && !newBelow && count > 0 && newestItem() !== newestSeen)
             newBelow = true
     }
@@ -95,12 +98,73 @@ ListView {
         }
     }
     onAtYEndChanged: if (atYEnd) follow = true
-    onContentHeightChanged: if (follow) Qt.callLater(() => timeline.positionViewAtEnd())
+    // While a click's rows settle, the clicked row stays where it is: no going
+    // to the end for what it opened.
+    onContentHeightChanged: if (follow && !AgentMotion.gliding) Qt.callLater(() => timeline.positionViewAtEnd())
     onCountChanged: {
+        if (AgentMotion.gliding)
+            return
         if (follow)
             Qt.callLater(() => timeline.positionViewAtEnd())
         else
             checkNewBelow()
+    }
+
+    // A click's rows came or went: they settle, then the view follows the end
+    // again only if the end is still in view, as on the phone.
+    Connections {
+        target: AgentTimeline
+        function onRowsInserted() { AgentMotion.landed() }
+        function onRowsRemoved() { AgentMotion.landed() }
+    }
+    Connections {
+        target: AgentMotion
+        function onGlidingChanged() {
+            if (AgentMotion.gliding)
+                return
+            if (timeline.follow && !timeline.atYEnd)
+                timeline.follow = false
+            else if (!timeline.follow)
+                timeline.newestSeen = timeline.newestItem()
+        }
+    }
+
+    // Opened rows fade in as the rows below slide down; closed ones fade out
+    // as the rest slide up. Only while a click's rows settle (AgentMotion).
+    add: Transition {
+        enabled: AgentMotion.gliding
+        SequentialAnimation {
+            PropertyAction { property: "opacity"; value: 0 }
+            PauseAnimation { duration: AgentMotion.inDelay }
+            NumberAnimation {
+                property: "opacity"
+                to: 1
+                duration: AgentMotion.inMs
+                easing.type: Easing.BezierSpline
+                easing.bezierCurve: Theme.easeEnter
+            }
+        }
+    }
+    remove: Transition {
+        enabled: AgentMotion.gliding
+        NumberAnimation {
+            property: "opacity"
+            to: 0
+            duration: AgentMotion.outMs
+            easing.type: Easing.BezierSpline
+            easing.bezierCurve: Theme.easeExit
+        }
+    }
+    displaced: Transition {
+        enabled: AgentMotion.gliding
+        NumberAnimation {
+            property: "y"
+            duration: AgentMotion.moveMs
+            easing.type: Easing.BezierSpline
+            easing.bezierCurve: Theme.easeMove
+        }
+        // A row moved while it was still fading in ends up fully shown.
+        NumberAnimation { property: "opacity"; to: 1; duration: AgentMotion.moveMs }
     }
 
     // Scrolling up to read stops following the end.
@@ -253,7 +317,7 @@ ListView {
         height: 30
         Accessible.role: asked.hasText ? Accessible.Button : Accessible.StaticText
         Accessible.name: asked.line
-        Accessible.onPressAction: if (asked.hasText) Agents.toggle(asked.key)
+        Accessible.onPressAction: if (asked.hasText) AgentMotion.toggle(asked.key)
         Rectangle {
             visible: asked.depth > 0
             x: (asked.depth - 1) * 18 + 8
@@ -283,7 +347,12 @@ ListView {
                 anchors.verticalCenter: parent.verticalCenter
                 width: 14
                 height: 14
-                path: asked.isOpen ? Icons.chevronUp : Icons.chevronDown
+                path: Icons.chevronDown
+                rotation: asked.isOpen ? 180 : 0
+                Behavior on rotation {
+                    enabled: AgentMotion.gliding
+                    NumberAnimation { duration: AgentMotion.turnMs; easing.type: Easing.BezierSpline; easing.bezierCurve: Theme.easeMove }
+                }
                 color: Theme.surfaceContentVariant
             }
         }
@@ -291,7 +360,7 @@ ListView {
             anchors.fill: parent
             enabled: asked.hasText
             cursorShape: Qt.PointingHandCursor
-            onClicked: Agents.toggle(asked.key)
+            onClicked: AgentMotion.toggle(asked.key)
         }
     }
 

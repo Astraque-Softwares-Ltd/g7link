@@ -54,6 +54,58 @@ Item {
 
         // Read further up, a new row at the end turns "Jump to latest" into
         // "New below"; following again (a send, or the button) clears it.
+        // A copy of row `i` as a plain object, under another key and item.
+        function rowCopy(i, key) {
+            const src = AgentTimeline.get(i)
+            const out = {}
+            for (const role in src) {
+                if (typeof src[role] !== "function" && role !== "objectName")
+                    out[role] = src[role]
+            }
+            out.key = key
+            out.itemId = key
+            return out
+        }
+        // Every row fully shown and right under the one before it.
+        function checkSettled(view) {
+            let prev = null
+            for (let i = 0; i < view.count; ++i) {
+                const item = view.itemAtIndex(i)
+                verify(item, "row " + i + " is laid out")
+                compare(item.opacity, 1, "row " + i + " is fully shown")
+                if (prev)
+                    compare(item.y, prev.y + prev.height + view.spacing, "row " + i + " sits under the one before")
+                prev = item
+            }
+        }
+
+        function test_a_clicks_rows_glide_and_end_in_place() {
+            AppController.reduceMotion = false
+            const view = createTemporaryObject(timelineView, root)
+            tryCompare(view, "count", AgentTimeline.count)
+            const count = AgentTimeline.count
+            // What a click opened fades in and the rows below slide down.
+            AgentMotion.toggle("g:glide")
+            AgentTimeline.insert(2, rowCopy(1, "glide1"))
+            tryCompare(view, "count", count + 1)
+            wait(30)
+            verify(view.itemAtIndex(2).opacity < 1, "it fades in")
+            tryCompare(AgentMotion, "gliding", false, 2000)
+            checkSettled(view)
+            // Closing it again: it fades out and the rest close the gap.
+            AgentMotion.toggle("g:glide")
+            AgentTimeline.remove(2)
+            tryCompare(AgentMotion, "gliding", false, 2000)
+            tryCompare(view, "count", count)
+            checkSettled(view)
+            // A row that streams in arrives as it is.
+            AgentTimeline.insert(2, rowCopy(1, "stream1"))
+            tryCompare(view, "count", count + 1)
+            compare(view.itemAtIndex(2).opacity, 1, "no motion without a click")
+            AgentTimeline.remove(2)
+            AppController.reduceMotion = true
+        }
+
         function test_rows_arriving_while_reading_up_say_new_below() {
             const view = createTemporaryObject(timelineView, root)
             tryCompare(view, "count", AgentTimeline.count)
