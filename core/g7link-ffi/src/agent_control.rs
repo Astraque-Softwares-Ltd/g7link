@@ -76,6 +76,11 @@ pub struct AgentModel {
     pub images: bool,
     /// A short name that follows the newest model (`opus`).
     pub short: bool,
+    /// The exact model it stands for ("Opus 5"), when the PC's CLI says:
+    /// show it in place of `name` (an alias's is only "Opus" or "Default").
+    /// Null: show `name`; never guess a version.
+    #[uniffi(default = None)]
+    pub exact: Option<String>,
 }
 
 quiet_debug!(AgentModel { id, is_default });
@@ -91,6 +96,7 @@ impl From<core::AgentModel> for AgentModel {
             default_effort: m.default_effort,
             images: m.images,
             short: m.short,
+            exact: m.exact,
         }
     }
 }

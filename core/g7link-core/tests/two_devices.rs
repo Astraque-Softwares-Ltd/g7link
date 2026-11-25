@@ -9805,6 +9805,7 @@ fn agent_catalog() -> g7link_core::AgentCatalog {
         }],
         modes: vec!["supervised".into(), "auto_edit".into()],
         push: false,
+        add_folders: false,
     }
 }
 
@@ -11337,6 +11338,7 @@ fn control_catalog() -> g7link_core::AgentCatalog {
         default_effort: Some("high".into()),
         images: true,
         short,
+        exact: (id != "default").then(|| "Opus 4.5".to_owned()),
     };
     let mut catalog = agent_catalog();
     catalog.agents[0].models =

@@ -341,6 +341,7 @@ fn catalog() -> g7link_core::AgentCatalog {
         }],
         modes: vec!["supervised".into()],
         push: false,
+        add_folders: false,
     }
 }
 

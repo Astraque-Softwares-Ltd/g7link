@@ -2648,6 +2648,7 @@ mod tests {
                 ..Default::default()
             }],
             push: true,
+            add_folders: false,
             ..Default::default()
         };
         let env = Envelope::new(types::AGENT_CATALOG, &catalog).unwrap();

@@ -229,6 +229,8 @@ pub const RPCS: &[RpcOp] = &[
     rpc(types::AGENT_WRITE, svc::AGENT, "write", false),
     rpc(types::AGENT_SESSION_REPLY, svc::AGENT, "session.reply", false),
     rpc(types::AGENT_SESSION_MOVE, svc::AGENT, "session.move", false),
+    rpc(types::AGENT_PLACES, svc::AGENT, "places", false),
+    rpc(types::AGENT_FOLDER_ADD, svc::AGENT, "folder.add", false),
     rpc(types::AGENT_HANDOFF_OPEN, svc::AGENT, "handoff.open", false),
     rpc(types::AGENT_SCRIPT_RUN, svc::AGENT, "script.run", false),
     rpc(types::AGENT_SCRIPT_STOP, svc::AGENT, "script.stop", false),
@@ -304,7 +306,8 @@ pub fn lane_of(t: &str) -> Option<Lane> {
         | AGENT_GIT_PROGRESS
         | AGENT_HANDOFF
         | AGENT_BESIDE
-        | AGENT_SCRIPT => Lane::Service(svc::AGENT),
+        | AGENT_SCRIPT
+        | AGENT_FOLDER_PROMPT => Lane::Service(svc::AGENT),
 
         MEDIA_FILE | MEDIA_FILE_META => Lane::Stream { svc: svc::MEDIA, op: "file" },
         MEDIA_ART | MEDIA_ART_META => Lane::Stream { svc: svc::MEDIA, op: "art" },
@@ -668,7 +671,7 @@ mod tests {
             assert_eq!(rpc_by_header(op.svc, op.op), Some(*op));
             assert_ne!(op.op, OP_LANE);
         }
-        assert_eq!(RPCS.len(), 89);
+        assert_eq!(RPCS.len(), 91);
         let paged: Vec<&str> = RPCS.iter().filter(|op| op.paged).map(|op| op.t).collect();
         assert_eq!(
             paged,

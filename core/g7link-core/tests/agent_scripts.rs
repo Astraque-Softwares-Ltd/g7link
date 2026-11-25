@@ -225,6 +225,7 @@ fn catalog() -> AgentCatalog {
         ],
         modes: vec!["supervised".into()],
         push: false,
+        add_folders: false,
     }
 }
 

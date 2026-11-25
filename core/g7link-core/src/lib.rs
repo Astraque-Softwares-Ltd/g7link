@@ -10,6 +10,7 @@ mod actions;
 mod adb_wifi;
 pub mod agent_beside;
 mod agent_cache;
+pub mod agent_folders;
 pub mod agent_git;
 pub mod agent_handoff;
 pub mod agent_history;
@@ -70,6 +71,7 @@ mod wire_stats;
 
 pub use actions::{PC_WAKE, PowerAction};
 pub use agent_beside::{AgentBeside, AgentPort};
+pub use agent_folders::{AgentFolderAdd, AgentFolderLast, AgentPlace, AgentPlaces, agent_places};
 pub use agent_git::{
     AgentBranch, AgentBranches, AgentCheck, AgentCheckCounts, AgentGhState, AgentGit, AgentGitChanged,
     AgentGitFile, AgentGitHub, AgentGitLast, AgentGitPatch, AgentGitPatchPage, AgentGitRemote,

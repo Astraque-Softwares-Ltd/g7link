@@ -363,6 +363,20 @@ pub enum AgentRequest {
     /// pull request `pr` (the host's `thread.send { purpose: "review", pr }`).
     /// Answered with `Thread`.
     AskReview { thread: String, pr: u32 },
+    // ---- New thread in any folder (`docs/protocol/agents.md` §15) ----
+    /// `agent.places`, after the core checked that this PC offers
+    /// `agent.places`, the toggle and the limits: the roots for an empty
+    /// `place`, else the folders in it from `offset` (the host's
+    /// `places.list`). Answered with `Places`.
+    Places { place: String, offset: Option<u32> },
+    /// `agent.folder.add`: make the folder at `place` an agent folder (the
+    /// host's `folders.add` by place, `by` the phone that asked). `ask`:
+    /// the phone's `agent_folders` toggle is off, so someone at the PC
+    /// approves it first (a sheet and a notification, with "Don't ask again
+    /// for this phone", which turns the toggle on); the core gives the
+    /// platform [`agent_places::ASK_SECS`] for that, and a refusal or no
+    /// answer is `Denied`. Answered with `FolderAdded`.
+    FolderAdd { place: String, ask: bool },
 }
 
 /// Never prints a prompt, text or token (protocol v0 §11).
@@ -601,6 +615,15 @@ impl std::fmt::Debug for AgentRequest {
             Self::AskReview { thread, pr } => {
                 f.debug_struct("AskReview").field("thread", thread).field("pr", pr).finish()
             }
+            // A place names folders: never printed.
+            Self::Places { place, offset } => f
+                .debug_struct("Places")
+                .field("depth", &place.split('/').filter(|p| !p.is_empty()).count())
+                .field("offset", offset)
+                .finish(),
+            Self::FolderAdd { ask, .. } => {
+                f.debug_struct("FolderAdd").field("ask", ask).finish_non_exhaustive()
+            }
         }
     }
 }
@@ -695,6 +718,10 @@ pub enum AgentReply {
     ScriptRuns(Vec<(crate::agent_scripts::AgentScriptRun, Option<DeviceId>)>),
     /// `PrDetail` (§13).
     PrDetail(crate::agent_git::AgentPrDetail),
+    /// `Places` (§15).
+    Places(g7link_protocol::messages::AgentPlaces),
+    /// `FolderAdd` (§15): the folder as the catalog lists it.
+    FolderAdded(g7link_protocol::messages::AgentCatalogFolder),
 }
 
 /// Never prints a thumbnail's bytes.
@@ -740,6 +767,8 @@ impl std::fmt::Debug for AgentReply {
             }
             Self::ScriptRuns(runs) => f.debug_tuple("ScriptRuns").field(&runs.len()).finish(),
             Self::PrDetail(detail) => f.debug_tuple("PrDetail").field(detail).finish(),
+            Self::Places(places) => f.debug_tuple("Places").field(places).finish(),
+            Self::FolderAdded(folder) => f.debug_tuple("FolderAdded").field(&folder.id).finish(),
         }
     }
 }
@@ -1186,10 +1215,16 @@ pub(crate) fn unwatch_on_platform(shared: &Shared, peer: DeviceId) {
 
 /// The catalog as a phone takes it: in full with `agent.control`, its
 /// legacy form otherwise; an empty one when there's none. `push`: that
-/// phone's `agent_push` (§8).
-fn catalog_env(catalog: Option<&AgentCatalog>, control: bool, push: bool) -> Option<Envelope> {
+/// phone's `agent_push` (§8); `add_folders`: its `agent_folders` (§15).
+fn catalog_env(
+    catalog: Option<&AgentCatalog>,
+    control: bool,
+    push: bool,
+    add_folders: bool,
+) -> Option<Envelope> {
     let mut catalog = catalog.cloned().unwrap_or_default();
     catalog.push = push && !catalog.agents.is_empty();
+    catalog.add_folders = add_folders && !catalog.agents.is_empty();
     let catalog = if control { catalog } else { catalog.for_legacy() };
     Envelope::new(types::AGENT_CATALOG, &catalog).ok()
 }
@@ -1202,10 +1237,11 @@ pub(crate) async fn send_catalog(shared: &Arc<Shared>, session: &Arc<Session>) {
     }
     let control = shared.control_with(&session.peer);
     let push = crate::agent_git::may_push(shared, &session.peer);
+    let add_folders = crate::agent_folders::may_add(shared, &session.peer);
     let env = {
         let mut inner = shared.agents.lock();
         inner.catalog_forms.insert(session.peer, control);
-        catalog_env(inner.catalog.as_ref(), control, push)
+        catalog_env(inner.catalog.as_ref(), control, push, add_folders)
     };
     if let Some(env) = env {
         let _ = session.send(env).await;
@@ -1262,7 +1298,7 @@ pub(crate) fn toggled(shared: &Arc<Shared>, peer: DeviceId, on: bool) {
             // The last word: nothing can be started or followed from here now.
             if shared.offers_agents()
                 && shared.peer_offers(&peer, agent::REMOTE)
-                && let Some(env) = catalog_env(None, false, false)
+                && let Some(env) = catalog_env(None, false, false, false)
             {
                 let _ = session.send(env).await;
             }
@@ -1398,7 +1434,8 @@ pub(crate) fn set_catalog(shared: &Arc<Shared>, catalog: Option<AgentCatalog>) {
     for recipient in recipients {
         inner.catalog_forms.insert(recipient.session.peer, recipient.control);
         let push = crate::agent_git::may_push(shared, &recipient.session.peer);
-        if let Some(env) = catalog_env(inner.catalog.as_ref(), recipient.control, push) {
+        let add_folders = crate::agent_folders::may_add(shared, &recipient.session.peer);
+        if let Some(env) = catalog_env(inner.catalog.as_ref(), recipient.control, push, add_folders) {
             let _ = recipient.session.send_now(env);
         }
     }
@@ -2012,9 +2049,20 @@ pub(crate) async fn ask_platform(
     peer: DeviceId,
     request: AgentRequest,
 ) -> std::result::Result<AgentReply, AgentFailure> {
+    ask_platform_within(shared, peer, request, PLATFORM_LIMIT).await
+}
+
+/// [`ask_platform`], giving the platform `limit` instead of [`PLATFORM_LIMIT`]
+/// (someone at the PC may be asked first).
+pub(crate) async fn ask_platform_within(
+    shared: &Arc<Shared>,
+    peer: DeviceId,
+    request: AgentRequest,
+    limit: Duration,
+) -> std::result::Result<AgentReply, AgentFailure> {
     let platform = shared.platform.clone();
     let task = tokio::task::spawn_blocking(move || platform.agent_request(&peer, request));
-    match tokio::time::timeout(PLATFORM_LIMIT, task).await {
+    match tokio::time::timeout(limit, task).await {
         Ok(Ok(reply)) => reply,
         Ok(Err(_)) | Err(_) => {
             tracing::warn!(peer = %peer.short(), "the agent host didn't answer");
@@ -2304,6 +2352,12 @@ pub(crate) async fn handle(
         t if crate::agent_move::is_request(t) => {
             crate::agent_move::handle_request(shared, peer, env, rsp).await?;
         }
+        t if crate::agent_folders::is_request(t) => {
+            crate::agent_folders::handle_request(shared, peer, env, rsp).await?;
+        }
+        types::AGENT_FOLDER_PROMPT if shared.we_offer(agent::REMOTE) => {
+            crate::agent_folders::prompt_arrived(shared, peer, env);
+        }
         t if crate::agent_handoff::is_message(t) => {
             crate::agent_handoff::handle(shared, peer, env, rsp).await?;
         }
@@ -2433,7 +2487,8 @@ pub(crate) async fn handle(
         | types::AGENT_SESSION_ITEM
         | types::AGENT_QUESTION
         | types::AGENT_QUESTIONED
-        | types::AGENT_DRAFT => {}
+        | types::AGENT_DRAFT
+        | types::AGENT_FOLDER_PROMPT => {}
         _ => return Ok(false),
     }
     Ok(true)
@@ -2444,7 +2499,7 @@ pub(crate) async fn handle(
 /// A PC's error reply as the core's error. `BUSY` is the generic failure
 /// here (`Error::Protocol` starting with `BUSY`), not `Denied`: `Denied`
 /// means the toggle is off.
-fn reply_error(err: ProtocolError) -> Error {
+pub(crate) fn reply_error(err: ProtocolError) -> Error {
     match err {
         ProtocolError::Remote { code: ErrorCode::Busy, msg } => Error::Protocol(format!("BUSY: {msg}")),
         other => other.into(),
@@ -2467,7 +2522,7 @@ where
 }
 
 /// The session with `peer` for a request it must offer `cap` for.
-fn session_offering(shared: &Arc<Shared>, peer: &DeviceId, cap: &str) -> Result<Arc<Session>> {
+pub(crate) fn session_offering(shared: &Arc<Shared>, peer: &DeviceId, cap: &str) -> Result<Arc<Session>> {
     let session = shared.session(peer).ok_or(Error::Offline)?;
     if !shared.peer_offers_cap(peer, cap) {
         return Err(Error::Unsupported);

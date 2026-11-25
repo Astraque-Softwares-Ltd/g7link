@@ -20,6 +20,7 @@ uniffi::setup_scaffolding!();
 
 mod agent_beside;
 mod agent_control;
+mod agent_folders;
 mod agent_git;
 mod agent_handoff;
 mod agent_history;
@@ -31,6 +32,7 @@ mod agent_scripts;
 
 pub use agent_beside::*;
 pub use agent_control::*;
+pub use agent_folders::*;
 pub use agent_git::*;
 pub use agent_handoff::*;
 pub use agent_history::*;
@@ -1207,6 +1209,13 @@ pub enum Event {
     PcCapturePrompt {
         id: String,
     },
+    /// PC `id` asks its user about the folder this phone asked to add at
+    /// `place`: show "Approve on <PC>" while `agent_folder_add` waits.
+    /// Ignore one for a place it no longer waits on (phones only).
+    AgentFolderPrompt {
+        id: String,
+        place: String,
+    },
     /// A recording of a PC's screen this phone started ended on the PC by
     /// itself. `transfer` brings the video named `name`, when it was saved
     /// (phones only).
@@ -1877,6 +1886,62 @@ pub struct AgentFolder {
     /// Its scripts, in order: only with `phone_scripts`.
     #[uniffi(default = [])]
     pub scripts: Vec<AgentScript>,
+    /// When a thread there was last started, else when it was added (Unix
+    /// ms); 0 from a PC that doesn't say. Recent folders come first.
+    #[uniffi(default = 0)]
+    pub used: u64,
+    /// It holds a git repository of its own.
+    #[uniffi(default = false)]
+    pub repo: bool,
+    /// What its newest thread ran with, its title and branch: the first
+    /// quick pick for a new thread there, and the folder's card.
+    #[uniffi(default = None)]
+    pub last: Option<AgentFolderLast>,
+}
+
+/// A folder's newest thread: the agent, model and effort it ran with (null
+/// model: the agent's default; null effort: the model's), its title, and
+/// the branch it was on.
+#[derive(Clone, PartialEq, Eq, uniffi::Record)]
+pub struct AgentFolderLast {
+    pub agent: String,
+    pub model: Option<String>,
+    pub effort: Option<String>,
+    pub title: String,
+    pub branch: Option<String>,
+}
+
+impl std::fmt::Debug for AgentFolderLast {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AgentFolderLast")
+            .field("agent", &self.agent)
+            .field("model", &self.model)
+            .field("effort", &self.effort)
+            .finish_non_exhaustive()
+    }
+}
+
+impl From<core::AgentFolderLast> for AgentFolderLast {
+    fn from(l: core::AgentFolderLast) -> Self {
+        AgentFolderLast { agent: l.agent, model: l.model, effort: l.effort, title: l.title, branch: l.branch }
+    }
+}
+
+impl From<core::AgentCatalogFolder> for AgentFolder {
+    fn from(f: core::AgentCatalogFolder) -> Self {
+        AgentFolder {
+            id: f.id,
+            label: f.label,
+            checkpoints: f.checkpoints,
+            follow_remote: f.follow_remote,
+            phone_scripts: f.phone_scripts,
+            script_count: f.script_count,
+            scripts: f.scripts.into_iter().map(Into::into).collect(),
+            used: f.used,
+            repo: f.repo,
+            last: f.last.map(Into::into),
+        }
+    }
 }
 
 impl std::fmt::Debug for AgentFolder {
@@ -1907,6 +1972,11 @@ pub struct AgentCatalog {
     /// open pull requests” for this phone in G7 Link on %1."
     #[uniffi(default = false)]
     pub push: bool,
+    /// This phone adds folders without the PC asking first (its "Add
+    /// folders without asking" switch there). Off: say "<PC> asks you the
+    /// first time" before the user picks a new folder.
+    #[uniffi(default = false)]
+    pub add_folders: bool,
 }
 
 impl AgentCatalog {
@@ -1935,24 +2005,13 @@ impl From<core::AgentCatalog> for AgentCatalog {
                     limits: a.limits.into_iter().map(Into::into).collect(),
                 })
                 .collect(),
-            folders: c
-                .folders
-                .into_iter()
-                .map(|f| AgentFolder {
-                    id: f.id,
-                    label: f.label,
-                    checkpoints: f.checkpoints,
-                    follow_remote: f.follow_remote,
-                    phone_scripts: f.phone_scripts,
-                    script_count: f.script_count,
-                    scripts: f.scripts.into_iter().map(Into::into).collect(),
-                })
-                .collect(),
+            folders: c.folders.into_iter().map(Into::into).collect(),
             // A mode this build doesn't know can't be started from here.
             modes: c.modes.iter().filter_map(|m| AgentMode::from_wire(m)).collect(),
             can_say_why: false,
             can_control: false,
             push: c.push,
+            add_folders: c.add_folders,
         }
     }
 }
@@ -4339,6 +4398,9 @@ impl Event {
                 Event::RemoteInputRequested { id: device.to_string() }
             }
             NodeEvent::PcCapturePrompt { device } => Event::PcCapturePrompt { id: device.to_string() },
+            NodeEvent::AgentFolderPrompt { device, place } => {
+                Event::AgentFolderPrompt { id: device.to_string(), place }
+            }
             NodeEvent::PcCaptureRecordEnded { device, file } => Event::PcCaptureRecordEnded {
                 id: device.to_string(),
                 transfer: file.as_ref().map(|f| f.transfer.clone()),
@@ -7794,7 +7856,13 @@ mod tests {
     #[test]
     fn a_catalog_says_whether_the_pc_takes_words_with_a_denial() {
         let pc = core::DeviceId([3; 32]);
-        let catalog = core::AgentCatalog { agents: vec![], folders: vec![], modes: vec![], push: false };
+        let catalog = core::AgentCatalog {
+            agents: vec![],
+            folders: vec![],
+            modes: vec![],
+            push: false,
+            add_folders: false,
+        };
         for (can_say_why, can_control) in [(false, false), (true, false), (false, true)] {
             let event = NodeEvent::AgentCatalog {
                 device: pc,
@@ -7845,11 +7913,27 @@ mod tests {
                     name: "dev".into(),
                     command: "npm run dev".into(),
                 }],
+                used: 1_795_000_000_000,
+                repo: true,
+                last: Some(core::AgentFolderLast {
+                    agent: "claude".into(),
+                    model: Some("opus".into()),
+                    effort: Some("high".into()),
+                    title: "Fix the build".into(),
+                    branch: Some("main".into()),
+                }),
             }],
             modes: vec!["supervised".into(), "plan".into(), "full_access".into()],
             push: true,
+            add_folders: true,
         });
-        assert!(catalog.push && catalog.folders[0].follow_remote);
+        assert!(catalog.push && catalog.add_folders && catalog.folders[0].follow_remote);
+        assert!(catalog.folders[0].repo && catalog.folders[0].used == 1_795_000_000_000);
+        let last = catalog.folders[0].last.clone().expect("the newest thread");
+        assert_eq!(
+            (last.agent.as_str(), last.model.as_deref(), last.branch.as_deref()),
+            ("claude", Some("opus"), Some("main"))
+        );
         assert!(catalog.folders[0].phone_scripts && catalog.folders[0].script_count == 1);
         assert_eq!(catalog.folders[0].scripts[0].command, "npm run dev");
         assert_eq!(catalog.modes, vec![AgentMode::Supervised, AgentMode::Plan]);

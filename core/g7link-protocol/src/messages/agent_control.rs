@@ -80,6 +80,11 @@ pub struct AgentModel {
     /// A short name that follows the newest model (`opus`): listed first.
     #[serde(default, skip_serializing_if = "Not::not")]
     pub short: bool,
+    /// The exact model it stands for ("Opus 5"), when the agent's CLI says:
+    /// shown in place of `name`, which for an alias is only "Opus" or
+    /// "Default". Absent: show `name`, never a guessed version.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exact: Option<String>,
 }
 
 /// Never prints the description.
@@ -102,6 +107,7 @@ impl AgentModel {
             && self.efforts.len() <= agent::MAX_EFFORTS
             && self.efforts.iter().all(|e| is_effort(e))
             && self.default_effort.as_deref().is_none_or(is_effort)
+            && fits_opt(&self.exact, agent::MAX_MODEL_NAME_BYTES)
     }
 
     /// The model within its limits: its name and note cleaned and cut, its
@@ -115,6 +121,7 @@ impl AgentModel {
             self.name = self.id.clone();
         }
         self.note = line_or_none(self.note, agent::MAX_MODEL_NOTE_BYTES);
+        self.exact = line_or_none(self.exact, agent::MAX_MODEL_NAME_BYTES);
         self.efforts.retain(|e| is_effort(e));
         self.efforts.truncate(agent::MAX_EFFORTS);
         if !self.default_effort.as_deref().is_none_or(is_effort) {
@@ -1150,6 +1157,7 @@ mod tests {
             default_effort: Some("high".into()),
             images: true,
             short: true,
+            exact: Some("Opus 5".into()),
         }
     }
 
@@ -1232,6 +1240,7 @@ mod tests {
             folders: Vec::new(),
             modes: vec![agent::mode::SUPERVISED.into(), agent::mode::PLAN.into()],
             push: false,
+            add_folders: false,
         };
         assert!(catalog.is_valid());
         assert_eq!(catalog.clone().sanitized(), catalog, "nothing to clean");
@@ -1592,6 +1601,7 @@ mod tests {
             folders: Vec::new(),
             modes: vec![agent::mode::SUPERVISED.into(), agent::mode::PLAN.into()],
             push: false,
+            add_folders: false,
         }
         .for_legacy();
         assert_eq!(catalog.modes, ["supervised"]);

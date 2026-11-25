@@ -254,6 +254,10 @@ pub mod types {
     pub const AGENT_SESSION_REPLY: &str = "agent.session.reply";
     // ---- agent: move to G7 (docs/protocol/agents.md §9.1) ----
     pub const AGENT_SESSION_MOVE: &str = "agent.session.move";
+    /// New thread in any folder (`docs/protocol/agents.md` §15).
+    pub const AGENT_PLACES: &str = "agent.places";
+    pub const AGENT_FOLDER_ADD: &str = "agent.folder.add";
+    pub const AGENT_FOLDER_PROMPT: &str = "agent.folder.prompt";
     // ---- agent: hand-off (docs/protocol/agents.md §10) ----
     pub const AGENT_HANDOFF: &str = "agent.handoff";
     pub const AGENT_HANDOFF_OPEN: &str = "agent.handoff.open";
@@ -6168,6 +6172,70 @@ pub struct AgentCatalogFolder {
     /// Its scripts, in order: only with `phone_scripts`, empty otherwise.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub scripts: Vec<AgentScript>,
+    // ---- New thread in any folder (`docs/protocol/agents.md` §15) ----
+    /// When a thread there was last started or moved, else when it was
+    /// added (Unix ms); 0 from a PC that doesn't say.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub used: u64,
+    /// It holds a git repository of its own.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub repo: bool,
+    /// What its newest thread ran with, its title and branch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last: Option<AgentFolderLast>,
+}
+
+/// A folder's newest thread (§15): what it ran with, its title, the branch
+/// it was on. The first quick pick for a new thread there, and the folder's
+/// card. `model` absent: the agent's default; `effort` absent: the model's.
+#[derive(Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct AgentFolderLast {
+    pub agent: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+}
+
+/// Never prints the title.
+impl std::fmt::Debug for AgentFolderLast {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AgentFolderLast")
+            .field("agent", &self.agent)
+            .field("model", &self.model)
+            .field("effort", &self.effort)
+            .finish_non_exhaustive()
+    }
+}
+
+impl AgentFolderLast {
+    pub fn is_valid(&self) -> bool {
+        is_valid_agent_id(&self.agent)
+            && self.model.as_deref().is_none_or(is_model_id)
+            && self.effort.as_deref().is_none_or(is_effort)
+            && self.title.len() <= agent::MAX_TITLE_BYTES
+            && self.branch.as_deref().is_none_or(is_branch_name)
+    }
+
+    /// Within its limits: the title cleaned and cut, a branch that isn't one
+    /// dropped; `None` when the agent, model or effort isn't well formed.
+    pub fn sanitized(mut self) -> Option<Self> {
+        if !is_valid_agent_id(&self.agent)
+            || !self.model.as_deref().is_none_or(is_model_id)
+            || !self.effort.as_deref().is_none_or(is_effort)
+        {
+            return None;
+        }
+        clean_line(&mut self.title, agent::MAX_TITLE_BYTES);
+        if !self.branch.as_deref().is_none_or(is_branch_name) {
+            self.branch = None;
+        }
+        Some(self)
+    }
 }
 
 fn is_zero_u8(n: &u8) -> bool {
@@ -6199,6 +6267,10 @@ pub struct AgentCatalog {
     /// `agent_push` toggle for it. The PC's core sets it for each phone.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub push: bool,
+    /// This phone adds agent folders without the PC asking first (§15):
+    /// the PC's `agent_folders` toggle for it. The PC's core sets it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub add_folders: bool,
 }
 
 impl std::fmt::Debug for AgentCatalog {
@@ -6208,6 +6280,7 @@ impl std::fmt::Debug for AgentCatalog {
             .field("folders", &self.folders.len())
             .field("modes", &self.modes)
             .field("push", &self.push)
+            .field("add_folders", &self.add_folders)
             .finish()
     }
 }
@@ -6239,6 +6312,8 @@ impl AgentCatalog {
         for f in &mut self.folders {
             clean_line(&mut f.label, agent::MAX_LABEL_BYTES);
             agent_scripts::clean_folder_scripts(f);
+            // A bad `last` is dropped, never the folder.
+            f.last = f.last.take().and_then(AgentFolderLast::sanitized);
         }
         self.modes.retain(|m| is_agent_word(m));
         self.modes.truncate(agent::MAX_MODES);
@@ -7740,6 +7815,8 @@ mod agent_beside;
 pub use agent_beside::*;
 mod agent_scripts;
 pub use agent_scripts::*;
+mod agent_folders;
+pub use agent_folders::*;
 
 /// The `agent/export` stream: one thread or session as Markdown per stream
 /// (`docs/protocol/agents.md` §4).
@@ -10217,6 +10294,7 @@ mod tests {
             }],
             modes: vec![agent::mode::SUPERVISED.into()],
             push: false,
+            add_folders: false,
         };
         assert!(catalog.is_valid());
         round_trip(types::AGENT_CATALOG, &catalog);

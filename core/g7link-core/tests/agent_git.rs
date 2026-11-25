@@ -399,6 +399,7 @@ fn catalog() -> g7link_core::AgentCatalog {
         modes: vec!["supervised".into()],
         // The platform's word is never taken: the core says it per phone.
         push: true,
+        add_folders: false,
     }
 }
 

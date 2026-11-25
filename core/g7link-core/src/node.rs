@@ -3123,6 +3123,10 @@ impl Node {
         if toggle == crate::agent_git::git::PUSH_TOGGLE {
             crate::agent_git::push_toggled(&self.shared, peer);
         }
+        if toggle == crate::agent_folders::agent_places::TOGGLE {
+            // Its catalog says so again, as `agent_push`'s does.
+            crate::agent_git::push_toggled(&self.shared, peer);
+        }
         if toggle == crate::storage::TOGGLE {
             let mut st = self.shared.storage.lock().unwrap_or_else(|e| e.into_inner());
             if enabled {

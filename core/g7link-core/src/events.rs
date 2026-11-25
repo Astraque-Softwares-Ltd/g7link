@@ -257,6 +257,14 @@ pub enum NodeEvent {
     PcCapturePrompt {
         device: DeviceId,
     },
+    /// Phone: a PC asks its user about the folder this phone asked to add
+    /// (`agent.folder.prompt`, `docs/protocol/agents.md` §15): someone there
+    /// has to approve it. `place` is the one the add named; a prompt for an
+    /// add the phone no longer waits on is ignored.
+    AgentFolderPrompt {
+        device: DeviceId,
+        place: String,
+    },
     /// A recording of a PC's screen this phone started ended on the PC by itself
     /// (`pc.capture.record.ended`); `file` names the transfer bringing it.
     PcCaptureRecordEnded {

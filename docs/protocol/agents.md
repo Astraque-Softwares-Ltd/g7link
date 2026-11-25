@@ -340,7 +340,8 @@ AgentSession = {
   that phone and answers it as `agent.start` does. The thread holds the
   session's last 200 items and stays idle until the phone sends something.
   The PC answers `BUSY` while anything has the session open, `DENIED` when its
-  folder isn't one of the PC's agent folders (a phone never adds one), and
+  folder isn't one of the PC's agent folders (a phone adds one with
+  `agent.folder.add`, §15), and
   `UNSUPPORTED` when the agent can't run. The session is then removed.
 - `can_continue` says whether `agent.session.continue` would be taken now;
   when it isn't, `blocked` says why: `open` (still open in a terminal or the
@@ -1675,3 +1676,61 @@ review while the thread works.
   any folder, including what you and the agent wrote. It can't type into them.
   Once one ends, it can continue it as a thread in your agent folders. It sees
   each folder's name, never its path."; buttons Not now, Allow.
+
+## 15. New thread in any folder
+
+Added in G7 Link 0.1.30. A phone starts a thread in any folder on the PC,
+not only the ones already added: it browses the PC's folders by name and
+adds one as an agent folder in the same flow. A PC offers it as
+`agent.places`; the `agents` toggle governs it (§1), and adding a folder also
+the PC's per-phone `agent_folders` toggle (off). Nothing here travels on
+Bluetooth.
+
+```
+RPC agent/places       t = "agent.places"        b = { place, offset? }   → ok { place, entries: [{ name, repo?, folder? }], more? }
+RPC agent/folder.add   t = "agent.folder.add"    b = { place }            → ok { folder: AgentCatalogFolder }
+t = "agent.folder.prompt"   b = { place }        // PC → phone, `agent` lane, while someone at the PC is asked
+```
+
+- **Places.** A place is a root's name and `/`-separated folder names below
+  it: `"Home/code/orbit-api"`, `"Local Disk/code"`. The roots are fixed: `Home`
+  (the PC user's home folder), then each disk mounted under
+  `/run/media/<user>` or `/media/<user>` by its folder's name (a name already
+  taken gets " (2)"). An empty `place` lists the roots. A phone receives
+  folder **names** under those roots and nothing else: never an absolute
+  path, a hidden folder, a link or a file. A name is 1 to 255 bytes, not
+  starting with `.`, without `/`, `\`, control or direction characters; a
+  place has at most 16 names below its root and 1024 bytes in all; anything
+  else is refused before the PC reads a disk.
+- **Listing.** Folders only, sorted by name without regard to case, at most
+  100 per answer from `offset` (at most 4000); `more` when there are more:
+  ask again with `offset` = the entries had so far. `repo`: the folder holds
+  a git repository of its own. `folder`: it is already one of the PC's agent
+  folders, with that id; using it adds nothing. A disk slow to answer gets
+  `BUSY` rather than holding the request.
+- **Adding.** `agent.folder.add` makes the folder at `place` an agent folder
+  and answers it as the catalog lists it; the next catalog has it too. Never
+  a root itself, never inside or holding one of G7's own directories or the
+  agents' configuration (`DENIED`). A folder that already is one answers
+  that folder. The PC posts a notification naming the phone and the folder.
+- **Asking the PC.** While the phone's `agent_folders` toggle is off, the PC
+  first asks its user ("Let Pixel start agents in barber?", with "Don't ask
+  again for this phone", which turns the toggle on) and sends
+  `agent.folder.prompt` so the phone can say "Approve on <PC>". The PC waits
+  up to 150 seconds; no answer, or "Not now", is `DENIED` with `msg`
+  `declined`. Phones allow 160 seconds for `agent.folder.add`. A prompt may
+  arrive after the answer: a phone ignores one for an add it no longer waits
+  on. The catalog's `add_folders` tells the phone whether its adds go
+  through without asking.
+- **Catalog.** Each `AgentCatalogFolder` also carries `used` (when a thread
+  there was last started or moved, else when it was added, Unix ms), `repo`,
+  and `last`: what the folder's newest thread ran with and was about
+  (`{ agent, model?, effort?, title, branch? }`). A phone lists recent folders
+  by `used` and offers `last` as the first choice of agent, model and effort.
+  A PC lists its 64 most recently used folders. Each `AgentModel` may carry
+  `exact`: the exact model an alias stands for ("Opus 5"), when the agent's
+  CLI says; a phone shows it in place of `name` and never guesses a version.
+- **What a folder exposes.** Running an agent in a folder runs that folder's
+  own agent settings (hooks, MCP servers) and reads its instructions
+  (`CLAUDE.md`, `AGENTS.md`) from the first turn, before anything is asked;
+  that is why the PC asks the first time.
