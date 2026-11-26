@@ -9758,7 +9758,7 @@ fn agent_thread(id: &str, state: &str, from_phone: bool) -> g7link_core::AgentTh
         folder: "g7linux".into(),
         title: "List the files here.".into(),
         state: state.into(),
-        mode: "supervised".into(),
+        mode: "ask".into(),
         from_phone,
         updated: 1_795_000_000_000,
         asks: 0,
@@ -9794,6 +9794,7 @@ fn agent_catalog() -> g7link_core::AgentCatalog {
             signed_in: true,
             login_hint: "claude auth login".into(),
             auth: Some("subscription".into()),
+            modes: ["auto", "ask", "accept_edits", "plan", "full"].map(String::from).to_vec(),
             ..Default::default()
         }],
         folders: vec![g7link_core::AgentCatalogFolder {
@@ -9801,9 +9802,9 @@ fn agent_catalog() -> g7link_core::AgentCatalog {
             label: "g7linux".into(),
             checkpoints: true,
             follow_remote: false,
+            modes: vec![g7link_core::AgentFolderMode { agent: "claude".into(), mode: "full".into() }],
             ..Default::default()
         }],
-        modes: vec!["supervised".into(), "auto_edit".into()],
         push: false,
         add_folders: false,
     }
@@ -9824,6 +9825,7 @@ fn agent_ask_for(thread: &str) -> g7link_core::AgentAsk {
         truncated: false,
         expires: 1_795_007_200_000,
         item: None,
+        deny_stops: false,
     }
 }
 
@@ -9880,10 +9882,7 @@ async fn agents_are_refused_until_the_pc_allows_the_phone() {
         _ => None,
     })
     .await;
-    assert!(matches!(
-        phone.node.agent_start(pc_id, agent_start("hi", "supervised")).await,
-        Err(Error::Denied)
-    ));
+    assert!(matches!(phone.node.agent_start(pc_id, agent_start("hi", "ask")).await, Err(Error::Denied)));
     assert!(
         !drain(&mut pc).iter().any(|e| matches!(e, NodeEvent::AgentsRequested { .. })),
         "the prompt shows once"
@@ -9895,7 +9894,9 @@ async fn agents_are_refused_until_the_pc_allows_the_phone() {
     assert_eq!(catalog.agents.len(), 1);
     assert_eq!(catalog.agents[0].auth.as_deref(), Some("subscription"));
     assert_eq!(catalog.folders[0].label, "g7linux");
-    assert_eq!(catalog.modes, vec!["supervised".to_owned()], "a phone may start supervised threads only");
+    let claude = &catalog.agents[0];
+    assert!(claude.modes.is_empty(), "a phone without agent.control gets no modes");
+    assert!(catalog.folders[0].modes.is_empty());
     let threads = with_timeout("threads", phone.node.agent_threads(pc_id)).await.unwrap();
     assert_eq!(threads.len(), 1);
 
@@ -9918,6 +9919,7 @@ async fn a_phone_lists_starts_and_follows_a_thread() {
 
     let thread = with_timeout(
         "start",
+        // An older phone's word for ask: the PC's host gets today's.
         phone.node.agent_start(pc_id, agent_start("List the files here.", "supervised")),
     )
     .await
@@ -9932,7 +9934,7 @@ async fn a_phone_lists_starts_and_follows_a_thread() {
                 agent: "claude".into(),
                 folder: AGENT_FOLDER.into(),
                 prompt: "List the files here.".into(),
-                mode: "supervised".into(),
+                mode: "ask".into(),
                 model: None,
                 effort: None,
                 images: Vec::new(),
@@ -10140,9 +10142,10 @@ async fn a_phone_cant_pick_a_mode_a_scope_or_a_path() {
     let pc_id = pc.node.device_id();
     allow_agents(&pc, &mut phone).await;
 
+    // Without agent.control a phone starts in `ask` only.
     assert!(matches!(
         phone.node.agent_start(pc_id, agent_start("hi", "auto_edit")).await,
-        Err(Error::Denied)
+        Err(Error::Unsupported)
     ));
     let scoped = AgentAnswer {
         token: AGENT_TOKEN.into(),
@@ -10158,7 +10161,7 @@ async fn a_phone_cant_pick_a_mode_a_scope_or_a_path() {
         agent: "claude".into(),
         folder: "/home/me/project".into(),
         prompt: "hi".into(),
-        mode: "supervised".into(),
+        mode: "ask".into(),
         ..Default::default()
     };
     match phone.node.debug_agent_request(pc_id, "agent.start", &pathed).await {
@@ -10307,6 +10310,7 @@ fn thinking_turn() -> Vec<g7link_core::AgentItem> {
                 class: Some(agent::tool_class::EDIT.into()),
                 path: Some("src/lib.rs".into()),
                 by_rule: false,
+                review: None,
             }),
             turn: Some(1),
             end,
@@ -10544,7 +10548,8 @@ async fn a_denial_carries_the_users_words_to_a_pc_that_takes_them() {
     }
 }
 
-/// The same test also carries a step the PC's rule allowed, flagged as such.
+/// The same test also carries a step the PC's rule allowed and the agent's
+/// reviewer approved, flagged as such, and an ask whose Deny stops the turn.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_phone_never_receives_an_absolute_path() {
     use g7link_core::{AgentEvent, agent};
@@ -10560,10 +10565,17 @@ async fn a_phone_never_receives_an_absolute_path() {
     tool.path = Some(outside.into());
     tool.status = agent::tool::OK.into();
     tool.by_rule = true;
+    let review = g7link_core::AgentToolReview {
+        status: agent::review::APPROVED.into(),
+        risk: Some("low".into()),
+        rationale: Some("The user asked for this edit.".into()),
+    };
+    tool.review = Some(review.clone());
     pc.node.agent_event(AgentEvent::item(AGENT_THREAD.into(), edit.clone()), None).await.unwrap();
     let ask = g7link_core::AgentAsk {
         path: Some(outside.into()),
         item: Some(edit.id.clone()),
+        deny_stops: true,
         ..agent_ask_for(AGENT_THREAD)
     };
     pc.node.agent_ask(ask).await.unwrap();
@@ -10574,12 +10586,14 @@ async fn a_phone_never_receives_an_absolute_path() {
     .await;
     let tool = item.tool.unwrap();
     assert_eq!((tool.path.as_deref(), tool.by_rule), (Some("lib.rs"), true));
+    assert_eq!(tool.review, Some(review), "the reviewer's decision arrives with its step");
     let ask = wait_for(&mut phone, "ask", |e| match e {
         NodeEvent::AgentAsk { ask, .. } => Some(ask.clone()),
         _ => None,
     })
     .await;
     assert_eq!((ask.path.as_deref(), ask.item.as_deref()), (Some("lib.rs"), Some(edit.id.as_str())));
+    assert!(ask.deny_stops, "Deny says it stops the turn");
 }
 
 // ---- Agents: sessions started on the PC (docs/protocol/agents.md §3) ----
@@ -11495,8 +11509,13 @@ async fn a_phone_with_control_picks_models_and_plans() {
     })
     .await;
     assert!(can_control && phone.node.agent_can_control(pc_id));
-    assert_eq!(catalog.modes, ["supervised", "plan"], "a phone may plan, never edit without asking");
     let claude = &catalog.agents[0];
+    assert_eq!(claude.modes, ["auto", "ask", "accept_edits", "plan", "full"], "every mode the PC offers");
+    assert_eq!(
+        catalog.folders[0].modes,
+        [g7link_core::AgentFolderMode { agent: "claude".into(), mode: "full".into() }],
+        "the mode the folder remembers"
+    );
     assert_eq!(claude.models.len(), 3);
     assert!(claude.models.iter().all(|m| m.note.as_ref().unwrap().len() <= agent::MAX_MODEL_NOTE_BYTES));
     assert_eq!(claude.can, ["plan", "questions", "steer", "images", "commands"], "a later word goes");
@@ -11518,9 +11537,16 @@ async fn a_phone_with_control_picks_models_and_plans() {
         }
         other => panic!("{other:?}"),
     }
+    // Full and the old word for accept_edits go through; the host is the judge.
+    for (sent, forwarded) in [("full", "full"), ("auto_edit", "accept_edits")] {
+        with_timeout("start", phone.node.agent_start(pc_id, agent_start("hi", sent))).await.unwrap();
+        match last_request(&pc) {
+            AgentRequest::Start { mode, .. } => assert_eq!(mode, forwarded),
+            other => panic!("{other:?}"),
+        }
+    }
     let before = requests(&pc);
-    refused_with(phone.node.agent_start(pc_id, agent_start("hi", "auto_edit")).await, "DENIED");
-    let flag = g7link_core::AgentStart { model: Some("--bare".into()), ..agent_start("hi", "supervised") };
+    let flag = g7link_core::AgentStart { model: Some("--bare".into()), ..agent_start("hi", "ask") };
     assert!(matches!(phone.node.agent_start(pc_id, flag.clone()).await, Err(Error::Protocol(_))));
     refused_with(phone.node.debug_agent_request(pc_id, "agent.start", &flag).await, "BAD_MESSAGE");
 
@@ -11536,10 +11562,11 @@ async fn a_phone_with_control_picks_models_and_plans() {
     };
     let thread = with_timeout("configure", phone.node.agent_configure(pc_id, typed)).await.unwrap();
     assert_eq!(thread.model.as_deref(), Some("my-own-model"));
-    let auto =
-        AgentConfigure { thread: AGENT_THREAD.into(), mode: Some("auto_edit".into()), ..Default::default() };
-    refused_with(phone.node.agent_configure(pc_id, auto).await, "DENIED");
-    assert_eq!(requests(&pc), before + 2, "refusals never reach the host");
+    let full =
+        AgentConfigure { thread: AGENT_THREAD.into(), mode: Some("full".into()), ..Default::default() };
+    let thread = with_timeout("configure", phone.node.agent_configure(pc_id, full)).await.unwrap();
+    assert_eq!(thread.mode, "full", "a phone may set Full");
+    assert_eq!(requests(&pc), before + 3, "bad messages never reach the host");
 
     // A thread carries what §5 added, to a phone that takes it.
     pc.node.agent_event(g7link_core::AgentEvent::state(control_thread()), None).await.unwrap();
@@ -11571,9 +11598,9 @@ async fn an_older_phone_gets_what_it_got_before() {
     })
     .await;
     assert!(!can_control);
-    assert_eq!(catalog.modes, ["supervised"]);
     let claude = &catalog.agents[0];
     assert!(claude.models.is_empty() && claude.can.is_empty() && claude.limits.is_empty());
+    assert!(claude.modes.is_empty() && catalog.folders[0].modes.is_empty());
 
     with_timeout("watch", phone.node.agent_watch(pc_id, Some(AGENT_THREAD.into()))).await.unwrap();
     pc.node.agent_event(g7link_core::AgentEvent::state(control_thread()), None).await.unwrap();
@@ -11587,7 +11614,8 @@ async fn an_older_phone_gets_what_it_got_before() {
         _ => None,
     })
     .await;
-    assert_eq!(state.mode, "supervised", "plan mode reads as supervised");
+    // Sent as `supervised` (the old form, `for_legacy`); this build reads it as `ask`.
+    assert_eq!(state.mode, "ask", "plan mode reads as supervised, then ask");
     assert!(state.queued.is_empty() && state.model.is_none() && state.mcp.is_none() && state.asking == 0);
     let mut items = Vec::new();
     while items.len() < 4 {
@@ -11630,7 +11658,7 @@ async fn an_older_phone_gets_what_it_got_before() {
     let before = requests(&pc);
     refused_with(
         phone.node.debug_agent_request(pc_id, "agent.start", &agent_start("hi", "plan")).await,
-        "DENIED",
+        "UNSUPPORTED",
     );
     let configure = g7link_core::AgentConfigure {
         thread: AGENT_THREAD.into(),
@@ -11702,7 +11730,7 @@ async fn a_phone_with_control_keeps_to_what_an_older_pc_does() {
     with_timeout("send", phone.node.agent_send(pc_id, AGENT_THREAD.into(), "Go on".into())).await.unwrap();
     let thread =
         with_timeout("start", phone.node.agent_start(pc_id, agent_start("hi", "supervised"))).await.unwrap();
-    assert_eq!(thread.mode, agent::mode::SUPERVISED);
+    assert_eq!(thread.mode, agent::mode::ASK);
 
     // The PC's host learns §5: the phone gets the catalog again, whole.
     pc.node.set_agent_catalog(Some(control_catalog())).await.unwrap();
@@ -11726,7 +11754,7 @@ async fn a_phone_with_control_keeps_to_what_an_older_pc_does() {
     })
     .await;
     assert!(can_control && phone.node.agent_can_control(pc_id));
-    assert_eq!(catalog.modes, ["supervised", "plan"]);
+    assert_eq!(catalog.agents[0].modes, ["auto", "ask", "accept_edits", "plan", "full"]);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -11903,7 +11931,7 @@ async fn a_secret_question_is_answered_on_the_pc_only() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_phone_implements_a_plan_supervised() {
+async fn a_phone_implements_a_plan_in_the_mode_it_picks() {
     use g7link_core::AgentRequest;
     let mut phone = control_phone("Pixel").await;
     let pc = control_pc_with(&mut phone).await;
@@ -11935,14 +11963,31 @@ async fn a_phone_implements_a_plan_supervised() {
     let question = items[3].question.as_ref().unwrap();
     assert_eq!((question.count, question.outcome.as_deref()), (1, Some("answered")));
 
-    with_timeout("implement", phone.node.agent_implement(pc_id, AGENT_THREAD.into(), "msg_01:3".into()))
-        .await
-        .unwrap();
+    with_timeout(
+        "implement",
+        phone.node.agent_implement(pc_id, AGENT_THREAD.into(), "msg_01:3".into(), None),
+    )
+    .await
+    .unwrap();
     assert_eq!(
         last_request(&pc),
-        AgentRequest::Implement { thread: AGENT_THREAD.into(), item: "msg_01:3".into() },
-        "always supervised: a phone can't say otherwise"
+        AgentRequest::Implement { thread: AGENT_THREAD.into(), item: "msg_01:3".into(), mode: None },
+        "none said: the folder's remembered mode, on the PC"
     );
+    let full = phone.node.agent_implement(pc_id, AGENT_THREAD.into(), "msg_01:3".into(), Some("full".into()));
+    with_timeout("implement", full).await.unwrap();
+    assert_eq!(
+        last_request(&pc),
+        AgentRequest::Implement {
+            thread: AGENT_THREAD.into(),
+            item: "msg_01:3".into(),
+            mode: Some("full".into())
+        }
+    );
+    let before = requests(&pc);
+    let plan = phone.node.agent_implement(pc_id, AGENT_THREAD.into(), "msg_01:3".into(), Some("plan".into()));
+    assert!(matches!(plan.await, Err(Error::Protocol(_))), "a plan isn't implemented in plan mode");
+    assert_eq!(requests(&pc), before);
 }
 
 #[tokio::test(flavor = "multi_thread")]

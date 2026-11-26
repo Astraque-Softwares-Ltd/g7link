@@ -1602,34 +1602,46 @@ impl AgentThreadState {
     }
 }
 
-/// How a thread asks before acting. A phone starts and sets `Supervised`
-/// or, with a PC that offers it (the catalog's `modes`), `Plan`.
+/// How a thread asks before acting. A phone may start, set and implement
+/// with any mode its agent offers (`AgentInfo.modes`); each is named the
+/// agent's own way (Claude's "Manual", Codex's "Ask for approval", …).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
 pub enum AgentMode {
-    /// Asks before every edit and every command that isn't read-only.
-    Supervised,
-    /// Edits without asking.
-    AutoEdit,
+    /// Asks before what the CLI asks about: Claude's "Manual", Codex's "Ask
+    /// for approval".
+    Ask,
+    /// Edits without asking, still asks before commands: Claude's "Accept edits".
+    AcceptEdits,
+    /// The CLI decides each action: Claude's "Auto", Codex's "Approve for me".
+    Auto,
     /// Changes nothing: it writes a plan to implement ("Plan: it changes
-    /// nothing until you say so"). Added with `agent.control`.
+    /// nothing until you say so").
     Plan,
+    /// Nothing is asked: Claude's "Bypass permissions", Codex's "Full access".
+    Full,
 }
 
 impl AgentMode {
-    fn from_wire(mode: &str) -> Option<Self> {
-        match mode {
-            core::agent::mode::SUPERVISED => Some(Self::Supervised),
-            core::agent::mode::AUTO_EDIT => Some(Self::AutoEdit),
+    /// A wire word, the old ones (`supervised`, `auto_edit`) too; `None` for
+    /// a word this build doesn't know.
+    pub(crate) fn from_wire(mode: &str) -> Option<Self> {
+        match core::agent::mode::canonical(mode) {
+            core::agent::mode::ASK => Some(Self::Ask),
+            core::agent::mode::ACCEPT_EDITS => Some(Self::AcceptEdits),
+            core::agent::mode::AUTO => Some(Self::Auto),
             core::agent::mode::PLAN => Some(Self::Plan),
+            core::agent::mode::FULL => Some(Self::Full),
             _ => None,
         }
     }
 
     pub(crate) fn wire(self) -> &'static str {
         match self {
-            Self::Supervised => core::agent::mode::SUPERVISED,
-            Self::AutoEdit => core::agent::mode::AUTO_EDIT,
+            Self::Ask => core::agent::mode::ASK,
+            Self::AcceptEdits => core::agent::mode::ACCEPT_EDITS,
+            Self::Auto => core::agent::mode::AUTO,
             Self::Plan => core::agent::mode::PLAN,
+            Self::Full => core::agent::mode::FULL,
         }
     }
 }
@@ -1744,6 +1756,61 @@ impl AgentToolStatus {
     }
 }
 
+/// What the agent's own reviewer decided about a step ([`AgentToolReview`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum AgentReviewStatus {
+    Approved,
+    Denied,
+    TimedOut,
+    Aborted,
+}
+
+impl AgentReviewStatus {
+    fn from_wire(status: &str) -> Option<Self> {
+        use core::agent::review;
+        Some(match status {
+            review::APPROVED => Self::Approved,
+            review::DENIED => Self::Denied,
+            review::TIMED_OUT => Self::TimedOut,
+            review::ABORTED => Self::Aborted,
+            _ => return None,
+        })
+    }
+}
+
+/// A step the agent's own reviewer decided about without asking anyone
+/// (Codex's "Approve for me", Claude's Auto). `Approved`: "Approved by
+/// Codex's reviewer" (`AgentTimeline.rows` marks it so by itself). `risk`
+/// is the reviewer's word ("low", "medium", "high"), `rationale` its own
+/// words; Claude's says neither.
+#[derive(Clone, PartialEq, Eq, uniffi::Record)]
+pub struct AgentToolReview {
+    pub status: AgentReviewStatus,
+    pub risk: Option<String>,
+    pub rationale: Option<String>,
+}
+
+impl std::fmt::Debug for AgentToolReview {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AgentToolReview").field("status", &self.status).finish_non_exhaustive()
+    }
+}
+
+impl AgentToolReview {
+    fn from_core(r: core::AgentToolReview) -> Option<Self> {
+        Some(AgentToolReview {
+            status: AgentReviewStatus::from_wire(&r.status)?,
+            risk: r.risk,
+            rationale: r.rationale,
+        })
+    }
+
+    /// Whether the reviewer let the step run.
+    pub(crate) fn approved(&self) -> bool {
+        self.status == AgentReviewStatus::Approved
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
 pub enum AgentAskKind {
     Command,
@@ -1850,6 +1917,11 @@ pub struct AgentInfo {
     /// It forks, rewinds and edits from an earlier message too.
     #[uniffi(default = false)]
     pub can_fork_at: bool,
+    /// The modes a thread of it may use, in its CLI's own order; a phone may
+    /// choose any of them. A mode this build doesn't know is left out.
+    /// Empty: none (an older PC, or the agent wasn't probed).
+    #[uniffi(default = [])]
+    pub modes: Vec<AgentMode>,
 }
 
 impl std::fmt::Debug for AgentInfo {
@@ -1897,6 +1969,26 @@ pub struct AgentFolder {
     /// quick pick for a new thread there, and the folder's card.
     #[uniffi(default = None)]
     pub last: Option<AgentFolderLast>,
+    /// The mode each agent last used here (never `Plan`), at most one per
+    /// agent: a new thread there starts in it while the agent still offers
+    /// it, else in `Ask`.
+    #[uniffi(default = [])]
+    pub modes: Vec<AgentFolderMode>,
+}
+
+/// A folder's remembered mode for one agent.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct AgentFolderMode {
+    /// The agent's id (`claude`, `codex`).
+    pub agent: String,
+    pub mode: AgentMode,
+}
+
+impl AgentFolderMode {
+    /// `None` for a mode this build doesn't know.
+    fn from_core(m: core::AgentFolderMode) -> Option<Self> {
+        Some(AgentFolderMode { agent: m.agent, mode: AgentMode::from_wire(&m.mode)? })
+    }
 }
 
 /// A folder's newest thread: the agent, model and effort it ran with (null
@@ -1940,6 +2032,7 @@ impl From<core::AgentCatalogFolder> for AgentFolder {
             used: f.used,
             repo: f.repo,
             last: f.last.map(Into::into),
+            modes: f.modes.into_iter().filter_map(AgentFolderMode::from_core).collect(),
         }
     }
 }
@@ -1955,8 +2048,6 @@ impl std::fmt::Debug for AgentFolder {
 pub struct AgentCatalog {
     pub agents: Vec<AgentInfo>,
     pub folders: Vec<AgentFolder>,
-    /// The modes this phone may start: `[Supervised]`.
-    pub modes: Vec<AgentMode>,
     /// The PC takes a denial with the user's words (`agent_answer`'s
     /// `message`): offer "deny and say why" only then. Comes again in
     /// `Event.AgentCatalog` when only this changes.
@@ -2003,11 +2094,11 @@ impl From<core::AgentCatalog> for AgentCatalog {
                     can_fork: a.can.iter().any(|c| c == core::agent::can::FORK),
                     can_fork_at: a.can.iter().any(|c| c == core::agent::can::FORK_AT),
                     limits: a.limits.into_iter().map(Into::into).collect(),
+                    // A mode this build doesn't know can't be chosen from here.
+                    modes: a.modes.iter().filter_map(|m| AgentMode::from_wire(m)).collect(),
                 })
                 .collect(),
             folders: c.folders.into_iter().map(Into::into).collect(),
-            // A mode this build doesn't know can't be started from here.
-            modes: c.modes.iter().filter_map(|m| AgentMode::from_wire(m)).collect(),
             can_say_why: false,
             can_control: false,
             push: c.push,
@@ -2247,6 +2338,10 @@ pub struct AgentTool {
     /// marks it so by itself).
     #[uniffi(default = false)]
     pub by_rule: bool,
+    /// What the agent's own reviewer decided about it; null when it didn't
+    /// review it, or from an older PC.
+    #[uniffi(default = None)]
+    pub review: Option<AgentToolReview>,
 }
 
 impl std::fmt::Debug for AgentTool {
@@ -2326,6 +2421,7 @@ impl AgentItem {
                 output: t.output,
                 path: t.path,
                 by_rule: t.by_rule,
+                review: t.review.and_then(AgentToolReview::from_core),
             }),
             None => None,
         };
@@ -2372,6 +2468,10 @@ pub struct AgentAsk {
     /// The id of the tool item the request belongs to; null from an older PC.
     #[uniffi(default = None)]
     pub item: Option<String>,
+    /// Denying it stops the agent's turn (Codex can't refuse just this
+    /// step): Deny says so ("Deny stops this turn").
+    #[uniffi(default = false)]
+    pub deny_stops: bool,
 }
 
 impl std::fmt::Debug for AgentAsk {
@@ -2400,6 +2500,7 @@ impl AgentAsk {
             truncated: a.truncated,
             expires_ms: ms(a.expires),
             item: a.item,
+            deny_stops: a.deny_stops,
         })
     }
 }
@@ -7854,15 +7955,55 @@ mod tests {
     }
 
     #[test]
+    fn a_reviewed_step_and_a_deny_that_stops_reach_the_phone() {
+        use g7link_core::agent;
+        let reviewed = |status: &str| core::AgentItem {
+            seq: 3,
+            id: "exec-1".into(),
+            kind: agent::item::TOOL.into(),
+            tool: Some(core::AgentTool {
+                name: "Bash".into(),
+                title: "Bash".into(),
+                status: agent::tool::OK.into(),
+                review: Some(core::AgentToolReview {
+                    status: status.into(),
+                    risk: Some("low".into()),
+                    rationale: Some("Asked for.".into()),
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let tool = AgentItem::from_core(reviewed(agent::review::APPROVED)).unwrap().tool.unwrap();
+        let review = tool.review.unwrap();
+        assert_eq!(
+            (review.status, review.risk.as_deref(), review.rationale.as_deref()),
+            (AgentReviewStatus::Approved, Some("low"), Some("Asked for."))
+        );
+        assert!(review.approved());
+        let timed_out = AgentItem::from_core(reviewed(agent::review::TIMED_OUT)).unwrap();
+        assert_eq!(timed_out.tool.unwrap().review.unwrap().status, AgentReviewStatus::TimedOut);
+        let later = AgentItem::from_core(reviewed("escalated")).unwrap();
+        assert_eq!(later.tool.unwrap().review, None, "a later word: the step without its review");
+        assert!(!format!("{review:?}").contains("Asked for"));
+
+        let ask = core::AgentAsk {
+            token: "t".into(),
+            thread: "abc".into(),
+            agent: "codex".into(),
+            kind: agent::ask::COMMAND.into(),
+            deny_stops: true,
+            ..Default::default()
+        };
+        assert!(AgentAsk::from_core(ask.clone()).unwrap().deny_stops);
+        let older = core::AgentAsk { deny_stops: false, ..ask };
+        assert!(!AgentAsk::from_core(older).unwrap().deny_stops);
+    }
+
+    #[test]
     fn a_catalog_says_whether_the_pc_takes_words_with_a_denial() {
         let pc = core::DeviceId([3; 32]);
-        let catalog = core::AgentCatalog {
-            agents: vec![],
-            folders: vec![],
-            modes: vec![],
-            push: false,
-            add_folders: false,
-        };
+        let catalog = core::AgentCatalog { agents: vec![], folders: vec![], push: false, add_folders: false };
         for (can_say_why, can_control) in [(false, false), (true, false), (false, true)] {
             let event = NodeEvent::AgentCatalog {
                 device: pc,
@@ -7899,6 +8040,7 @@ mod tests {
                 signed_in: true,
                 login_hint: "codex login".into(),
                 auth: Some("api_key".into()),
+                modes: ["ask", "auto", "full", "later_mode", "plan"].map(str::to_owned).to_vec(),
                 ..Default::default()
             }],
             folders: vec![core::AgentCatalogFolder {
@@ -7922,8 +8064,12 @@ mod tests {
                     title: "Fix the build".into(),
                     branch: Some("main".into()),
                 }),
+                modes: vec![
+                    core::AgentFolderMode { agent: "claude".into(), mode: "full".into() },
+                    core::AgentFolderMode { agent: "codex".into(), mode: "later_mode".into() },
+                    core::AgentFolderMode { agent: "gemini".into(), mode: "auto_edit".into() },
+                ],
             }],
-            modes: vec!["supervised".into(), "plan".into(), "full_access".into()],
             push: true,
             add_folders: true,
         });
@@ -7936,11 +8082,36 @@ mod tests {
         );
         assert!(catalog.folders[0].phone_scripts && catalog.folders[0].script_count == 1);
         assert_eq!(catalog.folders[0].scripts[0].command, "npm run dev");
-        assert_eq!(catalog.modes, vec![AgentMode::Supervised, AgentMode::Plan]);
-        assert_eq!(AgentMode::Plan.wire(), "plan");
+        // Each agent's modes in its order; a word this build doesn't know is
+        // left out, an old one read as today's.
+        assert_eq!(
+            catalog.agents[0].modes,
+            [AgentMode::Ask, AgentMode::Auto, AgentMode::Full, AgentMode::Plan]
+        );
+        assert_eq!(
+            catalog.folders[0].modes,
+            [
+                AgentFolderMode { agent: "claude".into(), mode: AgentMode::Full },
+                AgentFolderMode { agent: "gemini".into(), mode: AgentMode::AcceptEdits },
+            ]
+        );
         assert_eq!(catalog.agents[0].auth.as_deref(), Some("api_key"));
         assert_eq!(catalog.folders[0].label, "g7linux");
-        assert_eq!(AgentMode::AutoEdit.wire(), "auto_edit");
+    }
+
+    #[test]
+    fn every_mode_has_its_wire_word_and_old_words_read_as_new() {
+        let all = [AgentMode::Ask, AgentMode::AcceptEdits, AgentMode::Auto, AgentMode::Plan, AgentMode::Full];
+        let words: Vec<&str> = all.iter().map(|m| m.wire()).collect();
+        assert_eq!(words, core::agent::mode::ALL);
+        for mode in all {
+            assert_eq!(AgentMode::from_wire(mode.wire()), Some(mode));
+        }
+        assert_eq!(AgentMode::from_wire("supervised"), Some(AgentMode::Ask));
+        assert_eq!(AgentMode::from_wire("auto_edit"), Some(AgentMode::AcceptEdits));
+        assert_eq!(AgentMode::from_wire("later_mode"), None);
+        let thread = core::AgentThread { mode: "full".into(), ..core_thread("done") };
+        assert_eq!(AgentThread::from_core(thread).unwrap().mode, AgentMode::Full);
     }
 
     #[test]

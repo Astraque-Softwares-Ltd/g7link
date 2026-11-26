@@ -358,6 +358,7 @@ mod tests {
             class: None,
             path: None,
             by_rule: false,
+            review: None,
         }
     }
 

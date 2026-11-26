@@ -18,6 +18,15 @@
 //! it (spike S-3.8, S-3.9): one `result` with `error_during_execution`,
 //! nothing read from stdin, exit 1.
 //!
+//! Modes (plan §1.6, as the spikes saw them): Claude run with
+//! `--permission-mode bypassPermissions` or `auto` asks the bridge only
+//! for `AskUserQuestion`, logging `settled <tool>` for each step the
+//! capture had approved. Codex logs `permissions <method> <approvalPolicy>
+//! <sandbox> <approvalsReviewer>` for `thread/start`, `/resume` and `/fork`;
+//! told `never` it sends none of the capture's approval requests, and told
+//! `auto_review` it sends `item/autoApprovalReview/started` and `/completed`
+//! (approved, risk low) for each instead, logging `settled <method>`.
+//!
 //! The host's catalog probes are answered without a script: Claude's
 //! `initialize` control request (a run with `--no-session-persistence`)
 //! from `$FAKE_CLI_INITIALIZE` (default: `claude-10-initialize.jsonl` beside
@@ -289,6 +298,9 @@ fn claude(args: &[String]) -> ExitCode {
         _ => std::env::var("FAKE_CLI_SCRIPT").unwrap_or_default(),
     };
     let lines = load(&script);
+    // Bypass and Auto ask nothing but questions (spikes 1 and 2).
+    let mode = args.windows(2).find(|w| w[0] == "--permission-mode").map(|w| w[1].as_str());
+    let asks_questions_only = matches!(mode, Some("bypassPermissions" | "auto"));
     let mut input = Input::new();
     let mut tools: HashMap<String, (String, Value)> = HashMap::new();
     let mut asked: Vec<String> = Vec::new();
@@ -350,7 +362,9 @@ fn claude(args: &[String]) -> ExitCode {
             && let Some(tool) = tools.get(&id).cloned()
         {
             asked.push(id.clone());
-            if let Some(mut bridge) = Bridge::start(&mcp_config) {
+            if asks_questions_only && tool.0 != "AskUserQuestion" {
+                log_line(&format!("settled {}", tool.0));
+            } else if let Some(mut bridge) = Bridge::start(&mcp_config) {
                 bridge.call(&tool, &id);
                 if let Some(text) = bridge.reply().as_ref().and_then(|r| r.pointer("/result/content/0/text"))
                 {
@@ -430,6 +444,10 @@ fn codex(args: &[String]) -> ExitCode {
     let mut input = Input::new();
     // The fixture's request ids → the ids the host used.
     let mut ids: HashMap<String, Value> = HashMap::new();
+    // Told `never`: Some(false); told `auto_review`: Some(true).
+    let mut settles: Option<bool> = None;
+    // The capture's approval requests Codex settled itself, by id.
+    let mut settled: Vec<Value> = Vec::new();
     let same = |a: &str, b: &str| a == b || (a.starts_with("thread/") && b.starts_with("thread/"));
     for entry in &entries {
         let msg = entry.get("msg").cloned().unwrap_or(Value::Null);
@@ -460,6 +478,24 @@ fn codex(args: &[String]) -> ExitCode {
                     {
                         log_line(&format!("summary {summary}"));
                     }
+                    if matches!(got_method, "thread/start" | "thread/resume" | "thread/fork") {
+                        let field = |key: &str| {
+                            got.pointer(&format!("/params/{key}"))
+                                .and_then(Value::as_str)
+                                .unwrap_or("-")
+                                .to_owned()
+                        };
+                        let (policy, reviewer) = (field("approvalPolicy"), field("approvalsReviewer"));
+                        log_line(&format!(
+                            "permissions {got_method} {policy} {} {reviewer}",
+                            field("sandbox")
+                        ));
+                        settles = match (policy.as_str(), reviewer.as_str()) {
+                            ("never", _) => Some(false),
+                            (_, "auto_review") => Some(true),
+                            _ => None,
+                        };
+                    }
                     // thread/start and thread/resume answer alike: a script
                     // that started a thread also serves a resume.
                     if !same(method, got_method) {
@@ -470,6 +506,9 @@ fn codex(args: &[String]) -> ExitCode {
                         ids.insert(theirs.to_string(), ours.clone());
                     }
                 } else if let Some(id) = msg.get("id") {
+                    if settled.contains(id) {
+                        continue;
+                    }
                     let id = id.clone();
                     let Some(reply) = input.take(|v| v.get("method").is_none() && v.get("id") == Some(&id))
                     else {
@@ -481,6 +520,26 @@ fn codex(args: &[String]) -> ExitCode {
                 }
             }
             Some("recv") => {
+                let method = msg.get("method").and_then(Value::as_str).unwrap_or_default().to_owned();
+                if let (Some(review), Some(id)) = (settles, msg.get("id"))
+                    && method.ends_with("/requestApproval")
+                {
+                    settled.push(id.clone());
+                    log_line(&format!("settled {method}"));
+                    if review {
+                        let params = msg.get("params").cloned().unwrap_or(Value::Null);
+                        let target = params.get("itemId").cloned().unwrap_or(Value::Null);
+                        for (what, status) in [("started", "inProgress"), ("completed", "approved")] {
+                            print(&json!({"method": format!("item/autoApprovalReview/{what}"), "params": {
+                                "threadId": params.get("threadId"), "turnId": params.get("turnId"),
+                                "reviewId": "review-1", "targetItemId": target,
+                                "review": {"status": status, "riskLevel": "low", "userAuthorization": "high",
+                                    "rationale": "The user asked for exactly this."},
+                                "action": {"type": "command", "source": "unifiedExec"}}}));
+                        }
+                    }
+                    continue;
+                }
                 let mut msg = msg;
                 if msg.get("method").is_none()
                     && let Some(id) = msg.get("id").map(Value::to_string)

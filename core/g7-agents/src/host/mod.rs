@@ -1949,7 +1949,7 @@ fn brought_in_info(id: &str, b: &sessions::import::BroughtIn) -> ThreadInfo {
         folder_label: b.folder_label.clone(),
         title: b.title.clone(),
         state: State::Done,
-        mode: Mode::Supervised,
+        mode: Mode::Ask,
         origin: b.origin.clone(),
         created_ms: b.created_ms,
         updated_ms: b.updated_ms,

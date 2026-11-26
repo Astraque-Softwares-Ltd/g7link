@@ -24,13 +24,9 @@ use crate::host::notify::Note;
 use crate::host::store::{ApprovalRecord, Store, now_ms};
 use crate::host::{Answered, Host, claude, codex, env, fork, places};
 
-/// Whether Codex may run `auto_edit`. With `approvalPolicy: "on-request"`
-/// codex-cli 0.170.0 ran a command inside the workspace sandbox without
-/// asking (smoke, 2026-11-19), so it can't promise "asks before commands":
-/// `auto_edit` is refused for Codex.
-pub const CODEX_AUTO_EDIT: bool = false;
-
 const RESTART_NOTICE: &str = "Stopped: the agent host restarted.";
+/// Reviews held for steps the agent hasn't reported yet, at most.
+const MAX_HELD_REVIEWS: usize = 32;
 /// A denial's words that couldn't go to Codex as the next turn.
 pub const REPLY_NOT_SENT: &str = "Your reply wasn't sent.";
 /// A tool step copied from a session that never finished.
@@ -95,6 +91,8 @@ pub(crate) struct Turn {
     refused_tools: HashSet<u64>,
     /// How each running tool step is shown as the thread's `step`.
     tool_steps: HashMap<u64, String>,
+    /// Reviews of steps the agent hasn't reported yet, by the step's key.
+    reviews: HashMap<String, ToolReview>,
     /// Assistant messages done in this turn whose phase isn't known yet.
     unphased: BTreeMap<u64, Item>,
     flush_scheduled: bool,
@@ -435,6 +433,7 @@ pub(crate) fn tool_item(seq: u64, key: &str, spec: &ToolSpec) -> Item {
             class: Some(spec.class),
             path,
             by_rule: false,
+            review: None,
         }),
         group: spec.group.as_deref().map(|g| cut(g, MAX_ITEM_ID).to_owned()),
         ..Item::new(seq, cut(key, MAX_ITEM_ID), ItemKind::Tool, now_ms())
@@ -744,7 +743,7 @@ impl Host {
         let mut cache = self.probes.lock().await;
         let stale = cache.at.is_none_or(|at| at.elapsed() >= Duration::from_millis(PROBE_CACHE_MS));
         if refresh || stale || cache.claude.is_none() || cache.codex.is_none() {
-            let (mut claude, (codex, codex_limits)) = tokio::join!(
+            let (mut claude, (mut codex, codex_limits)) = tokio::join!(
                 agents::probe_claude(self.config.claude_bin.as_deref(), &self.config.env),
                 agents::probe_codex(self.config.codex_bin.as_deref(), &self.config.env),
             );
@@ -767,6 +766,9 @@ impl Host {
                     claude.commands = catalog.commands.clone();
                 }
             }
+            // The modes follow the models (Claude's Auto) and abilities (Plan).
+            claude.info.modes = crate::host::catalog::modes(&claude.info);
+            codex.info.modes = crate::host::catalog::modes(&codex.info);
             if let Some(limits) = codex_limits {
                 self.keep_limits(AgentId::Codex, limits);
             }
@@ -994,6 +996,7 @@ impl Host {
                 follow_remote: false,
                 scripts: Vec::new(),
                 phone_scripts: false,
+                last_modes: Vec::new(),
             };
             let mut list = reg.folders.clone();
             list.push(folder.clone());
@@ -1204,15 +1207,6 @@ impl Host {
         if p.key.as_deref().is_some_and(|key| !is_valid_send_key(key)) {
             return Err(err(ErrorCode::BadRequest, "Bad message key."));
         }
-        if p.origin.kind == OriginKind::Phone && !p.mode.phone_may() {
-            return Err(err(
-                ErrorCode::Denied,
-                "A phone can only start threads that ask before each change, or plan.",
-            ));
-        }
-        if p.agent == AgentId::Codex && p.mode == Mode::AutoEdit && !CODEX_AUTO_EDIT {
-            return Err(err(ErrorCode::Unavailable, "Codex can't edit without asking yet."));
-        }
         let probe = self.probe(false).await[p.agent as usize].clone();
         let Some(bin) = probe.bin.clone().filter(|_| probe.info.ready()) else {
             return Err(Self::unavailable(&probe));
@@ -1224,7 +1218,7 @@ impl Host {
             p.effort.as_deref(),
             p.custom_model,
             Some(p.mode),
-            p.origin.kind == OriginKind::Phone,
+            None,
         )?;
         let model = wanted.model.clone().flatten();
         if !p.images.is_empty()
@@ -1329,6 +1323,7 @@ impl Host {
         emit_state(self, &mut entry);
         emit_item(self, &id, &user);
         reg.threads.insert(id.clone(), entry);
+        self.remember_mode(&mut reg, &folder.id, p.agent, p.mode);
         let input = UserInput { id: user.id.clone(), text: p.prompt.clone(), images: blocks };
         // A restore point first, then the message (§U5.3).
         let placed = self.place_for(&reg, &id);
@@ -2124,7 +2119,10 @@ impl Host {
                 }
                 let seq = entry.alloc();
                 entry.turn.keys.insert(key.clone(), seq);
-                let item = Item { turn: entry.item_turn(), ..tool_item(seq, &key, &tool) };
+                let mut item = Item { turn: entry.item_turn(), ..tool_item(seq, &key, &tool) };
+                if let Some(tool) = item.tool.as_mut() {
+                    tool.review = entry.turn.reviews.remove(&key);
+                }
                 entry.turn.tools.insert(seq, item.clone());
                 entry.turn.tool_steps.insert(seq, tool.step());
                 emit_item(self, thread_id, &item);
@@ -2151,6 +2149,7 @@ impl Host {
                 let item = entry.notice(&clean_cut(&text, MAX_ITEM_TEXT).0);
                 emit_item(self, thread_id, &item);
             }
+            Step::ToolReview { key, review } => self.tool_reviewed(entry, thread_id, key, review),
             Step::TurnMark(mark) => self.turn_marked(entry, mark),
             Step::Plan(_)
             | Step::TurnEnded(_)
@@ -2444,6 +2443,27 @@ impl Host {
         }
         folder.mcp_seen.retain(|s| s.agent != agent);
         folder.mcp_seen.push(seen);
+        self.save_folders_soon();
+    }
+
+    /// Remembers `mode` as the folder's last for `agent` (plan §2.2): a new
+    /// thread there starts in it. Never `plan`; saved and sent to clients
+    /// when it changed.
+    pub(crate) fn remember_mode(
+        self: &Arc<Self>,
+        reg: &mut Registry,
+        folder_id: &str,
+        agent: AgentId,
+        mode: Mode,
+    ) {
+        let Some(folder) = reg.folders.iter_mut().find(|f| f.id == folder_id) else { return };
+        if folder.remember_mode(agent, mode) {
+            self.save_folders_soon();
+        }
+    }
+
+    /// Saves the folder list as it is when the save runs, then tells clients.
+    fn save_folders_soon(self: &Arc<Self>) {
         let host = self.clone();
         tokio::spawn(async move {
             let _serial = host.folders_lock.lock().await;
@@ -2818,6 +2838,7 @@ impl Host {
             created_ms: now,
             expires_ms: now + lifetime,
             item_id,
+            deny_stops: spec.deny_stops,
         };
         entry.info.pending = u32::try_from(pending_count + 1).unwrap_or(u32::MAX);
         entry.set_state(State::Waiting);
@@ -3032,6 +3053,42 @@ impl Host {
             }
         }
         Ok(())
+    }
+
+    /// The agent's own reviewer decided about a step (plan §1.6, 4): shown
+    /// on the step, kept for it when the agent hasn't reported it yet; a
+    /// review of no step, a denial and a timeout are said as a notice too.
+    fn tool_reviewed(&self, entry: &mut Entry, thread_id: &str, key: Option<String>, review: ToolReview) {
+        let agent = entry.info.agent.display_name();
+        let why = review.rationale.as_deref().map(|r| format!(": {r}")).unwrap_or_else(|| ".".to_owned());
+        let notice = match (review.status, &key) {
+            (ReviewStatus::Denied, _) => Some(format!("{agent}'s reviewer denied a step{why}")),
+            (ReviewStatus::TimedOut, _) => Some(format!("{agent}'s reviewer didn't decide in time.")),
+            (ReviewStatus::Approved, None) => Some(format!("{agent}'s reviewer allowed a request{why}")),
+            _ => None,
+        };
+        if let Some(key) = key {
+            match entry.turn.keys.get(&key).copied() {
+                Some(seq) => {
+                    if let Some(item) = entry.turn.tools.get_mut(&seq) {
+                        item.rev += 1;
+                        if let Some(tool) = item.tool.as_mut() {
+                            tool.review = Some(review);
+                        }
+                        let item = item.clone();
+                        emit_item(self, thread_id, &item);
+                    }
+                }
+                None if entry.turn.reviews.len() < MAX_HELD_REVIEWS => {
+                    entry.turn.reviews.insert(key, review);
+                }
+                None => {}
+            }
+        }
+        if let Some(text) = notice {
+            let item = entry.notice(&clean_cut(&text, MAX_ITEM_TEXT).0);
+            emit_item(self, thread_id, &item);
+        }
     }
 
     /// A step was allowed: it runs from now, so its time is now (`end_ms −
@@ -3392,7 +3449,7 @@ pub(crate) fn test_info(agent: AgentId) -> ThreadInfo {
         folder_label: "work".into(),
         title: "t".into(),
         state: State::Done,
-        mode: Mode::Supervised,
+        mode: Mode::Ask,
         origin: Origin::launcher(),
         created_ms: 0,
         updated_ms: 0,
@@ -3455,7 +3512,7 @@ impl Host {
             folder_label: "work".into(),
             title: "t".into(),
             state: State::Working,
-            mode: Mode::Supervised,
+            mode: Mode::Ask,
             origin: Origin::launcher(),
             created_ms: now,
             updated_ms: now,
@@ -3551,14 +3608,19 @@ impl Host {
             follow_remote: false,
             scripts: Vec::new(),
             phone_scripts: false,
+            last_modes: Vec::new(),
         });
     }
 
     /// Probes that report these agents (for the next minute).
     pub(crate) async fn test_agents(&self, claude: AgentInfo, codex: AgentInfo) {
         let mut cache = self.probes.lock().await;
-        let probe =
-            |info: AgentInfo| Probe { info, bin: Some(PathBuf::from("/bin/false")), commands: Vec::new() };
+        let probe = |mut info: AgentInfo| {
+            if info.modes.is_empty() {
+                info.modes = crate::host::catalog::modes(&info);
+            }
+            Probe { info, bin: Some(PathBuf::from("/bin/false")), commands: Vec::new() }
+        };
         cache.claude = Some(probe(claude));
         cache.codex = Some(probe(codex));
         cache.at = Some(Instant::now());
@@ -3619,6 +3681,7 @@ mod tests {
                 class: ToolClass::Command,
                 group: None,
             }),
+            deny_stops: false,
         }
     }
 
@@ -3632,6 +3695,7 @@ mod tests {
             reason: None,
             tool_key: None,
             tool: None,
+            deny_stops: false,
         }
     }
 

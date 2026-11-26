@@ -263,7 +263,7 @@ mod tests {
             folder: "g7linux".into(),
             title: "Fix the build".into(),
             state: agent::state::DONE.into(),
-            mode: agent::mode::SUPERVISED.into(),
+            mode: agent::mode::ASK.into(),
             from_phone: true,
             updated: 1_700_000_000_000,
             ..Default::default()

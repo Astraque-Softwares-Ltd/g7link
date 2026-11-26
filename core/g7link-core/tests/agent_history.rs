@@ -58,7 +58,7 @@ fn thread(id: &str, state: &str) -> AgentThread {
         folder: "g7linux".into(),
         title: "Fix the login test".into(),
         state: state.into(),
-        mode: "supervised".into(),
+        mode: "ask".into(),
         updated: 1_795_000_000_000,
         ..Default::default()
     }
@@ -339,7 +339,6 @@ fn catalog() -> g7link_core::AgentCatalog {
             follow_remote: false,
             ..Default::default()
         }],
-        modes: vec!["supervised".into()],
         push: false,
         add_folders: false,
     }

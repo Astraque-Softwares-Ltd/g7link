@@ -576,7 +576,17 @@ mod tests {
     use crate::timeline::ToolStatus;
 
     fn tool<'a>(class: ToolClass, title: &'a str, detail: &'a str, path: &'a str) -> ToolIn<'a> {
-        ToolIn { name: "", title, class, detail, path, status: ToolStatus::Ok, output: "", by_rule: false }
+        ToolIn {
+            name: "",
+            title,
+            class,
+            detail,
+            path,
+            status: ToolStatus::Ok,
+            output: "",
+            by_rule: false,
+            reviewed: false,
+        }
     }
 
     #[test]

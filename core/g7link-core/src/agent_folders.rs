@@ -16,8 +16,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 pub use g7link_protocol::messages::{
-    AgentCatalog, AgentCatalogFolder, AgentFolderAdd, AgentFolderAdded, AgentFolderLast, AgentFolderPrompt,
-    AgentPlace, AgentPlaces, AgentPlacesRequest, agent_places,
+    AgentCatalog, AgentCatalogFolder, AgentFolderAdd, AgentFolderAdded, AgentFolderLast, AgentFolderMode,
+    AgentFolderPrompt, AgentPlace, AgentPlaces, AgentPlacesRequest, agent_places,
 };
 use g7link_protocol::{
     DeviceId, Envelope, ErrorCode,

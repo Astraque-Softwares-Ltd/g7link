@@ -121,7 +121,6 @@ fn catalog() -> g7link_core::AgentCatalog {
             follow_remote: false,
             ..Default::default()
         }],
-        modes: vec!["supervised".into()],
         push: false,
         add_folders: false,
     }

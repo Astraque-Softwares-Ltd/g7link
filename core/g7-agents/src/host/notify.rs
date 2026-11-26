@@ -508,7 +508,7 @@ mod tests {
             folder_label: "g7linux".into(),
             title: "Fix the build".into(),
             state: State::Waiting,
-            mode: Mode::Supervised,
+            mode: Mode::Ask,
             origin,
             created_ms: 0,
             updated_ms: 0,
@@ -563,6 +563,7 @@ mod tests {
             created_ms: 0,
             expires_ms: 0,
             item_id: None,
+            deny_stops: false,
         }
     }
 

@@ -1,0 +1,42 @@
+{
+  "ctx": {"marks":[{"by":"Pixel 8 Pro","item_id":"t2","kind":"allowed"}],"now_ms":3000,"open":["f:1","g:t4"],"state":"done","state_since_ms":2900},
+  "items": [
+    {"id":"u1","kind":"user","seq":1,"text":"Check the site is up, then tidy the notes","ts_ms":1000,"turn":1},
+    {"end_ms":1200,"id":"t1","kind":"tool","seq":2,"tool":{"class":"command","detail":"curl -sI https://example.com","name":"command","reviewed":true,"status":"ok","title":"Bash"},"ts_ms":1100,"turn":1},
+    {"id":"a0","kind":"assistant","phase":"interim","seq":3,"text":"It's up.","ts_ms":1250,"turn":1},
+    {"end_ms":1400,"id":"t2","kind":"tool","seq":4,"tool":{"class":"command","detail":"curl -sI https://example.org","name":"command","reviewed":true,"status":"ok","title":"Bash"},"ts_ms":1300,"turn":1},
+    {"end_ms":1600,"id":"t3","kind":"tool","seq":5,"tool":{"by_rule":true,"class":"command","detail":"make check","name":"command","reviewed":true,"status":"ok","title":"Bash"},"ts_ms":1500,"turn":1},
+    {"id":"a1","kind":"assistant","phase":"interim","seq":6,"text":"Now the notes.","ts_ms":1700,"turn":1},
+    {"end_ms":1900,"id":"t4","kind":"tool","seq":7,"tool":{"class":"read","detail":"","name":"read","path":"notes.md","status":"ok","title":"Read notes.md"},"ts_ms":1800,"turn":1},
+    {"end_ms":2100,"id":"t5","kind":"tool","seq":8,"tool":{"class":"command","detail":"printf x > ../outside/a.txt","name":"command","reviewed":true,"status":"ok","title":"Bash"},"ts_ms":2000,"turn":1},
+    {"end_ms":2300,"id":"t6","kind":"tool","seq":9,"tool":{"class":"command","detail":"printf y > ../outside/b.txt","name":"command","reviewed":true,"status":"ok","title":"Bash"},"ts_ms":2200,"turn":1},
+    {"end_ms":2500,"id":"t7","kind":"tool","seq":10,"tool":{"class":"command","detail":"ls ../outside","name":"command","status":"ok","title":"Bash"},"ts_ms":2400,"turn":1},
+    {"id":"a2","kind":"assistant","phase":"interim","seq":11,"text":"And the to-do list.","ts_ms":2600,"turn":1},
+    {"end_ms":2800,"id":"t8","kind":"tool","seq":12,"tool":{"class":"read","detail":"","name":"read","path":"todo.md","status":"ok","title":"Read todo.md"},"ts_ms":2750,"turn":1},
+    {"end_ms":2900,"id":"t9","kind":"tool","seq":13,"tool":{"class":"command","detail":"wc -l notes.md","name":"command","reviewed":true,"status":"ok","title":"Bash"},"ts_ms":2860,"turn":1},
+    {"end_ms":2950,"id":"a3","kind":"assistant","phase":"final","seq":14,"text":"Done.","ts_ms":2940,"turn":1}
+  ],
+  "note": "A step the agent's reviewer approved has a reviewed mark while it shows on its own (t1) or in an open group (t5, t6); it never ends a run (t4-t7 stay one group), and a closed group doesn't show it (t8-t9). A mark from another device or a rule wins over it (t2, t3).",
+  "rows": [
+    {"depth":0,"item_id":"u1","key":"i:u1","kind":"user","seq":1,"text":"Check the site is up, then tidy the notes","turn":1},
+    {"depth":0,"hidden":17,"item_id":"u1","key":"f:1","kind":"fold","open":true,"seq":1,"turn":1,"worked_ms":1950},
+    {"depth":1,"has_detail":true,"item_id":"t1","key":"i:t1","kind":"tool","label":{"class":"command","object":"curl -sI https://example.com","toks":[{"class":"function","len":4},{"class":"punctuation","len":2},{"class":"variable","len":2},{"class":"plain","len":20}]},"ms":100,"seq":2,"status":"ok","turn":1},
+    {"depth":1,"item_id":"t1","key":"m:t1","kind":"mark","mark_kind":"reviewed","seq":2,"turn":1},
+    {"block":{"kind":"paragraph","text":"It's up."},"depth":1,"index":0,"item_id":"a0","key":"b:a0:0","kind":"block","last":true,"phase":"interim","seq":3,"turn":1},
+    {"depth":1,"has_detail":true,"item_id":"t2","key":"i:t2","kind":"tool","label":{"class":"command","object":"curl -sI https://example.org","toks":[{"class":"function","len":4},{"class":"punctuation","len":2},{"class":"variable","len":2},{"class":"plain","len":20}]},"ms":100,"seq":4,"status":"ok","turn":1},
+    {"by":"Pixel 8 Pro","depth":1,"item_id":"t2","key":"m:t2","kind":"mark","mark_kind":"allowed","seq":4,"turn":1},
+    {"depth":1,"has_detail":true,"item_id":"t3","key":"i:t3","kind":"tool","label":{"class":"command","object":"make check","toks":[{"class":"function","len":4},{"class":"plain","len":6}]},"ms":100,"seq":5,"status":"ok","turn":1},
+    {"depth":1,"item_id":"t3","key":"m:t3","kind":"mark","mark_kind":"rule","seq":5,"turn":1},
+    {"block":{"kind":"paragraph","text":"Now the notes."},"depth":1,"index":0,"item_id":"a1","key":"b:a1:0","kind":"block","last":true,"phase":"interim","seq":6,"turn":1},
+    {"count":4,"depth":1,"item_id":"t4","key":"g:t4","kind":"group","open":true,"seq":7,"summary":{"first":{"class":"command","count":3},"second":{"class":"read","count":1}},"turn":1},
+    {"depth":2,"item_id":"t4","key":"i:t4","kind":"tool","label":{"class":"read","object":"notes.md","toks":[{"class":"file","len":8}]},"ms":100,"seq":7,"status":"ok","turn":1},
+    {"depth":2,"has_detail":true,"item_id":"t5","key":"i:t5","kind":"tool","label":{"class":"command","object":"printf x > ../outside/a.txt","toks":[{"class":"function","len":6},{"class":"plain","len":3},{"class":"operator","len":1},{"class":"plain","len":17}]},"ms":100,"seq":8,"status":"ok","turn":1},
+    {"depth":2,"item_id":"t5","key":"m:t5","kind":"mark","mark_kind":"reviewed","seq":8,"turn":1},
+    {"depth":2,"has_detail":true,"item_id":"t6","key":"i:t6","kind":"tool","label":{"class":"command","object":"printf y > ../outside/b.txt","toks":[{"class":"function","len":6},{"class":"plain","len":3},{"class":"operator","len":1},{"class":"plain","len":17}]},"ms":100,"seq":9,"status":"ok","turn":1},
+    {"depth":2,"item_id":"t6","key":"m:t6","kind":"mark","mark_kind":"reviewed","seq":9,"turn":1},
+    {"depth":2,"has_detail":true,"item_id":"t7","key":"i:t7","kind":"tool","label":{"class":"command","object":"ls ../outside","toks":[{"class":"function","len":2},{"class":"plain","len":11}]},"ms":100,"seq":10,"status":"ok","turn":1},
+    {"block":{"kind":"paragraph","text":"And the to-do list."},"depth":1,"index":0,"item_id":"a2","key":"b:a2:0","kind":"block","last":true,"phase":"interim","seq":11,"turn":1},
+    {"count":2,"depth":1,"item_id":"t8","key":"g:t8","kind":"group","seq":12,"summary":{"first":{"class":"command","count":1},"second":{"class":"read","count":1}},"turn":1},
+    {"block":{"kind":"paragraph","text":"Done."},"depth":0,"index":0,"item_id":"a3","key":"b:a3:0","kind":"block","last":true,"phase":"final","seq":14,"turn":1}
+  ]
+}

@@ -17,7 +17,7 @@ use serde_json::Value;
 use crate::api::*;
 use crate::host::agents::{SessionCmd, UserInput};
 use crate::host::catalog;
-use crate::host::threads::{CODEX_AUTO_EDIT, Registry, emit_item, emit_state, err, random_hex};
+use crate::host::threads::{Registry, emit_item, emit_state, err, random_hex};
 use crate::host::{Host, sessions};
 
 /// A thread's settings as a start, send or configure asks to change them:
@@ -31,8 +31,11 @@ pub(crate) struct Wanted {
 
 /// Checks what a client asks a thread to run with (§Q7): a model the agent
 /// lists unless `custom` (and then a safe single argument), an effort word
-/// the host knows and the model takes, a mode the agent and the asker may
-/// use. `current_model`: the thread's model now (for an effort alone).
+/// the host knows and the model takes, a mode the agent offers (anyone may
+/// choose any of them), and Claude's `auto` only with a model that takes it.
+/// `current_model`, `current_mode`: the thread's now (for a change of the
+/// other alone).
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn check_settings(
     info: &AgentInfo,
     current_model: Option<&str>,
@@ -40,7 +43,7 @@ pub(crate) fn check_settings(
     effort: Option<&str>,
     custom: bool,
     mode: Option<Mode>,
-    by_phone: bool,
+    current_mode: Option<Mode>,
 ) -> Result<Wanted, RpcError> {
     let agent = info.id.display_name();
     let model = match model {
@@ -78,23 +81,25 @@ pub(crate) fn check_settings(
             Some(Some(word.to_owned()))
         }
     };
-    if let Some(mode) = mode {
-        if by_phone && !mode.phone_may() {
-            return Err(err(
-                ErrorCode::Denied,
-                "A phone can only choose to be asked before each change, or Plan.",
-            ));
-        }
-        if mode == Mode::Plan && !info.can(Can::Plan) {
-            let message = match info.id {
-                AgentId::Codex => "Plan isn't available with this version of Codex.".to_owned(),
-                AgentId::Claude => format!("{agent} can't plan here."),
-            };
-            return Err(err(ErrorCode::Unavailable, message));
-        }
-        if info.id == AgentId::Codex && mode == Mode::AutoEdit && !CODEX_AUTO_EDIT {
-            return Err(err(ErrorCode::Unavailable, "Codex can't edit without asking yet."));
-        }
+    if let Some(mode) = mode
+        && !info.offers(mode)
+    {
+        let message = match (mode, info.id) {
+            (Mode::Plan, AgentId::Codex) => "Plan isn't available with this version of Codex.".to_owned(),
+            (Mode::Plan, AgentId::Claude) => format!("{agent} can't plan here."),
+            (Mode::Auto, AgentId::Claude) => "None of Claude's models here can run in Auto.".to_owned(),
+            _ => format!("{agent} doesn't offer that mode."),
+        };
+        return Err(err(ErrorCode::Unavailable, message));
+    }
+    // Claude's Auto is per model: a listed model that says it can't, as the
+    // thread would run after this change.
+    if info.id == AgentId::Claude
+        && (mode.is_some() || model.is_some())
+        && mode.or(current_mode) == Some(Mode::Auto)
+        && listed.is_some_and(|m| !m.auto)
+    {
+        return Err(err(ErrorCode::BadRequest, "Auto isn't available with this model."));
     }
     Ok(Wanted { model, effort, mode })
 }
@@ -408,14 +413,19 @@ impl Host {
         p: ThreadSendParams,
         owner: &str,
     ) -> Result<ThreadSendResult, RpcError> {
-        let (agent, resume, model) = {
+        let (agent, resume, model, mode) = {
             let reg = self.lock_reg();
             let entry =
                 reg.threads.get(&p.thread_id).ok_or_else(|| err(ErrorCode::NotFound, "No such thread."))?;
             let ours_until = entry.info.updated_ms.max(entry.process_ended_ms());
             let resume =
                 entry.info.native_id.clone().filter(|_| !entry.alive() && !entry.info.state.is_running());
-            (entry.info.agent, resume.map(|native| (native, ours_until)), entry.info.model.clone())
+            (
+                entry.info.agent,
+                resume.map(|native| (native, ours_until)),
+                entry.info.model.clone(),
+                entry.info.mode,
+            )
         };
         // A new process would resume the agent's session: refuse while
         // something else (a terminal, the agent's app) has it open.
@@ -425,7 +435,6 @@ impl Host {
             return Err(err(ErrorCode::Busy, sessions::still_open_message(agent, source)));
         }
         let probe = self.agent_info(agent).await;
-        let by_phone = p.origin.kind == OriginKind::Phone;
         let wanted = check_settings(
             &probe.info,
             model.as_deref(),
@@ -433,7 +442,7 @@ impl Host {
             p.effort.as_deref(),
             p.custom_model,
             p.mode,
-            by_phone,
+            Some(mode),
         )?;
         let next_model = wanted.model.clone().unwrap_or(model);
         if !p.images.is_empty() && !model_takes_images(&probe.info, next_model.as_deref()) {
@@ -469,8 +478,12 @@ impl Host {
         let Some(entry) = reg.threads.get_mut(&p.thread_id) else {
             return Err(err(ErrorCode::NotFound, "No such thread."));
         };
+        let folder_id = entry.info.folder_id.clone();
         if wanted.apply(&mut entry.info, &probe.info) {
             entry.close_session(&mut reg.bridges);
+        }
+        if let Some(mode) = p.mode {
+            self.remember_mode(reg, &folder_id, agent, mode);
         }
         let Some(entry) = reg.threads.get_mut(&p.thread_id) else {
             return Err(err(ErrorCode::NotFound, "No such thread."));
@@ -759,7 +772,6 @@ impl Host {
                 .agent
         };
         let probe = self.agent_info(agent).await;
-        let by_phone = p.by.as_ref().is_some_and(|b| b.kind == OriginKind::Phone);
         let mut guard = self.lock_reg();
         let reg = &mut *guard;
         let entry =
@@ -774,7 +786,7 @@ impl Host {
             p.effort.as_deref(),
             p.custom_model,
             p.mode,
-            by_phone,
+            Some(entry.info.mode),
         )?;
         if wanted.apply(&mut entry.info, &probe.info) {
             entry.close_session(&mut reg.bridges);
@@ -782,7 +794,11 @@ impl Host {
                 return Err(err(ErrorCode::NotFound, "No such thread."));
             };
             emit_state(self, entry);
-            return Ok(entry.info.clone());
+            let (info, folder_id) = (entry.info.clone(), entry.info.folder_id.clone());
+            if let Some(mode) = p.mode {
+                self.remember_mode(reg, &folder_id, info.agent, mode);
+            }
+            return Ok(info);
         }
         Ok(entry.info.clone())
     }
@@ -794,27 +810,17 @@ impl Host {
         if !p.by.is_valid() {
             return Err(err(ErrorCode::BadRequest, "Bad origin."));
         }
-        if !matches!(p.mode, Mode::Supervised | Mode::AutoEdit) {
-            return Err(err(
-                ErrorCode::BadRequest,
-                "Implement asks before edits and commands, or before commands.",
-            ));
+        if p.mode == Mode::Plan {
+            return Err(err(ErrorCode::BadRequest, "Implement the plan in a mode that makes changes."));
         }
-        if p.by.kind == OriginKind::Phone && p.mode != Mode::Supervised {
-            return Err(err(ErrorCode::Denied, "A phone implements a plan asking before each change."));
-        }
-        let agent = {
+        let (agent, model) = {
             let reg = self.lock_reg();
-            reg.threads
-                .get(&p.thread_id)
-                .ok_or_else(|| err(ErrorCode::NotFound, "No such thread."))?
-                .info
-                .agent
+            let entry =
+                reg.threads.get(&p.thread_id).ok_or_else(|| err(ErrorCode::NotFound, "No such thread."))?;
+            (entry.info.agent, entry.info.model.clone())
         };
-        if agent == AgentId::Codex && p.mode == Mode::AutoEdit && !CODEX_AUTO_EDIT {
-            return Err(err(ErrorCode::Unavailable, "Codex can't edit without asking yet."));
-        }
         let probe = self.agent_info(agent).await;
+        check_settings(&probe.info, model.as_deref(), None, None, false, Some(p.mode), None)?;
         let mut guard = self.lock_reg();
         let reg = &mut *guard;
         let (total, per) = reg.running();
@@ -852,8 +858,10 @@ impl Host {
         if entry.info.mode != p.mode {
             entry.info.mode = p.mode;
         }
+        let folder_id = entry.info.folder_id.clone();
         // The process ran in plan mode: the next turn starts a new one.
         entry.close_session(&mut reg.bridges);
+        self.remember_mode(reg, &folder_id, agent, p.mode);
         let Some(entry) = reg.threads.get_mut(&p.thread_id) else {
             return Err(err(ErrorCode::NotFound, "No such thread."));
         };
@@ -884,8 +892,10 @@ mod tests {
             images,
             short: false,
             exact: None,
+            // Claude's Auto: the default may run it, Haiku may not.
+            auto: default,
         };
-        AgentInfo {
+        let mut info = AgentInfo {
             installed: true,
             signed_in: true,
             models: vec![
@@ -894,14 +904,16 @@ mod tests {
             ],
             can: vec![Can::Plan, Can::Steer],
             ..AgentInfo::missing(AgentId::Claude)
-        }
+        };
+        info.modes = catalog::modes(&info);
+        info
     }
 
     #[test]
     fn settings_are_checked_against_the_agents_own_list() {
         let info = agent();
         let ok = |model: Option<&str>, effort: Option<&str>, custom: bool| {
-            check_settings(&info, None, model, effort, custom, None, false)
+            check_settings(&info, None, model, effort, custom, None, None)
         };
         assert_eq!(ok(Some("default"), Some("high"), false).unwrap().effort, Some(Some("high".into())));
         assert_eq!(ok(Some("opus-9"), None, false).unwrap_err().code, ErrorCode::BadRequest, "not listed");
@@ -921,15 +933,45 @@ mod tests {
             Wanted { model: Some(None), effort: Some(None), mode: None }
         );
         // An effort for the thread's own model.
-        assert!(check_settings(&info, Some("haiku"), None, Some("low"), false, None, false).is_err());
-        // Modes.
-        let mode =
-            |mode, phone, info: &AgentInfo| check_settings(info, None, None, None, false, Some(mode), phone);
-        assert_eq!(mode(Mode::AutoEdit, true, &info).unwrap_err().code, ErrorCode::Denied);
-        assert!(mode(Mode::Plan, true, &info).is_ok());
-        let codex = AgentInfo { can: vec![], ..AgentInfo::missing(AgentId::Codex) };
-        assert_eq!(mode(Mode::Plan, false, &codex).unwrap_err().code, ErrorCode::Unavailable);
-        assert_eq!(mode(Mode::AutoEdit, false, &codex).unwrap_err().code, ErrorCode::Unavailable);
+        assert!(check_settings(&info, Some("haiku"), None, Some("low"), false, None, None).is_err());
+        // Modes: any the agent offers, whoever asks.
+        let mode = |mode, info: &AgentInfo| check_settings(info, None, None, None, false, Some(mode), None);
+        for offered in Mode::ALL {
+            assert!(mode(offered, &info).is_ok(), "{offered:?}");
+        }
+        let mut codex = AgentInfo { installed: true, can: vec![], ..AgentInfo::missing(AgentId::Codex) };
+        codex.modes = catalog::modes(&codex);
+        assert_eq!(mode(Mode::Plan, &codex).unwrap_err().code, ErrorCode::Unavailable, "no experimental API");
+        assert_eq!(mode(Mode::AcceptEdits, &codex).unwrap_err().code, ErrorCode::Unavailable, "not Codex's");
+        for offered in [Mode::Ask, Mode::Auto, Mode::Full] {
+            assert!(mode(offered, &codex).is_ok(), "{offered:?}");
+        }
+        let unprobed = AgentInfo { installed: true, ..AgentInfo::missing(AgentId::Claude) };
+        assert_eq!(mode(Mode::Ask, &unprobed).unwrap_err().code, ErrorCode::Unavailable);
+        // Claude's Auto only with a model that takes it, as the thread would run.
+        let auto = |current_model, model, mode, current_mode| {
+            check_settings(&info, current_model, model, None, false, mode, current_mode).map(|w| w.mode)
+        };
+        assert_eq!(auto(None, None, Some(Mode::Auto), None), Ok(Some(Mode::Auto)), "the default may");
+        assert_eq!(
+            auto(Some("haiku"), None, Some(Mode::Auto), None).unwrap_err().code,
+            ErrorCode::BadRequest
+        );
+        assert_eq!(
+            auto(None, Some("haiku"), Some(Mode::Auto), None).unwrap_err().code,
+            ErrorCode::BadRequest
+        );
+        assert_eq!(
+            auto(None, Some("haiku"), None, Some(Mode::Auto)).unwrap_err().code,
+            ErrorCode::BadRequest,
+            "a thread in Auto can't move to a model without it"
+        );
+        assert!(auto(Some("haiku"), Some("default"), Some(Mode::Auto), None).is_ok());
+        assert!(auto(Some("haiku"), None, None, Some(Mode::Auto)).is_ok(), "an effort alone changes neither");
+        assert!(auto(Some("custom-one"), None, Some(Mode::Auto), None).is_ok(), "unknown: the CLI says");
+        assert!(auto(Some("haiku"), None, Some(Mode::Full), None).is_ok());
+        let codex_auto = check_settings(&codex, None, None, None, false, Some(Mode::Auto), None);
+        assert!(codex_auto.is_ok(), "Codex's Approve for me isn't per model");
     }
 
     #[test]
@@ -941,7 +983,7 @@ mod tests {
             ..crate::host::threads::test_info(AgentId::Claude)
         };
         let to_haiku =
-            check_settings(&info, thread.model.as_deref(), Some("haiku"), None, false, None, false).unwrap();
+            check_settings(&info, thread.model.as_deref(), Some("haiku"), None, false, None, None).unwrap();
         assert!(to_haiku.apply(&mut thread, &info));
         assert_eq!((thread.model.as_deref(), thread.effort.as_deref()), (Some("haiku"), None));
         assert!(!to_haiku.apply(&mut thread, &info), "nothing changed the second time");
@@ -975,6 +1017,7 @@ mod flow {
             images: true,
             short: true,
             exact: None,
+            auto: default,
         };
         AgentInfo {
             installed: true,
@@ -1028,6 +1071,7 @@ mod flow {
             reason: None,
             tool_key: None,
             tool: None,
+            deny_stops: false,
         }
     }
 
@@ -1206,7 +1250,7 @@ mod flow {
         assert_eq!(busy.code, ErrorCode::Busy, "never during a turn");
         host.test_step(&id, Step::TurnEnded(TurnEnd::done(None)));
         // No change: the process stays.
-        host.thread_configure(configure(None, Some(Mode::Supervised), None)).await.unwrap();
+        host.thread_configure(configure(None, Some(Mode::Ask), None)).await.unwrap();
         assert!(told(&mut cmds).is_empty());
         let thread = host.thread_configure(configure(Some("haiku"), None, None)).await.unwrap();
         assert_eq!(thread.model.as_deref(), Some("haiku"));
@@ -1216,39 +1260,94 @@ mod flow {
             "restarted with the new flags next turn"
         );
         assert!(host.test_entry(&id, |e| e.session.is_none()));
-        // A phone: supervised or plan only.
+        // A phone may choose any mode the agent offers, Full too.
         let phone = Some(Origin::phone("p", "Pixel"));
-        let denied =
-            host.thread_configure(configure(None, Some(Mode::AutoEdit), phone.clone())).await.unwrap_err();
-        assert_eq!(denied.code, ErrorCode::Denied);
-        let plan = host.thread_configure(configure(None, Some(Mode::Plan), phone)).await.unwrap();
+        let full = host.thread_configure(configure(None, Some(Mode::Full), phone.clone())).await.unwrap();
+        assert_eq!(full.mode, Mode::Full);
+        assert!(host.test_entry(&id, |e| e.session.is_none()), "the next turn starts a process in it");
+        let last = |host: &Arc<Host>| host.folders_list()[0].last_mode(AgentId::Claude);
+        assert_eq!(last(&host), Some(Mode::Full), "remembered on the folder");
+        let plan = host.thread_configure(configure(None, Some(Mode::Plan), phone.clone())).await.unwrap();
         assert_eq!(plan.mode, Mode::Plan);
-        // An older client reads plan mode as supervised.
-        assert_eq!(plan.for_client(false).mode, Mode::Supervised);
+        assert_eq!(last(&host), Some(Mode::Full), "plan is never remembered");
+        assert_eq!(host.folders_list()[0].last_mode(AgentId::Codex), None, "per agent");
+        // An older client reads plan mode as ask.
+        assert_eq!(plan.for_client(false).mode, Mode::Ask);
+        // Auto, with the thread's model: Haiku can't.
+        let auto = host.thread_configure(configure(None, Some(Mode::Auto), phone.clone())).await;
+        assert_eq!(auto.unwrap_err().code, ErrorCode::BadRequest, "the thread runs Haiku");
+        let auto = host.thread_configure(configure(Some("default"), Some(Mode::Auto), phone)).await.unwrap();
+        assert_eq!((auto.mode, auto.model.as_deref()), (Mode::Auto, Some("default")));
+        assert_eq!(last(&host), Some(Mode::Auto));
     }
 
     #[tokio::test]
-    async fn a_phone_may_not_start_or_implement_with_auto_edit() {
+    async fn a_review_lands_on_its_step_and_a_denial_is_said() {
+        use crate::host::agents::ToolSpec;
         let dir = tempfile::tempdir().unwrap();
         let host = host(dir.path(), &ALL, APPROVAL_LIFETIME_MS).await;
+        let (id, _generation, _cmds) = host.test_thread(AgentId::Codex);
+        let review =
+            |status| ToolReview { status, risk: Some("low".into()), rationale: Some("Asked for.".into()) };
+        let start = |key: &str| Step::ToolStart {
+            key: key.into(),
+            tool: ToolSpec::other("shell", "Run command", ToolClass::Command),
+        };
+        // Before Codex reported its step: kept for it.
+        host.test_step(
+            &id,
+            Step::ToolReview { key: Some("exec-1".into()), review: review(ReviewStatus::Approved) },
+        );
+        host.test_step(&id, start("exec-1"));
+        // After.
+        host.test_step(&id, start("exec-2"));
+        host.test_step(
+            &id,
+            Step::ToolReview { key: Some("exec-2".into()), review: review(ReviewStatus::Denied) },
+        );
+        // About no step (network access).
+        host.test_step(&id, Step::ToolReview { key: None, review: review(ReviewStatus::Approved) });
+        let items = host.test_items(&id).await;
+        let of = |key: &str| {
+            items.iter().find(|i| i.id == key).and_then(|i| i.tool.as_ref()).and_then(|t| t.review.clone())
+        };
+        assert_eq!(of("exec-1"), Some(review(ReviewStatus::Approved)));
+        assert_eq!(of("exec-2"), Some(review(ReviewStatus::Denied)));
+        let notices: Vec<&str> =
+            items.iter().filter(|i| i.kind == ItemKind::Notice).filter_map(|i| i.text.as_deref()).collect();
+        assert_eq!(
+            notices,
+            ["Codex's reviewer denied a step: Asked for.", "Codex's reviewer allowed a request: Asked for."]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_phone_starts_and_implements_in_any_mode_the_agent_offers() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = host(dir.path(), &ALL, APPROVAL_LIFETIME_MS).await;
+        // Codex offers no "accept edits": refused for anyone.
         let start = ThreadStartParams::new(
-            AgentId::Claude,
+            AgentId::Codex,
             "f000000000001".into(),
             "hi".into(),
-            Mode::AutoEdit,
+            Mode::AcceptEdits,
             Origin::phone("p", "Pixel"),
         );
-        assert_eq!(host.thread_start(start, "link").await.unwrap_err().code, ErrorCode::Denied);
+        assert_eq!(host.thread_start(start, "link").await.unwrap_err().code, ErrorCode::Unavailable);
         let (id, _generation, _cmds) = host.test_thread(AgentId::Claude);
         host.test_step(&id, Step::PlanDone { key: "p1".into(), text: "1. Do it".into() });
         host.test_step(&id, Step::TurnEnded(TurnEnd::done(None)));
-        let implement = PlanImplementParams {
+        let implement = |mode| PlanImplementParams {
             thread_id: id.clone(),
             item_id: "p1".into(),
-            mode: Mode::AutoEdit,
+            mode,
             by: Origin::phone("p", "Pixel"),
         };
-        assert_eq!(host.plan_implement(implement).await.unwrap_err().code, ErrorCode::Denied);
+        assert_eq!(host.plan_implement(implement(Mode::Plan)).await.unwrap_err().code, ErrorCode::BadRequest);
+        host.plan_implement(implement(Mode::Full)).await.unwrap();
+        let state = host.test_state(&id);
+        assert_eq!((state.mode, state.state), (Mode::Full, State::Working));
+        assert_eq!(host.folders_list()[0].last_mode(AgentId::Claude), Some(Mode::Full));
     }
 
     #[tokio::test]
@@ -1280,14 +1379,19 @@ mod flow {
         let implement = |item: &str| PlanImplementParams {
             thread_id: id.clone(),
             item_id: item.into(),
-            mode: Mode::Supervised,
+            mode: Mode::Ask,
             by: Origin::launcher(),
         };
         assert_eq!(host.plan_implement(implement("p1")).await.unwrap_err().code, ErrorCode::NotFound);
         told(&mut cmds);
         host.plan_implement(implement("p2")).await.unwrap();
         let state = host.test_state(&id);
-        assert_eq!((state.mode, state.state), (Mode::Supervised, State::Working));
+        assert_eq!((state.mode, state.state), (Mode::Ask, State::Working));
+        assert_eq!(
+            host.folders_list()[0].last_mode(AgentId::Codex),
+            Some(Mode::Ask),
+            "implement remembers it"
+        );
         let items = host.test_items(&id).await;
         let plan = items.iter().find(|i| i.id == "p2").unwrap();
         assert_eq!((plan.plan_state, plan.rev), (Some(PlanState::Implemented), 1));
@@ -1491,7 +1595,7 @@ mod flow {
         assert!(matches!(rx.await.unwrap(), QuestionReply::Answered(_)));
         let read = ThreadReadParams { thread_id: id.clone(), ..Default::default() };
         let legacy = host.thread_read(read, Caps { items2: true, items3: false }).await.unwrap();
-        assert_eq!(legacy.thread.mode, Mode::Supervised);
+        assert_eq!(legacy.thread.mode, Mode::Ask);
         let kinds: Vec<(u64, ItemKind)> = legacy.items.iter().map(|i| (i.seq, i.kind)).collect();
         assert_eq!(kinds, [(1, ItemKind::Assistant), (2, ItemKind::Assistant), (3, ItemKind::Tool)]);
         assert_eq!(legacy.items[1].text.as_deref(), Some("1. Do it"));

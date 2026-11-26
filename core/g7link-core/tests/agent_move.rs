@@ -370,7 +370,8 @@ async fn a_phone_without_control_gets_the_threads_older_form() {
         .await
         .unwrap();
     let thread = moved.thread.expect("the thread to open");
-    assert_eq!((thread.mode.as_str(), thread.model), (agent::mode::SUPERVISED, None));
+    // Sent as `supervised` (the old form); this build reads the old word as `ask`.
+    assert_eq!((thread.mode.as_str(), thread.model), (agent::mode::ASK, None));
 }
 
 #[tokio::test(flavor = "multi_thread")]

@@ -5134,7 +5134,7 @@ impl Node {
         crate::agents::session_watch(&self.shared, peer, session).await
     }
 
-    /// Phone: makes a session a supervised thread started by this phone.
+    /// Phone: makes a session a thread started by this phone.
     pub async fn agent_session_continue(
         &self,
         peer: DeviceId,
@@ -5192,7 +5192,7 @@ impl Node {
     }
 
     /// Phone: changes a thread's model, effort or mode for its next turn
-    /// (`supervised` or `plan` only); the thread as it is now.
+    /// (any mode the agent offers); the thread as it is now.
     pub async fn agent_configure(
         &self,
         peer: DeviceId,
@@ -5212,10 +5212,18 @@ impl Node {
         crate::agents::reply(&self.shared, peer, reply).await
     }
 
-    /// Phone: implements the thread's newest proposed plan (`item`), asking
-    /// before edits and commands.
-    pub async fn agent_implement(&self, peer: DeviceId, thread: String, item: String) -> Result<()> {
-        crate::agents::implement(&self.shared, peer, crate::agents::AgentImplement { thread, item }).await
+    /// Phone: implements the thread's newest proposed plan (`item`) in
+    /// `mode` (any of the agent's modes but `plan`); `None`: the mode the
+    /// folder remembers for the agent, else `ask`.
+    pub async fn agent_implement(
+        &self,
+        peer: DeviceId,
+        thread: String,
+        item: String,
+        mode: Option<String>,
+    ) -> Result<()> {
+        crate::agents::implement(&self.shared, peer, crate::agents::AgentImplement { thread, item, mode })
+            .await
     }
 
     /// Phone: files of a thread's folder (or a folder) matching `query`, for `@`.

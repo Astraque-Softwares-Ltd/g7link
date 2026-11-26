@@ -1260,6 +1260,7 @@ pub(crate) mod tests {
             class: None,
             path: None,
             by_rule: false,
+            review: None,
         });
         let reading = Reading {
             items: vec![Item { text: Some("go".into()), ..Item::new(1, "u", ItemKind::User, 8) }, tool],

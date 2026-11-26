@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 
-use crate::api::{self, ApprovalKind, Limit, Mode, Phase, ToolClass, ToolStatus};
+use crate::api::{self, ApprovalKind, Limit, Mode, Phase, ReviewStatus, ToolClass, ToolReview, ToolStatus};
 use crate::host::agents::{
     Answer, ApprovalSpec, Driver, LaunchSettings, Output, QuestionReply, QuestionSpec, SessionCmd, Step,
     ToolSpec, TurnEnd, UserInput, code, display_path, file_diff, parse_codex_account, plan_of,
@@ -37,15 +37,46 @@ pub fn initialize_request_with(id: u64, experimental: bool) -> Value {
     }})
 }
 
-/// The approval policy for a mode. Plan mode asks as supervised does.
-pub fn approval_policy(mode: Mode) -> &'static str {
-    match mode {
-        Mode::Supervised | Mode::Plan => "untrusted",
-        Mode::AutoEdit => "on-request",
-    }
+/// What Codex is told about asking for a mode, as `thread/start`,
+/// `thread/resume` and `thread/fork` take it (plan §1.3, spikes 3 to 5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Permissions {
+    /// `approvalPolicy`.
+    pub policy: &'static str,
+    /// `sandbox`.
+    pub sandbox: &'static str,
+    /// `approvalsReviewer`: always sent, since a resume without it keeps
+    /// the reviewer the thread had (spike 4).
+    pub reviewer: &'static str,
 }
 
-pub const SANDBOX: &str = "workspace-write";
+/// Codex's own presets: `ask` is its "Ask for approval", `auto` its
+/// "Approve for me" (its reviewer answers), `full` its "Full access".
+/// `plan` keeps asking before everything it doesn't trust, as it always
+/// did. `accept_edits` isn't offered for Codex; it would ask as `ask`.
+pub fn permissions(mode: Mode) -> Permissions {
+    let (policy, sandbox, reviewer) = match mode {
+        Mode::Ask | Mode::AcceptEdits => ("on-request", "workspace-write", "user"),
+        Mode::Auto => ("on-request", "workspace-write", "auto_review"),
+        Mode::Full => ("never", "danger-full-access", "user"),
+        Mode::Plan => ("untrusted", "workspace-write", "user"),
+    };
+    Permissions { policy, sandbox, reviewer }
+}
+
+/// `params` with the mode's permissions.
+fn with_permissions(mut params: Value, mode: Mode) -> Value {
+    let p = permissions(mode);
+    params["approvalPolicy"] = json!(p.policy);
+    params["sandbox"] = json!(p.sandbox);
+    params["approvalsReviewer"] = json!(p.reviewer);
+    params
+}
+
+/// The notice after a plain Deny that Codex could only take as `cancel`
+/// (the request offered no `decline`, as an escalation in "Ask for
+/// approval" does): Codex stops the turn (spike 5a).
+pub const DENY_STOPPED: &str = "You denied it, so Codex stopped this turn.";
 
 /// `turn/start` asks for reasoning summaries (`ReasoningSummary`), so the
 /// thinking line can show what the model thinks about when Codex sends it.
@@ -87,8 +118,7 @@ pub const METHODS: [&str; 12] = [
 /// turn `last_turn` (inclusive; absent: the whole thread), without its
 /// turns in the reply, with what `thread/resume` sends.
 pub fn fork_params(from: &str, last_turn: Option<&str>, cwd: &str, mode: Mode) -> Value {
-    let mut params = json!({"threadId": from, "cwd": cwd, "approvalPolicy": approval_policy(mode),
-        "sandbox": SANDBOX, "excludeTurns": true});
+    let mut params = with_permissions(json!({"threadId": from, "cwd": cwd, "excludeTurns": true}), mode);
     if let Some(turn) = last_turn {
         params["lastTurnId"] = json!(turn);
     }
@@ -159,6 +189,29 @@ fn command_text(v: &Value) -> String {
     s(v, "command").unwrap_or_default().to_owned()
 }
 
+/// A finished automatic review (`item/autoApprovalReview/completed`, marked
+/// UNSTABLE in Codex's schema): `None` unless it has a status we know and
+/// that isn't still running. The risk is kept only as a short plain word.
+fn auto_review(params: &Value) -> Option<ToolReview> {
+    let review = params.get("review")?;
+    let status = match s(review, "status")? {
+        "approved" => ReviewStatus::Approved,
+        "denied" => ReviewStatus::Denied,
+        "timedOut" => ReviewStatus::TimedOut,
+        "aborted" => ReviewStatus::Aborted,
+        _ => return None,
+    };
+    let risk = s(review, "riskLevel").map(str::trim).filter(|w| {
+        !w.is_empty()
+            && w.len() <= api::MAX_REVIEW_WORD
+            && w.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+    });
+    let rationale = s(review, "rationale")
+        .map(|r| api::clean_cut(r.trim(), api::MAX_REVIEW_RATIONALE).0)
+        .filter(|r| !r.is_empty());
+    Some(ToolReview { status, risk: risk.map(str::to_owned), rationale })
+}
+
 fn command_tool(item: &Value) -> ToolSpec {
     let command = command_text(item);
     ToolSpec {
@@ -209,6 +262,8 @@ fn file_tool(item: &Value, cwd: &Path) -> (ToolSpec, bool) {
 /// A request Codex sent us.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ServerRequest {
+    /// `decline_ok`: the request offers `decline`; without it a denial is
+    /// `cancel`, which stops the turn.
     Approval {
         spec: Box<ApprovalSpec>,
         decline_ok: bool,
@@ -576,6 +631,14 @@ impl CodexMapper {
                 }
             }
             "thread/compacted" => self.compacted(&mut steps),
+            // "Approve for me": what Codex's reviewer decided (spike 3). The
+            // started notice and `guardianWarning` say nothing more.
+            "item/autoApprovalReview/completed" => {
+                if let Some(review) = auto_review(params) {
+                    let key = s(params, "targetItemId").filter(|k| !k.is_empty()).map(str::to_owned);
+                    steps.push(Step::ToolReview { key, review });
+                }
+            }
             "turn/plan/updated" => {
                 if let Some(entries) = params.get("plan").and_then(Value::as_array) {
                     steps.push(Step::Plan(plan_of(
@@ -648,6 +711,7 @@ impl CodexMapper {
                 let tool = command_tool(params);
                 let mut spec = ApprovalSpec::from_tool(&tool, item_id);
                 spec.reason = reason;
+                spec.deny_stops = !decline_ok;
                 ServerRequest::Approval { spec: Box::new(spec), decline_ok }
             }
             "item/fileChange/requestApproval" => {
@@ -668,6 +732,7 @@ impl CodexMapper {
                     spec.title = format!("Edit {path}");
                 }
                 spec.reason = reason;
+                spec.deny_stops = !decline_ok;
                 ServerRequest::Approval { spec: Box::new(spec), decline_ok }
             }
             "item/tool/requestUserInput" => match questions::codex_spec(params) {
@@ -949,7 +1014,7 @@ impl CodexDriver {
                 if error_message.is_none() && !parse_codex_account(result).signed_in {
                     return self.fail(TurnEnd::failed(code::LOGIN, "Codex is not signed in."), out);
                 }
-                let policy = approval_policy(self.settings.mode);
+                let mode = self.settings.mode;
                 if let Some(fork) = self.fork.take() {
                     let params =
                         fork_params(&fork.from, fork.last_turn.as_deref(), &self.cwd, self.settings.mode);
@@ -960,13 +1025,16 @@ impl CodexDriver {
                     Some(native) => self.request(
                         Pending::Thread,
                         "thread/resume",
-                        json!({"threadId": native, "cwd": self.cwd, "approvalPolicy": policy, "sandbox": SANDBOX, "excludeTurns": true}),
+                        with_permissions(
+                            json!({"threadId": native, "cwd": self.cwd, "excludeTurns": true}),
+                            mode,
+                        ),
                         out,
                     ),
                     None => self.request(
                         Pending::Thread,
                         "thread/start",
-                        json!({"cwd": self.cwd, "approvalPolicy": policy, "sandbox": SANDBOX, "approvalsReviewer": "user"}),
+                        with_permissions(json!({"cwd": self.cwd}), mode),
                         out,
                     ),
                 };
@@ -1210,6 +1278,9 @@ impl Driver for CodexDriver {
         let Some(decline_ok) = self.asks.remove(&id_key(&id)) else { return };
         let decision = Self::decision(&answer, decline_ok);
         out.stdin.push(json!({"jsonrpc": "2.0", "id": id, "result": {"decision": decision}}).to_string());
+        if decision == "cancel" && answer == Answer::Deny(crate::host::agents::DenyReason::User) {
+            out.steps.push(Step::Notice(DENY_STOPPED.to_owned()));
+        }
         // The user's words go as the next turn: stop this one now, without
         // the registry hearing of a stop (it waits for the turn's end).
         if matches!(answer, Answer::DenySaying(_))
@@ -1485,7 +1556,7 @@ mod tests {
 
     /// The driver up to its first `turn/start`; the lines it wrote.
     fn driver_started() -> (CodexDriver, Vec<Value>) {
-        let mut driver = CodexDriver::new(PathBuf::from("/w"), Mode::Supervised, None, "Hi".into());
+        let mut driver = CodexDriver::new(PathBuf::from("/w"), Mode::Ask, None, "Hi".into());
         let mut out = Output::default();
         driver.start(&mut out);
         for reply in [
@@ -1534,6 +1605,140 @@ mod tests {
         let mut out = Output::default();
         driver.on_answer(id, Answer::Deny(crate::host::agents::DenyReason::User), &mut out);
         assert_eq!(out.stdin.len(), 1);
+    }
+
+    #[test]
+    fn a_deny_codex_can_only_take_as_cancel_says_the_turn_stopped() {
+        let (mut driver, _) = driver_started();
+        let mut out = Output::default();
+        // Spike 5a: an escalation in "Ask for approval" offers no `decline`.
+        driver.on_line(
+            json!({"method": "item/commandExecution/requestApproval", "id": 4, "params": {"itemId": "c", "command": "curl",
+                "availableDecisions": ["accept", {"acceptWithExecpolicyAmendment": {}}, "cancel"]}}),
+            &mut out,
+        );
+        let (id, spec) = out.approvals.pop().unwrap();
+        assert!(spec.deny_stops, "Deny says it stops the turn");
+        let mut out = Output::default();
+        driver.on_answer(id, Answer::Deny(crate::host::agents::DenyReason::User), &mut out);
+        assert_eq!(sent(&out)[0]["result"], json!({"decision": "cancel"}));
+        assert_eq!(out.steps, [Step::Notice(DENY_STOPPED.into())]);
+        // One that may be declined stops nothing and says nothing.
+        let mut out = Output::default();
+        driver.on_line(
+            json!({"method": "item/fileChange/requestApproval", "id": 5, "params": {"itemId": "fc",
+                "availableDecisions": ["accept", "decline", "cancel"]}}),
+            &mut out,
+        );
+        let (id, spec) = out.approvals.pop().unwrap();
+        assert!(!spec.deny_stops);
+        let mut out = Output::default();
+        driver.on_answer(id, Answer::Deny(crate::host::agents::DenyReason::User), &mut out);
+        assert_eq!(sent(&out)[0]["result"], json!({"decision": "decline"}));
+        assert!(out.steps.is_empty());
+        // A request that timed out was not the user's denial.
+        let mut out = Output::default();
+        driver.on_line(
+            json!({"method": "item/commandExecution/requestApproval", "id": 6, "params": {"itemId": "c2", "command": "ls",
+                "availableDecisions": ["accept", "cancel"]}}),
+            &mut out,
+        );
+        let (id, _) = out.approvals.pop().unwrap();
+        let mut out = Output::default();
+        driver.on_answer(id, Answer::Deny(crate::host::agents::DenyReason::Expired), &mut out);
+        assert!(out.steps.is_empty());
+    }
+
+    #[test]
+    fn an_automatic_review_lands_on_the_step_it_names() {
+        let mut mapper = CodexMapper::new(PathBuf::from("/w"));
+        mapper.turn_started();
+        let reviewed = |status: &str, target: Value, risk: Value| {
+            json!({"threadId": "th", "turnId": "tu", "reviewId": "r1", "targetItemId": target,
+                "decisionSource": "agent", "completedAtMs": 9,
+                "review": {"status": status, "riskLevel": risk, "userAuthorization": "high",
+                    "rationale": " The user explicitly authorized the exact curl request. "},
+                "action": {"type": "command", "source": "unifiedExec", "command": "curl -sI https://example.com", "cwd": "/w"}})
+        };
+        // Spike 3's order: started, a warning in prose, completed.
+        let started = json!({"method": "item/autoApprovalReview/started", "params": reviewed("inProgress", json!("exec-1"), Value::Null)});
+        assert!(mapper.notification(&started).is_empty());
+        let warning = json!({"method": "guardianWarning", "params": {"threadId": "th", "message": "Automatic approval review approved (risk: low)"}});
+        assert!(mapper.notification(&warning).is_empty());
+        let done = json!({"method": "item/autoApprovalReview/completed", "params": reviewed("approved", json!("exec-1"), json!("low"))});
+        assert_eq!(
+            mapper.notification(&done),
+            [Step::ToolReview {
+                key: Some("exec-1".into()),
+                review: ToolReview {
+                    status: ReviewStatus::Approved,
+                    risk: Some("low".into()),
+                    rationale: Some("The user explicitly authorized the exact curl request.".into()),
+                },
+            }]
+        );
+        // A network review names no step; an odd risk word is left out.
+        let network = json!({"method": "item/autoApprovalReview/completed", "params": reviewed("denied", Value::Null, json!("very high!"))});
+        let [Step::ToolReview { key: None, review }] = &mapper.notification(&network)[..] else { panic!() };
+        assert_eq!((review.status, review.risk.as_deref()), (ReviewStatus::Denied, None));
+        let timed_out = json!({"method": "item/autoApprovalReview/completed", "params": reviewed("timedOut", json!(""), json!(7))});
+        let [Step::ToolReview { key: None, review }] = &mapper.notification(&timed_out)[..] else { panic!() };
+        assert_eq!(review.status, ReviewStatus::TimedOut);
+        // Defensive: the payload is UNSTABLE.
+        for odd in [
+            json!({"method": "item/autoApprovalReview/completed", "params": reviewed("later", json!("exec-1"), json!("low"))}),
+            json!({"method": "item/autoApprovalReview/completed", "params": {"targetItemId": "exec-1"}}),
+            json!({"method": "item/autoApprovalReview/completed", "params": {"review": "approved"}}),
+            json!({"method": "item/autoApprovalReview/completed"}),
+        ] {
+            assert!(mapper.notification(&odd).is_empty(), "{odd}");
+        }
+        let long = json!({"method": "item/autoApprovalReview/completed", "params": {"review": {"status": "approved",
+            "rationale": "x".repeat(5000)}}});
+        let [Step::ToolReview { review, .. }] = &mapper.notification(&long)[..] else { panic!() };
+        assert!(review.rationale.as_ref().unwrap().len() <= api::MAX_REVIEW_RATIONALE);
+    }
+
+    #[test]
+    fn every_mode_tells_codex_its_permissions_on_start_resume_and_fork() {
+        let expected = [
+            (Mode::Ask, ("on-request", "workspace-write", "user")),
+            (Mode::Auto, ("on-request", "workspace-write", "auto_review")),
+            (Mode::Full, ("never", "danger-full-access", "user")),
+            (Mode::Plan, ("untrusted", "workspace-write", "user")),
+        ];
+        for (mode, (policy, sandbox, reviewer)) in expected {
+            let p = permissions(mode);
+            assert_eq!((p.policy, p.sandbox, p.reviewer), (policy, sandbox, reviewer), "{mode:?}");
+            for resume in [None, Some("th_old".to_owned())] {
+                let mut driver = CodexDriver::with_settings(
+                    PathBuf::from("/w"),
+                    LaunchSettings::new(mode),
+                    resume.clone(),
+                    UserInput::text("Hi"),
+                );
+                let mut out = Output::default();
+                driver.start(&mut out);
+                driver.on_line(json!({"id": 1, "result": {}}), &mut out);
+                driver.on_line(
+                    json!({"id": 2, "result": {"account": {"type": "chatgpt"}, "requiresOpenaiAuth": true}}),
+                    &mut out,
+                );
+                let thread = sent(&out).pop().unwrap();
+                let method = if resume.is_some() { "thread/resume" } else { "thread/start" };
+                assert_eq!(thread["method"], method);
+                // A resume without `approvalsReviewer` keeps the old one (spike 4).
+                let params = &thread["params"];
+                assert_eq!(
+                    (&params["approvalPolicy"], &params["sandbox"], &params["approvalsReviewer"]),
+                    (&json!(policy), &json!(sandbox), &json!(reviewer)),
+                    "{mode:?} {method}"
+                );
+            }
+            let fork = fork_params("th", None, "/w", mode);
+            assert_eq!(fork["approvalsReviewer"], reviewer, "{mode:?} fork");
+            assert_eq!(fork["approvalPolicy"], policy, "{mode:?} fork");
+        }
     }
 
     #[test]
@@ -1624,7 +1829,22 @@ mod tests {
         };
         for (name, fields) in [
             ("ThreadStartParams", &["cwd", "approvalPolicy", "sandbox", "approvalsReviewer"][..]),
-            ("ThreadResumeParams", &["threadId", "cwd", "approvalPolicy", "sandbox", "excludeTurns"][..]),
+            (
+                "ThreadResumeParams",
+                &["threadId", "cwd", "approvalPolicy", "sandbox", "approvalsReviewer", "excludeTurns"][..],
+            ),
+            (
+                "ThreadForkParams",
+                &[
+                    "threadId",
+                    "lastTurnId",
+                    "cwd",
+                    "approvalPolicy",
+                    "sandbox",
+                    "approvalsReviewer",
+                    "excludeTurns",
+                ][..],
+            ),
             ("TurnStartParams", &["threadId", "input", "summary"][..]),
             ("TurnInterruptParams", &["threadId", "turnId"][..]),
             ("InitializeParams", &["clientInfo", "capabilities"][..]),
@@ -1643,11 +1863,14 @@ mod tests {
             v2["definitions"]["TurnPlanStepStatus"]["enum"],
             json!(["pending", "inProgress", "completed"])
         );
-        let text = v2.to_string();
         let summaries = v2["definitions"]["ReasoningSummary"].to_string();
         assert!(summaries.contains(&format!("\"{REASONING_SUMMARY}\"")), "{summaries}");
-        for value in [approval_policy(Mode::Supervised), approval_policy(Mode::AutoEdit), SANDBOX] {
-            assert!(text.contains(&format!("\"{value}\"")), "{value}");
+        for mode in Mode::ALL {
+            let p = permissions(mode);
+            let def = |name: &str| v2["definitions"][name].to_string();
+            assert!(def("AskForApproval").contains(&format!("\"{}\"", p.policy)), "{mode:?}");
+            assert!(def("SandboxMode").contains(&format!("\"{}\"", p.sandbox)), "{mode:?}");
+            assert!(def("ApprovalsReviewer").contains(&format!("\"{}\"", p.reviewer)), "{mode:?}");
         }
         for file in ["CommandExecutionRequestApprovalResponse.json", "FileChangeRequestApprovalResponse.json"]
         {
@@ -1782,7 +2005,7 @@ mod tests {
     #[test]
     fn model_effort_and_mode_go_with_each_turn() {
         let settings = LaunchSettings {
-            mode: Mode::Supervised,
+            mode: Mode::Ask,
             model: Some("gpt-5.5".into()),
             effort: Some("xhigh".into()),
             ..plan_settings()
@@ -1799,7 +2022,7 @@ mod tests {
         assert!(out.steps.contains(&Step::AnsweredModel("gpt-5.5".into())), "the thread's own model");
         // A model or effort we can't pass safely is left out.
         let settings = LaunchSettings {
-            mode: Mode::Supervised,
+            mode: Mode::Ask,
             model: Some("-x".into()),
             effort: Some("max!".into()),
             ..plan_settings()
@@ -1849,7 +2072,7 @@ mod tests {
             matches!(out.steps.last(), Some(Step::TurnEnded(e)) if e.error.as_ref().unwrap().code == PLAN_UNAVAILABLE_CODE)
         );
         // Another mode: sent again without it, and never again.
-        let settings = LaunchSettings { mode: Mode::Supervised, ..plan_settings() };
+        let settings = LaunchSettings { mode: Mode::Ask, ..plan_settings() };
         let (mut driver, mut out) = started(settings, json!({"thread": {"id": "th"}}));
         let turn = sent(&out).into_iter().find(|l| l["method"] == "turn/start").unwrap();
         driver.on_line(json!({"id": turn["id"], "error": refusal}), &mut out);
@@ -1870,8 +2093,7 @@ mod tests {
 
     #[test]
     fn steering_the_running_turn() {
-        let (mut driver, mut out) =
-            started(LaunchSettings::new(Mode::Supervised), json!({"thread": {"id": "th"}}));
+        let (mut driver, mut out) = started(LaunchSettings::new(Mode::Ask), json!({"thread": {"id": "th"}}));
         let turn = sent(&out).into_iter().find(|l| l["method"] == "turn/start").unwrap();
         driver.on_line(json!({"id": turn["id"], "result": {"turn": {"id": "tu_1"}}}), &mut out);
         let mut out = Output::default();
@@ -1924,8 +2146,7 @@ mod tests {
         let (steps, _) = play("codex-11-plan-question.jsonl", plan_settings(), || QuestionReply::Dismissed);
         assert_eq!(turn_marks(&steps), ["019a0000-0000-7000-8000-0000000000f1"]);
         // The notice may come before the reply; a steer keeps the turn's mark.
-        let (mut driver, mut out) =
-            started(LaunchSettings::new(Mode::Supervised), json!({"thread": {"id": "th"}}));
+        let (mut driver, mut out) = started(LaunchSettings::new(Mode::Ask), json!({"thread": {"id": "th"}}));
         let turn = sent(&out).into_iter().find(|l| l["method"] == "turn/start").unwrap();
         driver.on_line(
             json!({"method": "turn/started", "params": {"threadId": "th", "turn": {"id": "tu_1"}}}),
@@ -1955,8 +2176,7 @@ mod tests {
 
     #[test]
     fn compact_and_skills() {
-        let (mut driver, mut out) =
-            started(LaunchSettings::new(Mode::Supervised), json!({"thread": {"id": "th"}}));
+        let (mut driver, mut out) = started(LaunchSettings::new(Mode::Ask), json!({"thread": {"id": "th"}}));
         let turn = sent(&out).into_iter().find(|l| l["method"] == "turn/start").unwrap();
         driver.on_line(json!({"id": turn["id"], "result": {"turn": {"id": "tu_1"}}}), &mut out);
         driver.on_line(
@@ -2085,15 +2305,16 @@ mod tests {
 
     #[test]
     fn a_fork_through_a_turn_or_of_the_whole_thread() {
-        let params = fork_params("th", Some("tu_2"), "/w", Mode::AutoEdit);
+        let params = fork_params("th", Some("tu_2"), "/w", Mode::Auto);
         assert_eq!(
             params,
             json!({"threadId": "th", "lastTurnId": "tu_2", "cwd": "/w", "approvalPolicy": "on-request",
-                "sandbox": SANDBOX, "excludeTurns": true})
+                "sandbox": "workspace-write", "approvalsReviewer": "auto_review", "excludeTurns": true})
         );
         let whole = fork_params("th", None, "/w", Mode::Plan);
         assert!(whole.get("lastTurnId").is_none());
         assert_eq!(whole["approvalPolicy"], "untrusted");
+        assert_eq!(whole["approvalsReviewer"], "user", "a copy is told its reviewer too");
         // The fields are `thread/resume`'s, as the spike sent them, and the schema's.
         let v2: Value = serde_json::from_str(
             &std::fs::read_to_string(
@@ -2117,7 +2338,7 @@ mod tests {
     fn forking(fork: ForkStart) -> (CodexDriver, Output) {
         let mut driver = CodexDriver::forking(
             PathBuf::from("/w"),
-            LaunchSettings::new(Mode::Supervised),
+            LaunchSettings::new(Mode::Ask),
             fork,
             UserInput::text("Go on"),
         );
@@ -2138,7 +2359,7 @@ mod tests {
         let lines = sent(&out);
         let fork = lines.last().unwrap();
         assert_eq!(fork["method"], "thread/fork");
-        assert_eq!(fork["params"], fork_params("th_src", Some("tu_1"), "/w", Mode::Supervised));
+        assert_eq!(fork["params"], fork_params("th_src", Some("tu_1"), "/w", Mode::Ask));
         assert!(!lines.iter().any(|l| l["method"] == "thread/resume" || l["method"] == "thread/start"));
         // The copy's own `thread/started` is not a thread of ours [spike S-5.1].
         driver

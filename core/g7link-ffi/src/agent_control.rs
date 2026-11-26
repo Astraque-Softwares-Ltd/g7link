@@ -553,8 +553,8 @@ fn thread_or_internal(thread: core::AgentThread) -> Result<AgentThread> {
 impl G7LinkNode {
     /// Changes a thread's model, effort or mode for its next turn; `None`
     /// leaves one as it is, an empty `model` or `effort` goes back to the
-    /// default. A phone sets `Supervised` or `Plan` only (`Denied`
-    /// otherwise). `BUSY` while it works. The thread as it is now.
+    /// default. Any mode the agent offers (`Unavailable` for one it
+    /// doesn't). `BUSY` while it works. The thread as it is now.
     #[uniffi::method(default(custom_model = false))]
     pub async fn agent_configure(
         &self,
@@ -616,13 +616,22 @@ impl G7LinkNode {
         self.run(async move { Ok(node.agent_reply(id, reply).await?) }).await
     }
 
-    /// Implements the thread's newest proposed plan (`item`, its id),
-    /// asking before edits and commands. `BUSY` while the thread runs;
-    /// `NotFound` for any other plan.
-    pub async fn agent_implement(&self, id: String, thread: String, item: String) -> Result<()> {
+    /// Implements the thread's newest proposed plan (`item`, its id) in
+    /// `mode`: any of the agent's modes but `Plan` (refused, nothing sent); `None`:
+    /// the one the folder remembers for the agent, else `Ask`. `BUSY` while
+    /// the thread runs; `NotFound` for any other plan.
+    #[uniffi::method(default(mode = None))]
+    pub async fn agent_implement(
+        &self,
+        id: String,
+        thread: String,
+        item: String,
+        mode: Option<AgentMode>,
+    ) -> Result<()> {
         let id = parse_id(&id)?;
         let node = self.node.clone();
-        self.run(async move { Ok(node.agent_implement(id, thread, item).await?) }).await
+        let mode = mode.map(|m| m.wire().to_owned());
+        self.run(async move { Ok(node.agent_implement(id, thread, item, mode).await?) }).await
     }
 
     /// Files for `@`: of a thread's folder (`thread`) or a folder

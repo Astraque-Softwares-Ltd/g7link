@@ -224,7 +224,7 @@ async fn approval(events: &mut Events) -> Approval {
 }
 
 fn start(agent: AgentId, folder: &Folder, prompt: &str) -> ThreadStartParams {
-    ThreadStartParams::new(agent, folder.id.clone(), prompt.into(), Mode::Supervised, Origin::launcher())
+    ThreadStartParams::new(agent, folder.id.clone(), prompt.into(), Mode::Ask, Origin::launcher())
 }
 
 fn done_of(events: &[Event]) -> &ThreadDoneEvent {
@@ -624,6 +624,82 @@ async fn codex_decline_and_interrupt() {
     host.stop().await;
 }
 
+/// The thread's tool steps as the events last showed them, by key.
+fn last_tools(events: &[Event]) -> std::collections::HashMap<String, Item> {
+    tool_items(events).into_iter().map(|i| (i.id.clone(), i.clone())).collect()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_phone_works_in_full_and_auto_and_each_cli_is_told_so() {
+    let host =
+        TestHost::start(Options { claude: Some("claude-02-followup-approve.jsonl"), ..Default::default() })
+            .await;
+    let (client, mut events) = host.subscribed().await;
+    let folder = host.folder(&client).await;
+    let phone = Origin::phone("abc", "Pixel");
+    let in_full = |agent, prompt: &str| ThreadStartParams {
+        mode: Mode::Full,
+        origin: phone.clone(),
+        ..start(agent, &folder, prompt)
+    };
+    let asked = |events: &[Event]| events.iter().any(|e| matches!(e, Event::ApprovalRequested(_)));
+
+    // Claude, Bypass permissions: the write its capture asked about runs unasked.
+    let thread = client.thread_start(in_full(AgentId::Claude, "List the files here.")).await.unwrap();
+    assert_eq!(thread.mode, Mode::Full);
+    let mut seen = until_done(&mut events, &thread.id).await;
+    client
+        .thread_send(thread.id.clone(), "Create hello.txt containing exactly: hi".into(), phone.clone())
+        .await
+        .unwrap();
+    seen.extend(until_done(&mut events, &thread.id).await);
+    assert!(!asked(&seen), "nothing reached the dock");
+    let write = &last_tools(&seen)["toolu_019665aUVn5LSZP1U45iVqz1"];
+    assert_eq!(write.tool.as_ref().unwrap().status, ToolStatus::Ok);
+    let log = host.log();
+    assert!(
+        log.lines().any(|l| l.starts_with("args -p") && l.contains("--permission-mode bypassPermissions"))
+    );
+    assert!(!log.contains("allow-dangerously"), "{log}");
+    assert!(log.lines().any(|l| l == "settled Write"), "{log}");
+
+    // Codex, Full access: never asks, full access, the user's reviewer.
+    let thread = client.thread_start(in_full(AgentId::Codex, "Create hello.txt, then run ls")).await.unwrap();
+    let first = until_done(&mut events, &thread.id).await;
+    assert!(!asked(&first));
+    assert_eq!(done_of(&first).outcome, Outcome::Done);
+    assert!(host.log().lines().any(|l| l == "permissions thread/start never danger-full-access user"));
+    let remembered = |client: &Client, agent| {
+        let client = client.clone();
+        async move { client.folders_list().await.unwrap()[0].last_mode(agent) }
+    };
+    assert_eq!(remembered(&client, AgentId::Claude).await, Some(Mode::Full), "the folder remembers it");
+    assert_eq!(remembered(&client, AgentId::Codex).await, Some(Mode::Full));
+
+    // Between turns the phone moves it to "Approve for me": the resume says
+    // so, reviewer and all, and the review lands on the step it names.
+    let configure = ThreadConfigureParams {
+        thread_id: thread.id.clone(),
+        mode: Some(Mode::Auto),
+        by: Some(phone.clone()),
+        ..Default::default()
+    };
+    assert_eq!(client.thread_configure(configure).await.unwrap().mode, Mode::Auto);
+    client.thread_send(thread.id.clone(), "Again.".into(), phone.clone()).await.unwrap();
+    let second = until_done(&mut events, &thread.id).await;
+    assert!(!asked(&second));
+    let log = host.log();
+    assert!(
+        log.lines().any(|l| l == "permissions thread/resume on-request workspace-write auto_review"),
+        "{log}"
+    );
+    let step = &last_tools(&second)["exec-752af8af-7490-447e-a5d0-2a11d897c800"];
+    let review = step.tool.as_ref().unwrap().review.as_ref().expect("the reviewer's decision");
+    assert_eq!((review.status, review.risk.as_deref()), (ReviewStatus::Approved, Some("low")));
+    assert_eq!(remembered(&client, AgentId::Codex).await, Some(Mode::Auto));
+    host.stop().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_thread_resumes_after_its_process_idled_out() {
     let host = TestHost::start(Options {
@@ -673,17 +749,15 @@ async fn limits_on_starting() {
     .await;
     let (client, mut events) = host.subscribed().await;
     let folder = host.folder(&client).await;
+    // Codex has no "accept edits", whoever asks.
     let phone = ThreadStartParams {
-        mode: Mode::AutoEdit,
+        mode: Mode::AcceptEdits,
         origin: Origin::phone("abc", "Pixel"),
-        ..start(AgentId::Claude, &folder, "x")
+        ..start(AgentId::Codex, &folder, "x")
     };
-    assert_eq!(client.thread_start(phone).await.unwrap_err().code(), Some(ErrorCode::Denied));
+    assert_eq!(client.thread_start(phone).await.unwrap_err().code(), Some(ErrorCode::Unavailable));
     let empty = start(AgentId::Claude, &folder, "");
     assert_eq!(client.thread_start(empty).await.unwrap_err().code(), Some(ErrorCode::BadRequest));
-    // Codex runs commands in its sandbox without asking under "on-request".
-    let codex_auto = ThreadStartParams { mode: Mode::AutoEdit, ..start(AgentId::Codex, &folder, "x") };
-    assert_eq!(client.thread_start(codex_auto).await.unwrap_err().code(), Some(ErrorCode::Unavailable));
     let missing =
         ThreadStartParams { folder_id: "f000000000000".into(), ..start(AgentId::Claude, &folder, "x") };
     assert_eq!(client.thread_start(missing).await.unwrap_err().code(), Some(ErrorCode::NotFound));
@@ -1367,6 +1441,10 @@ async fn the_lists_come_from_the_clis_and_the_control_methods_answer() {
     assert_eq!(codex.models.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), ["gpt-5.5-codex"]);
     assert!(codex.can(Can::Steer) && !codex.can(Can::McpSwitch));
     assert_eq!(codex.limits.first().map(|l| (l.window.as_str(), l.used_pct)), Some(("300", Some(41))));
+    // The modes each offers, in its CLI's order: Claude's default model may run Auto.
+    assert_eq!(claude.modes, [Mode::Auto, Mode::Ask, Mode::AcceptEdits, Mode::Plan, Mode::Full]);
+    assert_eq!(&codex.modes[..3], [Mode::Ask, Mode::Auto, Mode::Full]);
+    assert!(!codex.offers(Mode::AcceptEdits));
     let log = host.log();
     assert!(log.contains("probe control initialize"), "Claude was asked on its control channel: {log}");
     assert!(
@@ -3171,7 +3249,7 @@ async fn a_pull_request_is_read_only_when_the_host_knows_it_and_review_sends_the
         purpose: Some(Purpose::Review),
         pr: Some(212),
         repo: Some("fictional/repo".into()),
-        ..ThreadStartParams::new(AgentId::Claude, folder.id.clone(), String::new(), Mode::Supervised, origin)
+        ..ThreadStartParams::new(AgentId::Claude, folder.id.clone(), String::new(), Mode::Ask, origin)
     };
     let from_phone = link.thread_start_with(review_start(&folder, Origin::phone("dev1", "Pixel"))).await;
     assert_eq!(from_phone.unwrap_err().code(), Some(ErrorCode::Denied));
@@ -3193,6 +3271,6 @@ async fn a_pull_request_is_read_only_when_the_host_knows_it_and_review_sends_the
     let rest = until_done(&mut events, &started.thread.id).await;
     let first = items_of(&rest).into_iter().find(|i| i.kind == ItemKind::User).expect("the prompt");
     assert_eq!(first.text.as_deref(), Some(text.as_str()));
-    assert_eq!(started.thread.mode, Mode::Supervised);
+    assert_eq!(started.thread.mode, Mode::Ask);
     host.stop().await;
 }

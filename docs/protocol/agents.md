@@ -68,8 +68,7 @@ AgentCatalog = {
   agents:  [ { id: text, name: text, installed: bool, signed_in: bool, login_hint: text,
                auth?: text } ],                                                               // at most 8
   folders: [ { id: text, label: text } ],                                                     // at most 64
-  modes:   [ text ],            // what this phone may start: ["supervised"]
-}
+}                               // a mode list: each agent's own (§5.1)
 AgentStart  = { agent: text, folder: text, prompt: text, mode: text }   // folder: its id
 AgentThread = {
   id: text, agent: text, folder: text,        // agent: its id; folder: its label
@@ -139,8 +138,9 @@ words), or another word from the agent.
   turned on, and whenever it changes. A catalog with no agents means the host
   is not running. When the toggle is turned off the PC sends one last, empty
   catalog, then nothing.
-- `agent.start`: `mode` must be one of the catalog's `modes`. The PC shows its
-  user a notification naming the phone, the agent and the folder, with Stop.
+- `agent.start`: `mode` is one of the agent's catalog `modes` (§5.1); a phone
+  without `agent.control` starts in `ask` only. The PC shows its user a
+  notification naming the phone, the agent and the folder, with Stop.
 - `agent.watch` names the one thread whose text the phone is showing; without
   `thread`, none. Only a watching phone gets `delta` and `item` events, and
   only for that thread. `state`, `done` and `removed` events and every
@@ -181,7 +181,7 @@ words), or another word from the agent.
 | `agent.answer` / `agent.asked` `message` | 1 to 2000 / 2000 |
 | delta `text` | 4096; at most 10 `delta` events a second to one phone (later text is joined) |
 | `agent.read` answer | at most 50 items and 16 asks; the oldest items past 50 are left out. However large, it comes in parts ([protocol v1](v1.md) §4.4) |
-| `agent.catalog` | 8 agents, 64 folders, 8 modes |
+| `agent.catalog` | 8 agents, 64 folders; 8 modes an agent, one mode per agent a folder |
 
 A receiver drops a message that breaks a limit (a request is answered
 `BAD_MESSAGE`). Text the PC sends carries no control characters other than
@@ -194,8 +194,9 @@ plain text.
 - `UNSUPPORTED`: the PC doesn't offer `agent.host`, the host can't be
   reached, or the agent isn't installed or signed in; `message` to a PC that
   doesn't offer `agent.say_why`.
-- `DENIED`: the `agents` toggle is off for the phone; a `mode` outside
-  `modes`; `scope` other than `"once"`; the folder was removed.
+- `DENIED`: the `agents` toggle is off for the phone; `scope` other than
+  `"once"`; the folder was removed.
+- `UNAVAILABLE`: a `mode` the agent doesn't offer (§5.1).
 - `BAD_MESSAGE`: a field is missing, malformed or over its limit; `message`
   with a decision other than `"deny"`.
 - `NOT_FOUND`: unknown agent, folder, thread or token, or a token already
@@ -216,8 +217,12 @@ AgentItem += turn?: uint,                      // 1-based per thread; absent on 
              deny_of?: text                    // kind "user": the id of the tool step this message denied
 AgentTool += class?: text,                     // "command" | "edit" | "read" | "search" | "web" | "mcp" | "agent" | "tasks" | "other"
              path?: text,                      // the file an edit or read is about
-             by_rule?: bool                    // allowed by the thread's "Always allow" rule, without asking
-AgentAsk  += item?: text                       // the id of the tool item the request belongs to
+             by_rule?: bool,                   // allowed by the thread's "Always allow" rule, without asking
+             review?: { status: text,          // "approved" | "denied" | "timed_out" | "aborted"
+                        risk?: text,           // the reviewer's word: "low", "medium", "high"
+                        rationale?: text }     // its own words, at most 600 bytes
+AgentAsk  += item?: text,                      // the id of the tool item the request belongs to
+             deny_stops?: bool                 // denying it stops the agent's turn
 agent.answer += message?: text                 // 1 to 2000 bytes, with decision "deny" only
 agent.asked  += message?: text                 // with outcome "denied": what the user said
 ```
@@ -249,6 +254,17 @@ agent.asked  += message?: text                 // with outcome "denied": what th
   allow" rule its user set for the thread, without asking anyone; show
   "Allowed by your rule for this thread" with it, in place of "Allowed on
   <device>". It's absent otherwise.
+- **Reviews.** A tool's `review` says the agent's own reviewer decided about
+  the step without asking anyone (Codex's "Approve for me", Claude's Auto
+  classifier, which gives no risk or rationale). With `approved`, show
+  "Approved by <agent>'s reviewer" with the step while no answer or rule
+  says more; a denial or a timeout also arrives as a notice. A `status` a
+  receiver doesn't know leaves the step without its review; a `risk` that
+  isn't a word of at most 32 bytes is left out; the `rationale` is cleaned
+  and cut like an item's text.
+- **Deny that stops.** An ask with `deny_stops` can't be refused on its own:
+  Codex offered no "decline" for it (an escalation in "Ask for approval"),
+  so Deny stops the agent's turn. Say so on Deny ("Deny stops this turn").
 - **Ids.** `group`, `deny_of` and an ask's `item` are item ids (1 to 96 bytes,
   no control characters). One that isn't is left out; it's never cut.
 - **Deny and say why.** A phone sends `message` only to a PC that offers
@@ -336,8 +352,8 @@ AgentSession = {
   never looks for gaps; it reads again after it starts watching and after
   reconnecting. Items are added or updated (a tool step finishing) as whole
   blocks, never as streamed text.
-- `agent.session.continue` makes the session a supervised thread started by
-  that phone and answers it as `agent.start` does. The thread holds the
+- `agent.session.continue` makes the session a thread started by that phone,
+  in the mode the folder remembers for the agent (else `ask`), and answers it as `agent.start` does. The thread holds the
   session's last 200 items and stays idle until the phone sends something.
   The PC answers `BUSY` while anything has the session open, `DENIED` when its
   folder isn't one of the PC's agent folders (a phone adds one with
@@ -414,7 +430,7 @@ t = "agent.draft"        b = { key, rev }                                 PC →
 RPC agent/configure   t = "agent.configure"   b = { thread, model?, effort?, mode?, custom_model? }    → ok AgentThread
 RPC agent/queue       t = "agent.queue"       b = { thread, id, op, text? }                             → ok
 RPC agent/reply       t = "agent.reply"       b = { token, answers: [AgentAnswer] } | { token, dismiss: true }   → ok
-RPC agent/implement   t = "agent.implement"   b = { thread, item }                                      → ok
+RPC agent/implement   t = "agent.implement"   b = { thread, item, mode? }                               → ok
 RPC agent/files       t = "agent.files"       b = { thread? | folder?, query, limit? }                 → ok { files: [{ path, dir? }], more }   paged
 RPC agent/commands    t = "agent.commands"    b = { agent, folder }                                     → ok { commands: [AgentCommand] }   paged
 RPC agent/draft.get   t = "agent.draft.get"   b = { key }                                               → ok { draft?: AgentDraft }
@@ -426,9 +442,10 @@ What §2's bodies gain:
 ```
 AgentCatalog.agents[] += models?: [AgentModel],   // at most 40; absent: the CLI hasn't said yet
                          can?: [text],            // "plan" | "questions" | "steer" | "images" | "mcp_switch" | "commands"
-                         limits?: [AgentLimit]    // at most 4
-AgentCatalog.modes     may be ["supervised", "plan"]
-AgentStart  += model?: text, effort?: text, images?: [text], custom_model?: bool;  mode may be "plan"
+                         limits?: [AgentLimit],   // at most 4
+                         modes?: [text]           // at most 8, the CLI's order: what a thread of it may use
+AgentCatalog.folders[] += modes?: [{ agent: text, mode: text }]   // one per agent: its last mode there, never "plan"
+AgentStart  += model?: text, effort?: text, images?: [text], custom_model?: bool;  mode any of the agent's modes
 agent.send  += dispatch?: text,                   // "auto" | "steer" | "queue"
                images?: [text]                    // `text` may then be empty
 AgentThread += model?: text, effort?: text,       // the next turn's; absent: the CLI's default
@@ -472,19 +489,33 @@ AgentDraft    = { key: text, text: text, images?: [AgentImage], rev: uint, by_na
   white space or control characters, not starting with `-`, at most 64 bytes;
   the PC passes it to the CLI as one argument, never through a shell, and
   maps effort and mode to fixed words of its own.
+- **Modes.** A thread's `mode` is one of `ask`, `accept_edits`, `auto`,
+  `plan` and `full`; each agent's `modes` list the ones it offers, in its
+  CLI's order, and a phone may choose any of them. Names and descriptions
+  never cross: each client words them per agent, by the CLI's own names
+  (Claude: Manual, Accept edits, Auto, Plan, Bypass permissions; Codex: Ask
+  for approval, Approve for me, Full access, Plan), and shows a word it
+  doesn't know as it is. Claude offers `auto` only with a model that can run
+  it; Codex has no `accept_edits`; `plan` needs the agent's `plan`. A mode
+  the agent doesn't offer is `UNAVAILABLE`. Each folder's `modes` give the
+  mode each agent last started or ran with there (never `plan`): a new
+  thread there starts in it while the agent still offers it, else in `ask`.
+  Both sides read the words before 0.1.31 (`supervised`, `auto_edit`) as
+  `ask` and `accept_edits`; a phone without `agent.control` is sent them (§5.7).
 - **`agent.configure`** changes a thread for its next turn: `model`,
   `effort`, `mode`, each optional and at least one; an empty `model` or
-  `effort` goes back to the default. A phone sets `mode` `supervised` or
-  `plan` only (`DENIED` otherwise, as for `agent.start`). The PC answers
-  `BUSY` while the thread works or waits. Nothing changes a running turn.
+  `effort` goes back to the default. Any mode the agent offers, from a phone
+  too. The PC answers `BUSY` while the thread works or waits. Nothing
+  changes a running turn.
 - **Plan mode.** A thread in mode `plan` changes nothing; the agent writes a
   plan, which arrives as an item of kind `plan` with `plan_state:
   proposed`, and the thread ends its turn. An earlier proposed plan of the
   thread becomes `replaced`. "Change the plan" is an ordinary `agent.send`.
   `agent.implement` implements the thread's newest proposed plan (its item
-  id): the thread goes back to supervised, the plan becomes `implemented`,
-  and the PC sends the agent "Implement the plan." from that phone; a phone
-  can't choose another mode for it. `NOT_FOUND` for any other plan, `BUSY`
+  id) in `mode`, any of the agent's modes but `plan` (absent: the one the
+  folder remembers for the agent, else `ask`): the plan becomes
+  `implemented`, and the PC sends the agent "Implement the plan." from that
+  phone. `NOT_FOUND` for any other plan, `BUSY`
   while the thread runs. Claude writes its plan to a file outside the folder
   first: that edit is a tool item of class `plan`, which a phone gets as a
   step named `plan`, titled "Plan", with no detail, output, path or text.
@@ -612,8 +643,8 @@ t = "agent.image.thumb.meta"  re = 1  b = { length: uint }          // a JPEG, a
   model's `note` longer than 120 bytes; the PC's prompt history; a sign-in
   token, an account detail (email, organisation, plan, credits) or any other
   credential.
-- A phone may: start and configure threads with mode `supervised` or `plan`
-  only; implement a plan (supervised); steer, queue, edit, remove and send now
+- A phone may: start and configure threads in any mode the agent offers;
+  implement a plan in any of them but `plan`; steer, queue, edit, remove and send now
   queued messages; answer or dismiss a question that isn't secret; send up to
   4 images per message, one upload at a time; search files and list commands
   of folders the catalog lists.
@@ -655,8 +686,8 @@ t = "agent.image.thumb.meta"  re = 1  b = { length: uint }          // a JPEG, a
 ### 5.6 Errors
 
 As §2.3, and: `UNSUPPORTED` for anything of this section when the PC or the
-phone doesn't offer `agent.control`; `DENIED` for a mode other than
-`supervised` or `plan`, and for a phone's reply to a secret question;
+phone doesn't offer `agent.control`; `UNAVAILABLE` for a mode the agent
+doesn't offer; `DENIED` for a phone's reply to a secret question;
 `BAD_MESSAGE` for a model id that isn't one word, more than 4 images, an
 image's bytes that don't match its meta, and an answer that isn't one;
 `NOT_FOUND` for a queued message already sent, a question already answered,
@@ -668,8 +699,9 @@ for a second upload at once. A draft conflict is not an error: it's the
 ### 5.7 Older devices
 
 A phone without `agent.control` gets what it got before, whatever the PC
-does: a catalog without `models`, `can` and `limits`, and `modes:
-["supervised"]`; a thread in plan mode as `supervised`, without `model`,
+does: a catalog without `models`, `can`, `limits` and `modes`, and folders
+without `modes`; a thread's mode in the old words (`accept_edits` as
+`auto_edit`, any other as `supervised`), without `model`,
 `effort`, `answered_model`, `queued`, `queue_held`, `context`, `mcp` and
 `asking`; a `plan` item as an `assistant` item with the plan's text; a
 `question` item as a tool step named `question`, titled "Question",
@@ -677,8 +709,8 @@ does: a catalog without `models`, `can` and `limits`, and `modes:
 and no `question`; a user item
 without `via` and `images`; no `agent.question`, `agent.questioned`,
 `agent.draft` or `questions`. Its `seq`s are as they are for everyone, so it
-sees no gap. Its requests are answered as before: `plan` is `DENIED`, the
-rest of this section `UNSUPPORTED`. A phone that offers `agent.control`
+sees no gap. Its requests are answered as before, except a mode other than
+`ask` (`supervised`), which is `UNSUPPORTED` like the rest of this section. A phone that offers `agent.control`
 talking to a PC that doesn't sends it nothing of this section and offers
 what that PC's catalog says.
 
@@ -777,7 +809,7 @@ AgentFound    = { id, agent, title, folder, folder_id?, first_ms?, updated_ms, b
   start and length in UTF-16 units. Archived threads only with `archived`.
 - **Fork** makes a new thread from a copy of the conversation up to `turn`
   (the latest without it), in the same folder; the files are as they are.
-  From a phone it's `supervised` or `plan`. The PC shows its user the same
+  It keeps the source's mode, from a phone too. The PC shows its user the same
   notice as for a thread a phone started.
 - **Rewind** is two steps. `agent.rewind.preview` says how many turns and
   messages would leave the thread and hands out a `token` for 120 s; nothing

@@ -16,7 +16,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
 
-use crate::api::{self, AgentId, Can, CommandKind, Limit, LimitState, ModelInfo};
+use crate::api::{self, AgentId, AgentInfo, Can, CommandKind, Limit, LimitState, Mode, ModelInfo};
 use crate::host::agents::{AgentProcess, ClaudeAuth, OutLine, parse_codex_account};
 
 /// The id of the probe's one control request.
@@ -65,6 +65,36 @@ pub fn can(agent: AgentId, plan_ok: bool) -> Vec<Can> {
             }
             can
         }
+    }
+}
+
+/// The modes an agent offers, in its CLI's own order (plan §2.1): Claude
+/// `auto` (only with a model that supports it), `ask`, `accept_edits`,
+/// `plan`, `full`; Codex `ask`, `auto`, `full`, `plan`. `plan` only with
+/// [`Can::Plan`]. None for an agent that isn't installed.
+pub fn modes(info: &AgentInfo) -> Vec<Mode> {
+    if !info.installed {
+        return Vec::new();
+    }
+    let plan = info.can(Can::Plan);
+    match info.id {
+        AgentId::Claude => {
+            let auto = info.models.iter().any(|m| m.auto);
+            [
+                (Mode::Auto, auto),
+                (Mode::Ask, true),
+                (Mode::AcceptEdits, true),
+                (Mode::Plan, plan),
+                (Mode::Full, true),
+            ]
+            .into_iter()
+            .filter_map(|(mode, offered)| offered.then_some(mode))
+            .collect()
+        }
+        AgentId::Codex => [(Mode::Ask, true), (Mode::Auto, true), (Mode::Full, true), (Mode::Plan, plan)]
+            .into_iter()
+            .filter_map(|(mode, offered)| offered.then_some(mode))
+            .collect(),
     }
 }
 
@@ -151,6 +181,7 @@ fn claude_model(entry: &Value) -> Option<ModelInfo> {
         short: !id.chars().any(|c| c.is_ascii_digit()),
         // Filled by `exact_names` once the whole list is read.
         exact: None,
+        auto: entry.get("supportsAutoMode").and_then(Value::as_bool) == Some(true),
     }
     .sanitized()
 }
@@ -447,6 +478,8 @@ fn codex_model(entry: &Value) -> Option<ModelInfo> {
         short: false,
         // Codex names each model exactly ("GPT-5.5 Codex").
         exact: Some(str_of(entry, "displayName").unwrap_or(id).to_owned()),
+        // Codex's "Approve for me" isn't per model.
+        auto: false,
     }
     .sanitized()
 }
@@ -766,6 +799,29 @@ mod tests {
     }
 
     #[test]
+    fn the_modes_each_agent_offers_in_its_own_order() {
+        let auto_model = ModelInfo { auto: true, ..claude_model(&json!({"value": "default"})).unwrap() };
+        let plain = claude_model(&json!({"value": "opus"})).unwrap();
+        let installed = |id, can: Vec<Can>, models: Vec<ModelInfo>| AgentInfo {
+            installed: true,
+            can,
+            models,
+            ..AgentInfo::missing(id)
+        };
+        let claude = installed(AgentId::Claude, can(AgentId::Claude, true), vec![plain.clone(), auto_model]);
+        assert_eq!(modes(&claude), [Mode::Auto, Mode::Ask, Mode::AcceptEdits, Mode::Plan, Mode::Full]);
+        let no_auto = installed(AgentId::Claude, can(AgentId::Claude, true), vec![plain]);
+        assert_eq!(modes(&no_auto), [Mode::Ask, Mode::AcceptEdits, Mode::Plan, Mode::Full], "no model may");
+        let unprobed = installed(AgentId::Claude, can(AgentId::Claude, true), Vec::new());
+        assert!(!modes(&unprobed).contains(&Mode::Auto));
+        let codex = installed(AgentId::Codex, can(AgentId::Codex, true), Vec::new());
+        assert_eq!(modes(&codex), [Mode::Ask, Mode::Auto, Mode::Full, Mode::Plan]);
+        let old_codex = installed(AgentId::Codex, can(AgentId::Codex, false), Vec::new());
+        assert_eq!(modes(&old_codex), [Mode::Ask, Mode::Auto, Mode::Full], "plan needs the experimental API");
+        assert!(modes(&AgentInfo::missing(AgentId::Claude)).is_empty());
+    }
+
+    #[test]
     fn claudes_answer_gives_models_and_commands_only() {
         let text = fixture("claude-10-initialize.jsonl");
         let mut found = None;
@@ -780,6 +836,9 @@ mod tests {
         assert_eq!(ids, ["default", "opus", "sonnet", "haiku", "claude-opus-5", "claude-sonnet-4-6"]);
         let default = &catalog.models[0];
         assert!(default.default && default.short && default.images);
+        // `supportsAutoMode`: only the default in the capture.
+        let auto: Vec<bool> = catalog.models.iter().map(|m| m.auto).collect();
+        assert_eq!(auto, [true, false, false, false, false, false]);
         assert_eq!(default.name, "Default (recommended)");
         assert_eq!(default.efforts, ["low", "medium", "high", "xhigh", "max"]);
         let full = catalog.models.iter().find(|m| m.id == "claude-opus-5").unwrap();
@@ -956,6 +1015,7 @@ mod tests {
             images: true,
             short: !id.chars().any(|c| c.is_ascii_digit()),
             exact: None,
+            auto: false,
         };
         let mut models = vec![model("default"), model("opus"), model("odd"), model("claude-x-1")];
         exact_names(&mut models, &[None, Some("claude-opus-9".into()), Some("weird-id".into()), None]);

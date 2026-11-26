@@ -88,6 +88,8 @@ pub struct ToolJ {
     pub output: String,
     #[serde(default)]
     pub by_rule: bool,
+    #[serde(default)]
+    pub reviewed: bool,
 }
 
 impl ToolJ {
@@ -101,6 +103,7 @@ impl ToolJ {
             status: self.status,
             output: &self.output,
             by_rule: self.by_rule,
+            reviewed: self.reviewed,
         }
     }
 }

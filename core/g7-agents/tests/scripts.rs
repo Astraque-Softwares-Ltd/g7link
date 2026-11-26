@@ -154,7 +154,7 @@ async fn thread_in(link: &Client, events: &mut Events, folder: &Folder) -> Threa
         AgentId::Claude,
         folder.id.clone(),
         "List the files here.".into(),
-        Mode::Supervised,
+        Mode::Ask,
         Origin::launcher(),
     );
     let thread = link.thread_start(p).await.unwrap();

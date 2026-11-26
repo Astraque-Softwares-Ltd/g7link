@@ -173,6 +173,9 @@ pub const MAX_MODEL_NOTE: usize = 120;
 /// Effort levels per model, and the length of each.
 pub const MAX_EFFORTS: usize = 8;
 pub const MAX_EFFORT: usize = 16;
+/// A step's automatic review ([`ToolReview`]): its risk word and rationale.
+pub const MAX_REVIEW_WORD: usize = 16;
+pub const MAX_REVIEW_RATIONALE: usize = 600;
 /// Usage windows per agent.
 pub const MAX_LIMITS: usize = 4;
 pub const MAX_LIMIT_WINDOW: usize = 32;
@@ -825,22 +828,44 @@ pub enum OriginKind {
     Cli,
 }
 
+/// How a thread asks before acting: five agent-neutral words, each named
+/// the agent's own way by the clients. Which ones an agent offers is
+/// [`AgentInfo::modes`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Mode {
-    /// Asks before every edit and every command that isn't read-only.
-    Supervised,
-    /// Edits without asking; still asks before commands.
-    AutoEdit,
+    /// Claude's "Manual" (`default`), Codex's "Ask for approval"
+    /// (`on-request`): asks before what the CLI asks about. Stored threads
+    /// say `supervised`.
+    #[serde(alias = "supervised")]
+    Ask,
+    /// Claude's "Accept edits": edits without asking; still asks before
+    /// commands. Not offered for Codex. Stored threads say `auto_edit`.
+    #[serde(alias = "auto_edit")]
+    AcceptEdits,
+    /// Claude's "Auto" (a model that supports it), Codex's "Approve for me"
+    /// (its reviewer answers): the CLI decides each action itself.
+    Auto,
     /// Changes nothing: the agent proposes a plan for the user to review.
-    /// Asks as `supervised` does if the agent asks at all.
+    /// Asks as `ask` does if the agent asks at all.
     Plan,
+    /// Claude's "Bypass permissions", Codex's "Full access": nothing is
+    /// asked; questions still come.
+    Full,
 }
 
 impl Mode {
-    /// A mode a phone may choose (`supervised`, `plan`).
-    pub fn phone_may(self) -> bool {
-        matches!(self, Self::Supervised | Self::Plan)
+    /// Every mode, in the wire's order.
+    pub const ALL: [Mode; 5] = [Mode::Ask, Mode::AcceptEdits, Mode::Auto, Mode::Plan, Mode::Full];
+
+    /// What a folder without a remembered mode starts in.
+    pub const fn ask_first() -> Self {
+        Self::Ask
+    }
+
+    /// Kept as a folder's remembered mode: every mode but `plan`.
+    pub fn remembered(self) -> bool {
+        self != Self::Plan
     }
 }
 
@@ -1363,6 +1388,9 @@ pub struct ModelInfo {
     /// place of `name`, which for an alias is only "Opus" or "Default".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exact: Option<String>,
+    /// Mode `auto` may run with it (Claude's `supportsAutoMode`).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub auto: bool,
 }
 
 impl ModelInfo {
@@ -1391,6 +1419,7 @@ impl ModelInfo {
                 .as_ref()
                 .map(|e| clean_cut(e.trim(), MAX_MODEL_NAME).0)
                 .filter(|e| !e.is_empty()),
+            auto: self.auto,
         })
     }
 }
@@ -1622,6 +1651,11 @@ pub struct AgentInfo {
     /// Usage windows, as the CLI last reported them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub limits: Vec<Limit>,
+    /// The modes a thread of it may use, in the CLI's own order (Claude
+    /// `auto, ask, accept_edits, plan, full`; Codex `ask, auto, full, plan`);
+    /// empty until it was probed.
+    #[serde(default, deserialize_with = "lenient_list", skip_serializing_if = "Vec::is_empty")]
+    pub modes: Vec<Mode>,
 }
 
 impl AgentInfo {
@@ -1640,6 +1674,7 @@ impl AgentInfo {
             models: Vec::new(),
             can: Vec::new(),
             limits: Vec::new(),
+            modes: Vec::new(),
         }
     }
 
@@ -1650,6 +1685,11 @@ impl AgentInfo {
 
     pub fn can(&self, can: Can) -> bool {
         self.can.contains(&can)
+    }
+
+    /// A thread of it may use `mode`.
+    pub fn offers(&self, mode: Mode) -> bool {
+        self.modes.contains(&mode)
     }
 
     /// The model `id` names in the list.
@@ -1704,6 +1744,35 @@ pub struct Folder {
     /// "Phones can run these" (off): a phone may start and stop its scripts.
     #[serde(default, skip_serializing_if = "is_false")]
     pub phone_scripts: bool,
+    /// The mode each agent last started or ran with here, at most one per
+    /// agent, never `plan`: a new thread there starts in it while the agent
+    /// still offers it, else in `ask`.
+    #[serde(default, deserialize_with = "lenient_list", skip_serializing_if = "Vec::is_empty")]
+    pub last_modes: Vec<FolderMode>,
+}
+
+impl Folder {
+    /// The mode `agent` last used here, if any.
+    pub fn last_mode(&self, agent: AgentId) -> Option<Mode> {
+        self.last_modes.iter().find(|m| m.agent == agent).map(|m| m.mode)
+    }
+
+    /// Remembers `mode` for `agent` (never `plan`); whether that changed anything.
+    pub fn remember_mode(&mut self, agent: AgentId, mode: Mode) -> bool {
+        if !mode.remembered() || self.last_mode(agent) == Some(mode) {
+            return false;
+        }
+        self.last_modes.retain(|m| m.agent != agent);
+        self.last_modes.push(FolderMode { agent, mode });
+        true
+    }
+}
+
+/// A folder's remembered mode for one agent ([`Folder::last_modes`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FolderMode {
+    pub agent: AgentId,
+    pub mode: Mode,
 }
 
 /// A folder's script (§X3.1): what a person typed in G7 Link, run as their
@@ -1930,10 +1999,10 @@ pub struct UndoInfo {
 
 impl ThreadInfo {
     /// The thread as a client that didn't say `items3` gets it: mode `plan`
-    /// reads as `supervised` (it asks as supervised does).
+    /// reads as `ask` (it asks as `ask` does).
     pub fn legacy(&self) -> ThreadInfo {
         match self.mode {
-            Mode::Plan => ThreadInfo { mode: Mode::Supervised, ..self.clone() },
+            Mode::Plan => ThreadInfo { mode: Mode::Ask, ..self.clone() },
             _ => self.clone(),
         }
     }
@@ -2112,6 +2181,7 @@ impl Item {
                 class: None,
                 path: None,
                 by_rule: false,
+                review: None,
             }),
             rev: self.rev,
             turn: self.turn,
@@ -2192,6 +2262,34 @@ pub struct Tool {
     /// asking ("Allowed by your rule for this thread").
     #[serde(default, skip_serializing_if = "is_false")]
     pub by_rule: bool,
+    /// What the agent's own reviewer decided about it in mode `auto`
+    /// (Codex's "Approve for me" reviewer; Claude's Auto classifier, which
+    /// says only that it allowed it), when it reviewed it.
+    #[serde(default, deserialize_with = "lenient", skip_serializing_if = "Option::is_none")]
+    pub review: Option<ToolReview>,
+}
+
+/// An automatic review of a step (Codex `item/autoApprovalReview/completed`,
+/// Claude's `permission_decision.reason_type: "classifier"`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolReview {
+    pub status: ReviewStatus,
+    /// The reviewer's word for the risk ("low", "medium", "high"), at most
+    /// [`MAX_REVIEW_WORD`] bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub risk: Option<String>,
+    /// Why, in the reviewer's words: cleaned, at most [`MAX_REVIEW_RATIONALE`] bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rationale: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewStatus {
+    Approved,
+    Denied,
+    TimedOut,
+    Aborted,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2218,6 +2316,11 @@ pub struct Approval {
     /// The tool item the request belongs to.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub item_id: Option<String>,
+    /// Denying it stops the agent's turn (Codex offered no way to refuse
+    /// just this step, as with an escalation in "Ask for approval"): Deny
+    /// says so.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub deny_stops: bool,
 }
 
 // ---- History and undo records (phase 3) ----
@@ -3517,7 +3620,8 @@ pub struct ThreadConfigureParams {
     pub mode: Option<Mode>,
     #[serde(default, skip_serializing_if = "is_false")]
     pub custom_model: bool,
-    /// Who changed it; absent: this PC. A phone may set only `supervised` or `plan`.
+    /// Who changed it; absent: this PC. Any mode the agent offers, from
+    /// anyone; a change is remembered on the folder (never `plan`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub by: Option<Origin>,
 }
@@ -3559,7 +3663,7 @@ pub struct QuestionDismissParams {
 pub struct PlanImplementParams {
     pub thread_id: String,
     pub item_id: String,
-    /// `supervised` or `auto_edit` (not from a phone).
+    /// Any mode the agent offers but `plan`.
     pub mode: Mode,
     pub by: By,
 }
@@ -5499,7 +5603,7 @@ where
 }
 
 /// A list a later version may widen: entries this version doesn't know are dropped.
-fn lenient_list<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
+pub(crate) fn lenient_list<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
 where
     D: Deserializer<'de>,
     T: serde::de::DeserializeOwned,
@@ -5593,7 +5697,7 @@ mod tests {
             folder_label: "work".into(),
             title: "List the files".into(),
             state: State::Waiting,
-            mode: Mode::Supervised,
+            mode: Mode::Ask,
             origin: Origin::phone("abc", "Pixel"),
             created_ms: 1,
             updated_ms: 2,
@@ -5675,6 +5779,7 @@ mod tests {
             created_ms: 5,
             expires_ms: 5 + APPROVAL_LIFETIME_MS,
             item_id: Some("toolu_1".into()),
+            deny_stops: true,
         }
     }
 
@@ -5686,6 +5791,7 @@ mod tests {
             auth: Some(AuthKind::ApiKey),
             plan: Some("max".into()),
             problem: Some("x".into()),
+            modes: vec![Mode::Ask, Mode::Auto, Mode::Full, Mode::Plan],
             ..AgentInfo::missing(AgentId::Codex)
         });
         round_trip(&Folder {
@@ -5702,6 +5808,7 @@ mod tests {
             follow_remote: false,
             scripts: Vec::new(),
             phone_scripts: false,
+            last_modes: vec![FolderMode { agent: AgentId::Claude, mode: Mode::Full }],
         });
         round_trip(&thread());
         round_trip(&Item {
@@ -5716,6 +5823,11 @@ mod tests {
                 class: Some(ToolClass::Command),
                 path: None,
                 by_rule: true,
+                review: Some(ToolReview {
+                    status: ReviewStatus::TimedOut,
+                    risk: Some("high".into()),
+                    rationale: Some("why".into()),
+                }),
             }),
             turn: Some(2),
             end_ms: Some(4),
@@ -5753,7 +5865,7 @@ mod tests {
             AgentId::Claude,
             "f0123456789ab".into(),
             "hi".into(),
-            Mode::AutoEdit,
+            Mode::AcceptEdits,
             Origin::launcher(),
         ));
         round_trip(&ThreadReadParams {
@@ -5794,7 +5906,7 @@ mod tests {
         round_trip(&SessionWatchParams { session_id: None });
         round_trip(&SessionContinueParams {
             session_id: session().id,
-            mode: Mode::Supervised,
+            mode: Mode::Ask,
             origin: Origin::phone("p", "Pixel"),
         });
         round_trip(&UiViewingParams { thread_id: None, session_id: Some(session().id) });
@@ -5864,8 +5976,63 @@ mod tests {
     }
 
     #[test]
+    fn stored_mode_words_still_load_and_newer_ones_are_dropped_from_lists() {
+        for (old, mode) in [("supervised", Mode::Ask), ("auto_edit", Mode::AcceptEdits), ("plan", Mode::Plan)]
+        {
+            let mut stored = serde_json::to_value(thread()).unwrap();
+            stored["mode"] = json!(old);
+            let loaded: ThreadInfo = serde_json::from_value(stored).unwrap();
+            assert_eq!(loaded.mode, mode, "{old}");
+            if mode != Mode::Plan {
+                assert_ne!(
+                    serde_json::to_value(&loaded).unwrap()["mode"],
+                    json!(old),
+                    "saved with the new word"
+                );
+            }
+        }
+        let agent: AgentInfo = serde_json::from_value(json!({
+            "id": "claude", "name": "Claude", "installed": true, "signed_in": true, "login_hint": "x",
+            "modes": ["auto", "later", "supervised", "full"]
+        }))
+        .unwrap();
+        assert_eq!(agent.modes, [Mode::Auto, Mode::Ask, Mode::Full]);
+        assert!(agent.offers(Mode::Full) && !agent.offers(Mode::Plan));
+        let folder: Folder = serde_json::from_value(json!({
+            "id": "f0123456789ab", "label": "a", "path": "/a", "added_ms": 1,
+            "last_modes": [{"agent": "claude", "mode": "later"}, {"agent": "codex", "mode": "full"}, 7]
+        }))
+        .unwrap();
+        assert_eq!(folder.last_modes, [FolderMode { agent: AgentId::Codex, mode: Mode::Full }]);
+        assert_eq!(
+            (folder.last_mode(AgentId::Codex), folder.last_mode(AgentId::Claude)),
+            (Some(Mode::Full), None)
+        );
+    }
+
+    #[test]
+    fn a_folder_remembers_one_mode_per_agent_and_never_plan() {
+        let mut folder: Folder = serde_json::from_value(json!({
+            "id": "f0123456789ab", "label": "a", "path": "/a", "added_ms": 1
+        }))
+        .unwrap();
+        assert!(folder.last_modes.is_empty());
+        assert!(folder.remember_mode(AgentId::Claude, Mode::Auto));
+        assert!(!folder.remember_mode(AgentId::Claude, Mode::Auto), "the same again");
+        assert!(!folder.remember_mode(AgentId::Claude, Mode::Plan), "never plan");
+        assert!(folder.remember_mode(AgentId::Codex, Mode::Full));
+        assert!(folder.remember_mode(AgentId::Claude, Mode::AcceptEdits));
+        assert_eq!(folder.last_mode(AgentId::Claude), Some(Mode::AcceptEdits));
+        assert_eq!(folder.last_mode(AgentId::Codex), Some(Mode::Full));
+        assert_eq!(folder.last_modes.len(), 2);
+        assert_eq!(Mode::ask_first(), Mode::Ask);
+        assert!(Mode::ALL.iter().all(|m| m.remembered() != (*m == Mode::Plan)));
+    }
+
+    #[test]
     fn wire_names_are_the_contracts() {
-        assert_eq!(serde_json::to_value(Mode::AutoEdit).unwrap(), json!("auto_edit"));
+        let words: Vec<Value> = Mode::ALL.iter().map(|m| serde_json::to_value(m).unwrap()).collect();
+        assert_eq!(words, [json!("ask"), json!("accept_edits"), json!("auto"), json!("plan"), json!("full")]);
         assert_eq!(
             serde_json::to_value(ErrorCode::UnsupportedVersion).unwrap(),
             json!("UNSUPPORTED_VERSION")
@@ -6950,7 +7117,7 @@ mod tests {
             AgentId::Claude,
             "f0123456789ab".into(),
             String::new(),
-            Mode::Supervised,
+            Mode::Ask,
             Origin::launcher(),
         );
         let plain = serde_json::to_value(&start).unwrap();

@@ -223,7 +223,6 @@ fn catalog() -> AgentCatalog {
                 ..Default::default()
             },
         ],
-        modes: vec!["supervised".into()],
         push: false,
         add_folders: false,
     }
@@ -463,7 +462,7 @@ fn a_thread_carries_its_runs_in_brief() {
         folder: "g7linux".into(),
         title: "Start the dev server".into(),
         state: "done".into(),
-        mode: "supervised".into(),
+        mode: "ask".into(),
         runs: vec![
             AgentRunBrief { id: RUN.into(), name: "dev".into(), phase: "running".into(), exit: None },
             AgentRunBrief { id: "nope".into(), name: "x".into(), phase: "running".into(), exit: None },

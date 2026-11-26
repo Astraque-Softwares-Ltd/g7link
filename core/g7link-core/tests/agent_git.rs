@@ -54,7 +54,7 @@ fn thread(id: &str) -> AgentThread {
         folder: "g7linux".into(),
         title: "Fix the sync retry".into(),
         state: "done".into(),
-        mode: "supervised".into(),
+        mode: "ask".into(),
         updated: 1_795_000_000_000,
         branch: Some("feat/sync-retry".into()),
         changed: Some(4),
@@ -396,7 +396,6 @@ fn catalog() -> g7link_core::AgentCatalog {
             follow_remote: true,
             ..Default::default()
         }],
-        modes: vec!["supervised".into()],
         // The platform's word is never taken: the core says it per phone.
         push: true,
         add_folders: false,

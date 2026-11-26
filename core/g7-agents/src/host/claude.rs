@@ -98,12 +98,17 @@ pub fn cli_request_reply(line: &Value) -> Option<(String, bool)> {
     Some((json!({"type": "control_response", "response": response}).to_string(), elicitation))
 }
 
-/// The permission mode flag's value.
+/// The permission mode flag's value. `ask` is Claude's "Manual", passed as
+/// `default`: older CLIs don't know `manual`. `bypassPermissions` needs no
+/// `--allow-dangerously-skip-permissions` when the process starts in it,
+/// fresh or resumed (spike 2); a mode never changes on a live process.
 pub fn permission_mode(mode: Mode) -> &'static str {
     match mode {
-        Mode::Supervised => "default",
-        Mode::AutoEdit => "acceptEdits",
+        Mode::Ask => "default",
+        Mode::AcceptEdits => "acceptEdits",
+        Mode::Auto => "auto",
         Mode::Plan => "plan",
+        Mode::Full => "bypassPermissions",
     }
 }
 
@@ -511,7 +516,7 @@ impl ClaudeMapper {
         Self {
             cwd,
             session_id,
-            mode: Mode::Supervised,
+            mode: Mode::Ask,
             current_message: None,
             open_text: Vec::new(),
             synthesized: 0,
@@ -993,6 +998,16 @@ impl ClaudeMapper {
                 _ => None,
             }
             .filter(|s| !s.is_empty());
+            // Auto: what Claude's classifier let through without asking (spike 1).
+            let decision = meta.and_then(|m| m.get("permission_decision"));
+            if !rejected
+                && decision.and_then(|d| d.get("reason_type")).and_then(Value::as_str) == Some("classifier")
+                && decision.and_then(|d| d.get("decision")).and_then(Value::as_str) == Some("accept")
+            {
+                let review =
+                    api::ToolReview { status: api::ReviewStatus::Approved, risk: None, rationale: None };
+                steps.push(Step::ToolReview { key: Some(key.to_owned()), review });
+            }
             steps.push(Step::ToolEnd { key: key.to_owned(), status, output });
         }
     }
@@ -1163,12 +1178,7 @@ pub struct ClaudeDriver {
 impl ClaudeDriver {
     /// A driver whose first message is text alone, in a supervised process.
     pub fn new(cwd: PathBuf, session_id: String, first_text: String) -> Self {
-        Self::with_settings(
-            cwd,
-            session_id,
-            &LaunchSettings::new(Mode::Supervised),
-            UserInput::text(first_text),
-        )
+        Self::with_settings(cwd, session_id, &LaunchSettings::new(Mode::Ask), UserInput::text(first_text))
     }
 
     /// A driver for a process started with `settings`, sending `first`.
@@ -1670,6 +1680,48 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn what_auto_let_through_is_marked_on_its_step() {
+        let mut mapper = ClaudeMapper::new(PathBuf::from("/w"), None);
+        mapper.turn_started();
+        let tools = json!({"type":"assistant","message":{"id":"m","content":[
+            {"type":"tool_use","id":"toolu_curl","name":"Bash","input":{"command":"curl -sI https://example.com"}},
+            {"type":"tool_use","id":"toolu_w","name":"Write","input":{"file_path":"/w/a.txt","content":"a"}},
+            {"type":"tool_use","id":"toolu_q","name":"Bash","input":{"command":"ls"}}]}});
+        mapper.feed(&tools);
+        // Spike 1's shapes: the classifier, the mode itself, the user through the bridge.
+        let decision = |id: &str, source: &str, reason: Option<&str>| {
+            let mut d = json!({"decision": "accept", "source": source});
+            if let Some(reason) = reason {
+                d["reason_type"] = json!(reason);
+            }
+            json!({"id": id, "permission_decision": d})
+        };
+        let results = json!({"type":"user","message":{"role":"user","content":[
+            {"type":"tool_result","tool_use_id":"toolu_curl","content":"HTTP/2 200"},
+            {"type":"tool_result","tool_use_id":"toolu_w","content":"ok"},
+            {"type":"tool_result","tool_use_id":"toolu_q","content":"a.txt"}]},
+            "tool_result_meta":[decision("toolu_curl", "config", Some("classifier")),
+                decision("toolu_w", "config", Some("mode")), decision("toolu_q", "user_temporary", None)]});
+        let steps = mapper.feed(&results);
+        let reviewed: Vec<&str> = steps
+            .iter()
+            .filter_map(|s| match s {
+                Step::ToolReview { key: Some(key), review }
+                    if review.status == api::ReviewStatus::Approved =>
+                {
+                    Some(key.as_str())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(reviewed, ["toolu_curl"], "only the classifier's");
+        let review = steps.iter().position(|s| matches!(s, Step::ToolReview { .. })).unwrap();
+        let end =
+            steps.iter().position(|s| matches!(s, Step::ToolEnd { key, .. } if key == "toolu_curl")).unwrap();
+        assert!(review < end, "marked while the step still runs");
+    }
+
+    #[test]
     fn a_missing_bridge_fails_the_turn() {
         let mut mapper = ClaudeMapper::new(PathBuf::from("/w"), None);
         mapper.turn_started();
@@ -1756,11 +1808,11 @@ pub(crate) mod tests {
         assert!(is_session_id(&id));
         assert_eq!(&id[14..15], "4");
         assert!(!is_session_id("../etc"));
-        let a = args(&LaunchSettings::new(Mode::AutoEdit), Path::new("/r/mcp.json"), &id, true);
+        let a = args(&LaunchSettings::new(Mode::AcceptEdits), Path::new("/r/mcp.json"), &id, true);
         assert!(a.windows(2).any(|w| w == ["--permission-mode", "acceptEdits"]));
         assert!(a.windows(2).any(|w| w[0] == "--resume" && w[1] == id));
         assert!(!a.iter().any(|s| s == "--session-id" || s == "--bare"));
-        let a = args(&LaunchSettings::new(Mode::Supervised), Path::new("/r/mcp.json"), &id, false);
+        let a = args(&LaunchSettings::new(Mode::Ask), Path::new("/r/mcp.json"), &id, false);
         assert!(a.windows(2).any(|w| w == ["--permission-mode", "default"]));
         assert!(a.windows(2).any(|w| w[0] == "--session-id"));
     }
@@ -1798,7 +1850,7 @@ pub(crate) mod tests {
     #[test]
     fn launch_flags_for_every_setting() {
         let id = new_session_id();
-        for mode in [Mode::Supervised, Mode::AutoEdit, Mode::Plan] {
+        for mode in Mode::ALL {
             for model in [None, Some("opus"), Some("claude-opus-5"), Some("-p"), Some("a b"), Some("x\ny")] {
                 for effort in [None, Some("low"), Some("xhigh"), Some("--bare"), Some("High")] {
                     for mcp in [true, false] {
@@ -1825,7 +1877,12 @@ pub(crate) mod tests {
                                 value(if resume { "--resume" } else { "--session-id" }),
                                 Some(id.as_str())
                             );
-                            for never in ["--bare", "--disallowedTools", "--dangerously-skip-permissions"] {
+                            for never in [
+                                "--bare",
+                                "--disallowedTools",
+                                "--dangerously-skip-permissions",
+                                "--allow-dangerously-skip-permissions",
+                            ] {
                                 assert!(!a.iter().any(|a| a == never), "{never}");
                             }
                             assert!(!a.iter().any(|a| a == "--fork-session"), "only a fork forks");
@@ -1846,7 +1903,8 @@ pub(crate) mod tests {
                 }
             }
         }
-        assert_eq!(permission_mode(Mode::Plan), "plan");
+        let flags: Vec<&str> = Mode::ALL.iter().map(|m| permission_mode(*m)).collect();
+        assert_eq!(flags, ["default", "acceptEdits", "auto", "plan", "bypassPermissions"]);
     }
 
     #[test]
@@ -1966,7 +2024,7 @@ pub(crate) mod tests {
         assert_eq!(context, Some((2080, 1_000_000)), "the last call's tokens, the answering model's window");
         assert_eq!(ends(&steps).len(), 1);
         // In another mode the same write is an edit.
-        let (steps, _) = drive("claude-11-plan.jsonl", Mode::Supervised);
+        let (steps, _) = drive("claude-11-plan.jsonl", Mode::Ask);
         assert!(
             steps.iter().any(|s| matches!(s, Step::ToolStart { tool, .. } if tool.class == ToolClass::Edit))
         );
@@ -1974,7 +2032,7 @@ pub(crate) mod tests {
 
     #[test]
     fn a_question_call_makes_no_step() {
-        let (steps, _) = drive("claude-12-question.jsonl", Mode::Supervised);
+        let (steps, _) = drive("claude-12-question.jsonl", Mode::Ask);
         assert!(!steps.iter().any(|s| matches!(s, Step::ToolStart { .. } | Step::ToolEnd { .. })));
         assert_eq!(assistant_texts(&steps), ["Blue."]);
         assert_eq!(ends(&steps)[0].outcome, Outcome::Done);
@@ -1982,7 +2040,7 @@ pub(crate) mod tests {
 
     #[test]
     fn a_steer_is_delivered_in_its_turn_or_starts_the_next() {
-        let (steps, stdin) = drive("claude-13-steer.jsonl", Mode::Supervised);
+        let (steps, stdin) = drive("claude-13-steer.jsonl", Mode::Ask);
         assert_eq!(stdin.len(), 3, "each message written at once");
         assert!(stdin.iter().all(|l| l["type"] == "user"));
         let marks: Vec<String> = steps
@@ -2001,7 +2059,7 @@ pub(crate) mod tests {
 
     #[test]
     fn each_turn_is_marked_by_the_echo_that_started_it() {
-        let (steps, _) = drive("claude-13-steer.jsonl", Mode::Supervised);
+        let (steps, _) = drive("claude-13-steer.jsonl", Mode::Ask);
         let marks: Vec<String> = steps
             .iter()
             .filter_map(|s| match s {
@@ -2078,7 +2136,7 @@ pub(crate) mod tests {
 
     #[test]
     fn slash_commands_answered_by_the_cli_are_notices() {
-        let (steps, _) = drive("claude-14-slash.jsonl", Mode::Supervised);
+        let (steps, _) = drive("claude-14-slash.jsonl", Mode::Ask);
         let notices: Vec<&str> = steps
             .iter()
             .filter_map(|s| if let Step::Notice(t) = s { Some(t.as_str()) } else { None })
@@ -2178,7 +2236,7 @@ pub(crate) mod tests {
     #[test]
     fn a_copy_resumes_by_id_or_by_the_cuts_path() {
         let cut = "/run/user/1000/g7-agents/cut/0123456789abcdef.jsonl";
-        let a = fork_args(&LaunchSettings::new(Mode::Supervised), Path::new("/r/m.json"), cut);
+        let a = fork_args(&LaunchSettings::new(Mode::Ask), Path::new("/r/m.json"), cut);
         assert!(a.windows(2).any(|w| w == ["--resume", cut]));
         assert_eq!(a.iter().filter(|a| *a == "--resume").count(), 1);
         // The check: the probe's flags, the copy, nothing that writes or asks.
@@ -2201,7 +2259,7 @@ pub(crate) mod tests {
         let launch = Launch {
             bin: PathBuf::from("/nonexistent/claude"),
             cwd: PathBuf::from("/w"),
-            mode: Mode::Supervised,
+            mode: Mode::Ask,
             session_id: new_session_id(),
             resume: false,
             mcp_config: PathBuf::from("/nonexistent/mcp.json"),
@@ -2216,11 +2274,10 @@ pub(crate) mod tests {
                 cut_dir: PathBuf::from("/nonexistent/cut"),
             }),
         };
-        let e = spawn_with(&launch, &LaunchSettings::new(Mode::Supervised)).unwrap_err();
+        let e = spawn_with(&launch, &LaunchSettings::new(Mode::Ask)).unwrap_err();
         assert_eq!(e.kind(), std::io::ErrorKind::InvalidInput);
         // A hint that isn't one starts nothing.
-        let e = spawn_session(&launch, &LaunchSettings::new(Mode::Supervised), UserInput::text("Hi"))
-            .unwrap_err();
+        let e = spawn_session(&launch, &LaunchSettings::new(Mode::Ask), UserInput::text("Hi")).unwrap_err();
         assert_eq!(e.kind(), std::io::ErrorKind::InvalidData);
     }
 
@@ -2300,7 +2357,7 @@ pub(crate) mod tests {
         let start = ForkStart { resume: path.to_string_lossy().into_owned(), from, cut: Some(cut) };
         let driver = ClaudeDriver::forking(
             PathBuf::from("/w"),
-            &LaunchSettings::new(Mode::Supervised),
+            &LaunchSettings::new(Mode::Ask),
             UserInput::text("Hi"),
             start,
         );

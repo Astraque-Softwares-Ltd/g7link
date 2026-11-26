@@ -5522,6 +5522,8 @@ pub mod agent {
     pub const MAX_DENY_MESSAGE_BYTES: usize = 2000;
     /// A tool step's `path`.
     pub const MAX_TOOL_PATH_BYTES: usize = 512;
+    /// A tool step's review's `rationale` (`AgentToolReview`).
+    pub const MAX_REVIEW_RATIONALE_BYTES: usize = 600;
     /// The tool step a reasoning item becomes for a phone without [`ITEMS2`]: its name.
     pub const REASONING_TOOL_NAME: &str = "reasoning";
     /// The tool step a reasoning item becomes for a phone without [`ITEMS2`]: its title.
@@ -5754,19 +5756,48 @@ pub mod agent {
         pub const ALL: &[&str] = &[WORKING, WAITING, DONE, FAILED, INTERRUPTED];
     }
 
-    /// A thread's `mode`, and the catalog's `modes`.
+    /// A thread's `mode`, and each catalog agent's `modes`
+    /// (`docs/protocol/agents.md` §5.1). Names and descriptions never cross:
+    /// each client words them per agent; a word it doesn't know shows as is.
     pub mod mode {
-        /// Asks before every edit and every command that isn't read-only.
-        pub const SUPERVISED: &str = "supervised";
-        /// Edits without asking (never offered to a phone).
-        pub const AUTO_EDIT: &str = "auto_edit";
+        /// Asks before what the CLI asks about: Claude's "Manual", Codex's
+        /// "Ask for approval".
+        pub const ASK: &str = "ask";
+        /// Edits without asking, still asks before commands: Claude's
+        /// "Accept edits".
+        pub const ACCEPT_EDITS: &str = "accept_edits";
+        /// The CLI decides each action itself: Claude's "Auto", Codex's
+        /// "Approve for me".
+        pub const AUTO: &str = "auto";
         /// Changes nothing; writes a plan for the user to implement (§5).
         pub const PLAN: &str = "plan";
-        pub const ALL: &[&str] = &[SUPERVISED, AUTO_EDIT, PLAN];
-        /// The modes a phone without [`CONTROL`](super::CONTROL) knows.
-        pub const LEGACY: &[&str] = &[SUPERVISED, AUTO_EDIT];
-        /// The modes a phone may start, configure or implement with.
-        pub const PHONE: &[&str] = &[SUPERVISED, PLAN];
+        /// Nothing is asked: Claude's "Bypass permissions", Codex's "Full access".
+        pub const FULL: &str = "full";
+        pub const ALL: &[&str] = &[ASK, ACCEPT_EDITS, AUTO, PLAN, FULL];
+        /// The words before 0.1.31, for `ask` and `accept_edits`.
+        pub const OLD_SUPERVISED: &str = "supervised";
+        pub const OLD_AUTO_EDIT: &str = "auto_edit";
+        /// The modes a phone without [`CONTROL`](super::CONTROL) knows: the old words.
+        pub const LEGACY: &[&str] = &[OLD_SUPERVISED, OLD_AUTO_EDIT];
+
+        /// `word` in today's words: an old word as its new one, any other as is.
+        pub fn canonical(word: &str) -> &str {
+            match word {
+                OLD_SUPERVISED => ASK,
+                OLD_AUTO_EDIT => ACCEPT_EDITS,
+                other => other,
+            }
+        }
+
+        /// `word` as a phone without [`CONTROL`](super::CONTROL) knows it:
+        /// `accept_edits` as `auto_edit`, everything else as `supervised`,
+        /// the one word every such phone knows.
+        pub fn legacy(word: &str) -> &'static str {
+            match canonical(word) {
+                ACCEPT_EDITS => OLD_AUTO_EDIT,
+                _ => OLD_SUPERVISED,
+            }
+        }
     }
 
     /// An item's `kind`.
@@ -5824,6 +5855,16 @@ pub mod agent {
         pub const ERROR: &str = "error";
         pub const DENIED: &str = "denied";
         pub const ALL: &[&str] = &[RUNNING, OK, ERROR, DENIED];
+    }
+
+    /// A tool step's review's `status` (`AgentToolReview`): what the
+    /// agent's own reviewer decided.
+    pub mod review {
+        pub const APPROVED: &str = "approved";
+        pub const DENIED: &str = "denied";
+        pub const TIMED_OUT: &str = "timed_out";
+        pub const ABORTED: &str = "aborted";
+        pub const ALL: &[&str] = &[APPROVED, DENIED, TIMED_OUT, ABORTED];
     }
 
     /// An ask's `kind`.
@@ -6081,6 +6122,12 @@ pub struct AgentCatalogAgent {
     /// Its usage windows as its CLI last reported them. [`agent::CONTROL`] only.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub limits: Vec<AgentLimit>,
+    /// The modes a thread of it may use, words of [`agent::mode`] in its
+    /// CLI's own order, at most [`agent::MAX_MODES`]; a phone may choose any
+    /// of them. A word the phone doesn't know is shown as is. Empty: none
+    /// may be chosen (the PC hasn't probed it). [`agent::CONTROL`] only.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub modes: Vec<String>,
 }
 
 impl std::fmt::Debug for AgentCatalogAgent {
@@ -6092,6 +6139,7 @@ impl std::fmt::Debug for AgentCatalogAgent {
             .field("models", &self.models.len())
             .field("can", &self.can)
             .field("limits", &self.limits)
+            .field("modes", &self.modes)
             .finish_non_exhaustive()
     }
 }
@@ -6108,6 +6156,8 @@ impl AgentCatalogAgent {
             && self.can.iter().all(|c| c.len() <= agent::MAX_WORD_BYTES)
             && self.limits.len() <= agent::MAX_LIMITS
             && self.limits.iter().all(AgentLimit::is_valid)
+            && self.modes.len() <= agent::MAX_MODES
+            && self.modes.iter().all(|m| is_agent_word(m))
     }
 
     fn clean(&mut self) {
@@ -6130,20 +6180,35 @@ impl AgentCatalogAgent {
         self.limits =
             std::mem::take(&mut self.limits).into_iter().filter_map(AgentLimit::sanitized).collect();
         self.limits.truncate(agent::MAX_LIMITS);
+        let mut modes: Vec<String> = Vec::new();
+        for word in std::mem::take(&mut self.modes) {
+            let word = agent::mode::canonical(&word);
+            if is_agent_word(word) && !modes.iter().any(|m| m == word) {
+                modes.push(word.to_owned());
+            }
+        }
+        modes.truncate(agent::MAX_MODES);
+        self.modes = modes;
     }
 
     /// The agent as a phone without [`agent::CONTROL`] takes it: no models,
-    /// `can` or limits.
+    /// `can`, limits or modes.
     pub fn for_legacy(mut self) -> Self {
         self.models = Vec::new();
         self.can = Vec::new();
         self.limits = Vec::new();
+        self.modes = Vec::new();
         self
     }
 
     /// Whether it can do `what` (one of [`agent::can`]).
     pub fn can(&self, what: &str) -> bool {
         self.can.iter().any(|c| c == what)
+    }
+
+    /// Whether a thread of it may use `mode` (one of [`agent::mode`]).
+    pub fn offers(&self, mode: &str) -> bool {
+        self.modes.iter().any(|m| m == mode)
     }
 }
 
@@ -6183,6 +6248,40 @@ pub struct AgentCatalogFolder {
     /// What its newest thread ran with, its title and branch.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last: Option<AgentFolderLast>,
+    // ---- Modes (`docs/protocol/agents.md` §5.1) ----
+    /// The mode each agent last started or ran with here, at most one per
+    /// agent and [`agent::MAX_AGENTS`], never `plan`: a new thread there
+    /// starts in it while the agent still offers it, else in `ask`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub modes: Vec<AgentFolderMode>,
+}
+
+/// A folder's remembered mode for one agent.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct AgentFolderMode {
+    pub agent: String,
+    /// A word of [`agent::mode`], never `plan`.
+    pub mode: String,
+}
+
+impl AgentFolderMode {
+    pub fn is_valid(&self) -> bool {
+        is_valid_agent_id(&self.agent) && is_agent_word(&self.mode) && self.mode != agent::mode::PLAN
+    }
+}
+
+/// A folder's modes within their limits: in today's words, bad ones and
+/// `plan` left out, the first one for each agent kept.
+fn clean_folder_modes(modes: &mut Vec<AgentFolderMode>) {
+    let mut kept: Vec<AgentFolderMode> = Vec::new();
+    for mut m in std::mem::take(modes) {
+        m.mode = agent::mode::canonical(&m.mode).to_owned();
+        if m.is_valid() && !kept.iter().any(|k| k.agent == m.agent) {
+            kept.push(m);
+        }
+    }
+    kept.truncate(agent::MAX_AGENTS);
+    *modes = kept;
 }
 
 /// A folder's newest thread (§15): what it ran with, its title, the branch
@@ -6261,8 +6360,6 @@ pub struct AgentCatalog {
     pub agents: Vec<AgentCatalogAgent>,
     #[serde(default)]
     pub folders: Vec<AgentCatalogFolder>,
-    #[serde(default)]
-    pub modes: Vec<String>,
     /// This phone may push and open pull requests (§8): the PC's
     /// `agent_push` toggle for it. The PC's core sets it for each phone.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -6278,7 +6375,6 @@ impl std::fmt::Debug for AgentCatalog {
         f.debug_struct("AgentCatalog")
             .field("agents", &self.agents)
             .field("folders", &self.folders.len())
-            .field("modes", &self.modes)
             .field("push", &self.push)
             .field("add_folders", &self.add_folders)
             .finish()
@@ -6294,9 +6390,9 @@ impl AgentCatalog {
                 is_valid_agent_id(&f.id)
                     && f.label.len() <= agent::MAX_LABEL_BYTES
                     && agent_scripts::is_valid_folder_scripts(f)
+                    && f.modes.len() <= agent::MAX_AGENTS
+                    && f.modes.iter().all(AgentFolderMode::is_valid)
             })
-            && self.modes.len() <= agent::MAX_MODES
-            && self.modes.iter().all(|m| is_agent_word(m))
     }
 
     /// The catalog within its limits: bad entries and extra ones left out,
@@ -6312,19 +6408,20 @@ impl AgentCatalog {
         for f in &mut self.folders {
             clean_line(&mut f.label, agent::MAX_LABEL_BYTES);
             agent_scripts::clean_folder_scripts(f);
-            // A bad `last` is dropped, never the folder.
+            // A bad `last` or mode is dropped, never the folder.
             f.last = f.last.take().and_then(AgentFolderLast::sanitized);
+            clean_folder_modes(&mut f.modes);
         }
-        self.modes.retain(|m| is_agent_word(m));
-        self.modes.truncate(agent::MAX_MODES);
         self
     }
 
     /// The catalog as a phone without [`agent::CONTROL`] takes it: the
-    /// agents without what §5 added, and the modes it knows.
+    /// agents and folders without what §5 added.
     pub fn for_legacy(mut self) -> Self {
         self.agents = self.agents.into_iter().map(AgentCatalogAgent::for_legacy).collect();
-        self.modes.retain(|m| agent::mode::LEGACY.contains(&m.as_str()));
+        for f in &mut self.folders {
+            f.modes = Vec::new();
+        }
         self
     }
 }
@@ -6504,7 +6601,8 @@ impl AgentThread {
             && self.folder.len() <= agent::MAX_LABEL_BYTES
             && self.title.len() <= agent::MAX_TITLE_BYTES
             && agent::state::ALL.contains(&self.state.as_str())
-            && agent::mode::ALL.contains(&self.mode.as_str())
+            // The old words too: a phone without `agent.control` is sent them.
+            && agent::mode::ALL.contains(&agent::mode::canonical(&self.mode))
             && fits_opt(&self.summary, agent::MAX_SUMMARY_BYTES)
             && fits_opt(&self.error, agent::MAX_ERROR_BYTES)
             && self.error_code.as_deref().is_none_or(is_agent_code)
@@ -6521,8 +6619,10 @@ impl AgentThread {
             && agent_scripts::is_valid_thread_runs(self)
     }
 
-    /// The thread within its limits, or `None` when an id or a wire word is bad.
+    /// The thread within its limits, or `None` when an id or a wire word is
+    /// bad. An old mode word reads as today's.
     pub fn sanitized(mut self) -> Option<Self> {
+        self.mode = agent::mode::canonical(&self.mode).to_owned();
         if !is_valid_agent_id(&self.id)
             || !is_valid_agent_id(&self.agent)
             || !agent::state::ALL.contains(&self.state.as_str())
@@ -6559,13 +6659,10 @@ impl AgentThread {
         Some(self)
     }
 
-    /// The thread as a phone without [`agent::CONTROL`] takes it: plan mode
-    /// reads as `supervised` (it asks before everything, and changes nothing),
-    /// and what §5 added is left out.
+    /// The thread as a phone without [`agent::CONTROL`] takes it: its mode
+    /// in the old words ([`agent::mode::legacy`]), and what §5 added left out.
     pub fn for_legacy(mut self) -> Self {
-        if !agent::mode::LEGACY.contains(&self.mode.as_str()) {
-            self.mode = agent::mode::SUPERVISED.to_owned();
-        }
+        self.mode = agent::mode::legacy(&self.mode).to_owned();
         self.model = None;
         self.effort = None;
         self.answered_model = None;
@@ -6608,6 +6705,11 @@ pub struct AgentTool {
     /// asking anyone.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub by_rule: bool,
+    /// What the agent's own reviewer decided about it, without asking
+    /// anyone (Codex's "Approve for me", Claude's Auto); absent when it
+    /// didn't review it, and from older PCs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review: Option<AgentToolReview>,
 }
 
 /// Never prints the detail, output or path (protocol v1 §11).
@@ -6617,7 +6719,51 @@ impl std::fmt::Debug for AgentTool {
             .field("status", &self.status)
             .field("class", &self.class)
             .field("by_rule", &self.by_rule)
+            .field("review", &self.review)
             .finish_non_exhaustive()
+    }
+}
+
+/// A tool step's automatic review ([`AgentTool::review`], §2.4).
+#[derive(Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct AgentToolReview {
+    /// One of [`agent::review`].
+    pub status: String,
+    /// The reviewer's word for the risk (`low`, `medium`, `high`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub risk: Option<String>,
+    /// Why, in the reviewer's words: at most [`agent::MAX_REVIEW_RATIONALE_BYTES`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rationale: Option<String>,
+}
+
+/// Never prints the rationale (protocol v1 §11).
+impl std::fmt::Debug for AgentToolReview {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AgentToolReview").field("status", &self.status).finish_non_exhaustive()
+    }
+}
+
+impl AgentToolReview {
+    fn is_valid(&self) -> bool {
+        agent::review::ALL.contains(&self.status.as_str())
+            && fits_word(&self.risk)
+            && fits_opt(&self.rationale, agent::MAX_REVIEW_RATIONALE_BYTES)
+    }
+
+    /// The review within its limits, or `None` for a status this build
+    /// doesn't know. A risk that isn't a short word is left out.
+    fn sanitized(mut self) -> Option<Self> {
+        if !agent::review::ALL.contains(&self.status.as_str()) {
+            return None;
+        }
+        if clean_opt(&mut self.risk, false, agent::MAX_WORD_BYTES)
+            || self.risk.as_deref().is_some_and(str::is_empty)
+        {
+            self.risk = None;
+        }
+        clean_opt(&mut self.rationale, true, agent::MAX_REVIEW_RATIONALE_BYTES);
+        Some(self)
     }
 }
 
@@ -6630,9 +6776,11 @@ impl AgentTool {
             && fits_opt(&self.output, agent::MAX_TOOL_OUTPUT_BYTES)
             && fits_word(&self.class)
             && fits_opt(&self.path, agent::MAX_TOOL_PATH_BYTES)
+            && self.review.as_ref().is_none_or(AgentToolReview::is_valid)
     }
 
-    /// Cleans and cuts the text; whether anything was cut.
+    /// Cleans and cuts the text; whether anything was cut. A review with a
+    /// status this build doesn't know is left out.
     fn clean(&mut self) -> bool {
         clean_line(&mut self.name, agent::MAX_LABEL_BYTES);
         clean_line(&mut self.title, agent::MAX_ASK_TITLE_BYTES);
@@ -6640,6 +6788,7 @@ impl AgentTool {
         let output = clean_opt(&mut self.output, true, agent::MAX_TOOL_OUTPUT_BYTES);
         known_word(&mut self.class, agent::tool_class::ALL);
         let path = clean_tool_path(&mut self.path);
+        self.review = self.review.take().and_then(AgentToolReview::sanitized);
         detail || output || path
     }
 }
@@ -6926,6 +7075,10 @@ pub struct AgentAsk {
     /// The id of the tool item the request belongs to; absent from older PCs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub item: Option<String>,
+    /// Denying it stops the agent's turn (Codex offered no way to refuse
+    /// just this step): Deny says so. Absent from older PCs.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub deny_stops: bool,
 }
 
 /// Never prints the token, command, diff, path or reason (protocol v1 §11).
@@ -6936,6 +7089,7 @@ impl std::fmt::Debug for AgentAsk {
             .field("agent", &self.agent)
             .field("kind", &self.kind)
             .field("truncated", &self.truncated)
+            .field("deny_stops", &self.deny_stops)
             .finish_non_exhaustive()
     }
 }
@@ -7303,7 +7457,7 @@ impl AgentStart {
             || self.effort.is_some()
             || !self.images.is_empty()
             || self.custom_model
-            || !agent::mode::LEGACY.contains(&self.mode.as_str())
+            || agent::mode::canonical(&self.mode) != agent::mode::ASK
     }
 }
 
@@ -10211,7 +10365,7 @@ mod tests {
             folder: "g7linux".into(),
             title: "List the files here.".into(),
             state: super::agent::state::WORKING.into(),
-            mode: super::agent::mode::SUPERVISED.into(),
+            mode: super::agent::mode::ASK.into(),
             from_phone: true,
             updated: 1_795_000_000_000,
             asks: 1,
@@ -10256,6 +10410,7 @@ mod tests {
             truncated: false,
             expires: 1_795_007_200_000,
             item: None,
+            deny_stops: false,
         }
     }
 
@@ -10292,12 +10447,20 @@ mod tests {
                 follow_remote: false,
                 ..Default::default()
             }],
-            modes: vec![agent::mode::SUPERVISED.into()],
             push: false,
             add_folders: false,
         };
         assert!(catalog.is_valid());
         round_trip(types::AGENT_CATALOG, &catalog);
+        // A catalog from before 0.1.31, with its own list of modes: read, the list skipped.
+        let old = ciborium::Value::Map(vec![
+            (ciborium::Value::Text("agents".into()), ciborium::Value::Array(vec![])),
+            (
+                ciborium::Value::Text("modes".into()),
+                ciborium::Value::Array(vec![ciborium::Value::Text("supervised".into())]),
+            ),
+        ]);
+        assert_eq!(old.deserialized::<AgentCatalog>().unwrap(), AgentCatalog::default());
         let thread = agent_thread(&"b".repeat(32));
         assert!(thread.is_valid());
         round_trip(types::AGENT_THREAD, &thread);
@@ -10336,7 +10499,7 @@ mod tests {
             agent: "claude".into(),
             folder: "f0123456789ab".into(),
             prompt: "List the files here.".into(),
-            mode: agent::mode::SUPERVISED.into(),
+            mode: agent::mode::ASK.into(),
             ..Default::default()
         };
         assert!(start.is_valid());
@@ -10503,6 +10666,7 @@ mod tests {
                 class: Some(agent::tool_class::EDIT.into()),
                 path: Some("src/main.rs".into()),
                 by_rule: true,
+                review: None,
             }),
             turn: Some(2),
             end: Some(1_795_000_000_900),
@@ -10722,6 +10886,60 @@ mod tests {
         assert!(!asked(agent::asked::DENIED, &"x".repeat(2001)).is_valid());
         let shown = format!("{:?} {:?}", deny(Some("secret words".into())), denied);
         assert!(!shown.contains("secret") && !shown.contains("runner"), "{shown}");
+    }
+
+    #[test]
+    fn a_reviewed_step_and_a_deny_that_stops_round_trip_and_keep_their_limits() {
+        use super::{AgentAsk, AgentItems, AgentToolReview, agent, types};
+        let mut tool = agent_item2(2);
+        let review = AgentToolReview {
+            status: agent::review::APPROVED.into(),
+            risk: Some("low".into()),
+            rationale: Some("The user asked for this exact request.".into()),
+        };
+        tool.tool.as_mut().unwrap().review = Some(review.clone());
+        let ask = AgentAsk { deny_stops: true, ..agent_ask() };
+        let page = AgentItems {
+            thread: agent_thread(&"b".repeat(32)),
+            items: vec![tool.clone()],
+            asks: vec![ask.clone()],
+            ..Default::default()
+        };
+        assert!(page.is_valid());
+        assert_eq!(page.clone().sanitized().unwrap(), page, "nothing to clean");
+        round_trip(types::OK, &page);
+        round_trip(types::AGENT_ASK, &ask);
+
+        // Absent from an older PC, and never sent when there's nothing to say.
+        let plain: AgentAsk = read_as(&agent_ask());
+        assert!(!plain.deny_stops);
+        let bytes = crate::Envelope::new(types::AGENT_ASK, &agent_ask()).unwrap().to_cbor();
+        assert!(!bytes.windows(b"deny_stops".len()).any(|w| w == b"deny_stops"), "not sent when false");
+        let bytes = crate::Envelope::new(types::OK, &agent_item2(2)).unwrap().to_cbor();
+        assert!(!bytes.windows(b"review".len()).any(|w| w == b"review"), "not sent when absent");
+        let seen: old::Ask = read_as(&ask);
+        assert_eq!(seen.token, ask.token, "an older phone reads the ask");
+
+        // A status this build doesn't know leaves the step without a review.
+        let mut later = tool.clone();
+        later.tool.as_mut().unwrap().review.as_mut().unwrap().status = "escalated".into();
+        assert!(!later.is_valid());
+        let cleaned = later.sanitized().unwrap();
+        assert_eq!(cleaned.tool.unwrap().review, None, "the step stays");
+
+        // Text is cleaned and cut; a risk that isn't a short word goes.
+        let mut long = tool.clone();
+        let r = long.tool.as_mut().unwrap().review.as_mut().unwrap();
+        r.rationale = Some(format!("{}\u{202e}", "why ".repeat(400)));
+        r.risk = Some("x".repeat(agent::MAX_WORD_BYTES + 1));
+        assert!(!long.is_valid());
+        let cleaned = long.sanitized().unwrap().tool.unwrap().review.unwrap();
+        assert!(cleaned.rationale.as_ref().unwrap().len() <= agent::MAX_REVIEW_RATIONALE_BYTES);
+        assert!(!cleaned.rationale.unwrap().contains('\u{202e}'));
+        assert_eq!(cleaned.risk, None);
+        assert_eq!(cleaned.status, agent::review::APPROVED);
+        let shown = format!("{review:?}");
+        assert!(!shown.contains("exact request"), "{shown}");
     }
 
     /// The agent bodies as G7 Link 0.1.14 and 0.1.15 read them.

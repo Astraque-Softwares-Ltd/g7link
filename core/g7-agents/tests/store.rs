@@ -258,6 +258,26 @@ fn the_file_store_is_imported_once_and_exports_the_same() {
     let db = Db::open(root).unwrap();
     assert!(db.imported().is_none());
     assert_eq!(db.load_threads().unwrap().len(), 2);
+
+    // The file store's mode words (`supervised`, `plan`) read as today's.
+    let mode = |db: &Db, id: &str| db.load_thread(id).unwrap().unwrap().info.mode;
+    assert_eq!((mode(&db, A), mode(&db, B)), (Mode::Ask, Mode::Plan));
+    drop(db);
+
+    // A database row written before the modes were renamed: its `info` says
+    // `auto_edit` or `supervised`, and the thread loads with the new word.
+    let conn = rusqlite::Connection::open(root.join("agents.db")).unwrap();
+    for (old, id) in [("auto_edit", A), ("supervised", B)] {
+        let body: String =
+            conn.query_row("SELECT info FROM threads WHERE id = ?1", [id], |r| r.get(0)).unwrap();
+        let mut info: serde_json::Value = serde_json::from_str(&body).unwrap();
+        info["mode"] = serde_json::json!(old);
+        conn.execute("UPDATE threads SET info = ?1 WHERE id = ?2", [info.to_string(), id.to_owned()])
+            .unwrap();
+    }
+    drop(conn);
+    let db = Db::open(root).unwrap();
+    assert_eq!((mode(&db, A), mode(&db, B)), (Mode::AcceptEdits, Mode::Ask));
 }
 
 #[test]
@@ -526,6 +546,7 @@ fn search_finds_phrases_terms_and_titles() {
             class: None,
             path: None,
             by_rule: false,
+            review: None,
         }),
         text: Some("zebra".into()),
         ..Item::new(10, "tool-10", ItemKind::Tool, 901)

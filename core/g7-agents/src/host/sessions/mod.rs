@@ -35,7 +35,7 @@ use std::time::{Duration, Instant};
 use crate::api::*;
 use crate::host::db::{FoundFile, FoundPage, FoundQuery, FoundRow};
 use crate::host::store::now_ms;
-use crate::host::threads::{CODEX_AUTO_EDIT, Continued, subdir_of};
+use crate::host::threads::{Continued, subdir_of};
 use crate::host::{Config, Host};
 use claude_files::ClaudeTail;
 use codex_files::{CodexMeta, CodexTail};
@@ -1316,15 +1316,6 @@ impl Host {
         let listed = self.listed(&p.session_id).await.ok_or_else(not_found)?;
         let ctx = listed.ctx.clone();
         let agent = ctx.agent;
-        if p.origin.kind == OriginKind::Phone && p.mode != Mode::Supervised {
-            return Err(RpcError::new(
-                ErrorCode::Denied,
-                "A phone can only continue a session as a thread that asks before each change.",
-            ));
-        }
-        if agent == AgentId::Codex && p.mode == Mode::AutoEdit && !CODEX_AUTO_EDIT {
-            return Err(RpcError::new(ErrorCode::Unavailable, "Codex can't edit without asking yet."));
-        }
         if codex_app(agent, ctx.source) {
             return Err(RpcError::new(ErrorCode::Busy, CODEX_APP_MESSAGE));
         }
@@ -1351,6 +1342,9 @@ impl Host {
         }
         let ContinueTarget { folder_id, subdir } =
             self.continue_target(agent, &ctx.cwd).await.map_err(Unable::into_error)?;
+        // Any mode the agent offers, from anyone.
+        let probe = self.agent_info(agent).await;
+        crate::host::dispatch::check_settings(&probe.info, None, None, None, false, Some(p.mode), None)?;
         let read_ctx = ctx.clone();
         let items = tokio::task::spawn_blocking(move || {
             collect(read_ctx.agent, &read_ctx.path, Some(PathBuf::from(&read_ctx.cwd)), None, CONTINUE_ITEMS)
@@ -1370,6 +1364,7 @@ impl Host {
             items,
             notice: format!("Continued from a session started in {}.", place(agent, ctx.source)),
         })?;
+        self.remember_mode(&mut self.lock_reg(), &thread.folder_id, agent, thread.mode);
         {
             let mut inner = self.sessions.lock();
             inner.list.retain(|l| l.session.id != p.session_id);

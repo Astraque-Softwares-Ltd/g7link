@@ -354,7 +354,7 @@ pub struct AgentConfigure {
     pub model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<String>,
-    /// [`agent::mode::SUPERVISED`] or [`agent::mode::PLAN`] from a phone.
+    /// Any of the agent's catalog `modes` ([`agent::mode`]), from a phone too.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<String>,
     /// `model` was typed by the user rather than picked from the catalog.
@@ -375,8 +375,8 @@ impl std::fmt::Debug for AgentConfigure {
 }
 
 impl AgentConfigure {
-    /// A thread id, at least one change, each well formed. Whether the mode
-    /// may be used is the PC's call (`DENIED`).
+    /// A thread id, at least one change, each well formed. Whether the
+    /// agent offers the mode is the PC's call (`UNAVAILABLE`).
     pub fn is_valid(&self) -> bool {
         is_valid_agent_id(&self.thread)
             && (self.model.is_some() || self.effort.is_some() || self.mode.is_some())
@@ -427,17 +427,23 @@ impl AgentQueueChange {
 }
 
 /// Body of `agent.implement`: phone to PC. Implements the thread's newest
-/// proposed plan (`item`), asking before edits and commands.
+/// proposed plan (`item`) in `mode`.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct AgentImplement {
     pub thread: String,
     /// The `plan` item's id.
     pub item: String,
+    /// Any of the agent's modes but `plan`; absent: the one the folder
+    /// remembers for the agent, else `ask`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
 }
 
 impl AgentImplement {
     pub fn is_valid(&self) -> bool {
-        is_valid_agent_id(&self.thread) && is_agent_item_id(&self.item)
+        is_valid_agent_id(&self.thread)
+            && is_agent_item_id(&self.item)
+            && self.mode.as_deref().is_none_or(|m| is_agent_word(m) && m != agent::mode::PLAN)
     }
 }
 
@@ -1120,8 +1126,8 @@ mod tests {
     use crate::{
         Envelope,
         messages::{
-            AgentCatalog, AgentCatalogAgent, AgentItem, AgentSend, AgentStart, AgentThread, AgentThreads,
-            AgentTool, types,
+            AgentCatalog, AgentCatalogAgent, AgentCatalogFolder, AgentFolderMode, AgentItem, AgentSend,
+            AgentStart, AgentThread, AgentThreads, AgentTool, types,
         },
     };
 
@@ -1235,10 +1241,18 @@ mod tests {
                     resets: Some(1_795_010_000_000),
                     state: agent::limit_state::OK.into(),
                 }],
+                modes: ["auto", "ask", "accept_edits", "plan", "full"].map(str::to_owned).to_vec(),
                 ..Default::default()
             }],
-            folders: Vec::new(),
-            modes: vec![agent::mode::SUPERVISED.into(), agent::mode::PLAN.into()],
+            folders: vec![AgentCatalogFolder {
+                id: "f0123456789ab".into(),
+                label: "g7linux".into(),
+                modes: vec![
+                    AgentFolderMode { agent: "claude".into(), mode: agent::mode::FULL.into() },
+                    AgentFolderMode { agent: "codex".into(), mode: agent::mode::AUTO.into() },
+                ],
+                ..Default::default()
+            }],
             push: false,
             add_folders: false,
         };
@@ -1317,9 +1331,14 @@ mod tests {
         };
         assert!(edit.is_valid());
         round_trip(types::AGENT_QUEUE, &edit);
-        let implement = AgentImplement { thread: THREAD.into(), item: "p:5".into() };
+        let implement = AgentImplement { thread: THREAD.into(), item: "p:5".into(), mode: None };
         assert!(implement.is_valid());
         round_trip(types::AGENT_IMPLEMENT, &implement);
+        let in_full = AgentImplement { mode: Some(agent::mode::FULL.into()), ..implement.clone() };
+        assert!(in_full.is_valid());
+        round_trip(types::AGENT_IMPLEMENT, &in_full);
+        assert!(!AgentImplement { mode: Some(agent::mode::PLAN.into()), ..implement.clone() }.is_valid());
+        assert!(!AgentImplement { mode: Some("Full".into()), ..implement }.is_valid());
 
         let question = question(false);
         assert!(question.is_valid());
@@ -1430,7 +1449,7 @@ mod tests {
             agent: "claude".into(),
             folder: "f1".into(),
             prompt: "hi".into(),
-            mode: agent::mode::SUPERVISED.into(),
+            mode: agent::mode::ASK.into(),
             model: Some(model.into()),
             ..Default::default()
         };
@@ -1487,6 +1506,89 @@ mod tests {
         assert_eq!(agent.limits[0].used_pct, Some(100));
         assert_eq!(agent.limits[0].state, agent::limit_state::OK, "a word this build doesn't know is ok");
         assert!(agent.can(agent::can::STEER) && !agent.can(agent::can::IMAGES));
+    }
+
+    #[test]
+    fn modes_keep_their_limits_and_old_words_read_as_new() {
+        // An agent's modes: old words as new, a later word kept as is, a bad one
+        // and a repeat dropped, at most `MAX_MODES`.
+        let mut words: Vec<String> =
+            ["supervised", "auto", "Bad Word", "ask", "later_mode", "auto_edit", "full"]
+                .map(str::to_owned)
+                .to_vec();
+        words.extend((0..10).map(|i| format!("m{i}")));
+        let agent = AgentCatalogAgent { id: "claude".into(), modes: words, ..Default::default() };
+        let catalog = AgentCatalog { agents: vec![agent], ..Default::default() };
+        assert!(!catalog.is_valid());
+        let agent = catalog.sanitized().agents.remove(0);
+        assert_eq!(agent.modes.len(), agent::MAX_MODES);
+        assert_eq!(agent.modes[..5], ["ask", "auto", "later_mode", "accept_edits", "full"]);
+        assert!(agent.offers(agent::mode::FULL) && !agent.offers(agent::mode::PLAN));
+
+        // A folder's modes: a bad entry or plan is dropped, not the folder; one per agent.
+        let folder = AgentCatalogFolder {
+            id: "f0123456789ab".into(),
+            label: "app".into(),
+            modes: vec![
+                AgentFolderMode { agent: "claude".into(), mode: "supervised".into() },
+                AgentFolderMode { agent: "claude".into(), mode: agent::mode::FULL.into() },
+                AgentFolderMode { agent: "codex".into(), mode: agent::mode::PLAN.into() },
+                AgentFolderMode { agent: "BAD ID".into(), mode: agent::mode::ASK.into() },
+                AgentFolderMode { agent: "codex".into(), mode: "Not A Word".into() },
+                AgentFolderMode { agent: "codex".into(), mode: agent::mode::AUTO.into() },
+            ],
+            ..Default::default()
+        };
+        let catalog = AgentCatalog { folders: vec![folder], ..Default::default() };
+        assert!(!catalog.is_valid());
+        let folders = catalog.sanitized().folders;
+        assert_eq!(folders.len(), 1);
+        assert_eq!(
+            folders[0].modes,
+            [
+                AgentFolderMode { agent: "claude".into(), mode: agent::mode::ASK.into() },
+                AgentFolderMode { agent: "codex".into(), mode: agent::mode::AUTO.into() },
+            ]
+        );
+        let many = AgentCatalogFolder {
+            id: "f0123456789ab".into(),
+            modes: (0..agent::MAX_AGENTS + 3)
+                .map(|i| AgentFolderMode { agent: format!("a{i}"), mode: agent::mode::ASK.into() })
+                .collect(),
+            ..Default::default()
+        };
+        let catalog = AgentCatalog { folders: vec![many], ..Default::default() };
+        assert!(!catalog.is_valid());
+        assert_eq!(catalog.sanitized().folders[0].modes.len(), agent::MAX_AGENTS);
+
+        // A thread in the old words (a PC's form for a phone without control,
+        // or an older PC): well formed, and read as today's.
+        for (old, new) in [("supervised", "ask"), ("auto_edit", "accept_edits")] {
+            let thread = AgentThread { mode: old.into(), ..full_thread() };
+            assert!(thread.is_valid(), "{old}");
+            assert_eq!(thread.sanitized().unwrap().mode, new);
+        }
+        assert!(!AgentThread { mode: "later_mode".into(), ..full_thread() }.is_valid());
+        for word in agent::mode::ALL {
+            let thread = AgentThread { mode: (*word).into(), ..full_thread() };
+            assert!(thread.is_valid());
+            assert_eq!(thread.clone().sanitized(), Some(thread));
+        }
+        assert_eq!(AgentThread { mode: "later_mode".into(), ..full_thread() }.sanitized(), None);
+        assert_eq!(agent::mode::canonical("later_mode"), "later_mode");
+
+        // Every mode may be started from a phone; only `ask` needs no control.
+        let start = |mode: &str| AgentStart {
+            agent: "claude".into(),
+            folder: "f1".into(),
+            prompt: "hi".into(),
+            mode: mode.into(),
+            ..Default::default()
+        };
+        assert!(!start(agent::mode::ASK).uses_control() && !start("supervised").uses_control());
+        for word in [agent::mode::ACCEPT_EDITS, agent::mode::AUTO, agent::mode::PLAN, agent::mode::FULL] {
+            assert!(start(word).is_valid() && start(word).uses_control(), "{word}");
+        }
     }
 
     #[test]
@@ -1582,30 +1684,38 @@ mod tests {
     #[test]
     fn a_phone_without_control_gets_what_it_knows() {
         let legacy = full_thread().for_legacy();
-        assert_eq!(legacy.mode, agent::mode::SUPERVISED, "plan mode reads as supervised");
+        assert_eq!(legacy.mode, agent::mode::OLD_SUPERVISED, "plan mode reads as supervised");
         let shown = keys(&legacy);
         for added in ["model", "effort", "answered_model", "queued", "queue_held", "context", "mcp", "asking"]
         {
             assert!(!shown.contains(&added.to_owned()), "{added} in {shown:?}");
         }
-        let auto = AgentThread { mode: agent::mode::AUTO_EDIT.into(), ..full_thread() }.for_legacy();
-        assert_eq!(auto.mode, agent::mode::AUTO_EDIT);
+        let edits = AgentThread { mode: agent::mode::ACCEPT_EDITS.into(), ..full_thread() }.for_legacy();
+        assert_eq!(edits.mode, agent::mode::OLD_AUTO_EDIT);
+        for word in [agent::mode::ASK, agent::mode::AUTO, agent::mode::FULL] {
+            let old = AgentThread { mode: word.into(), ..full_thread() }.for_legacy();
+            assert_eq!(old.mode, agent::mode::OLD_SUPERVISED, "{word}");
+        }
 
         let catalog = AgentCatalog {
             agents: vec![AgentCatalogAgent {
                 id: "claude".into(),
                 models: vec![model("opus")],
                 can: vec!["plan".into()],
+                modes: vec![agent::mode::ASK.into(), agent::mode::PLAN.into()],
                 ..Default::default()
             }],
-            folders: Vec::new(),
-            modes: vec![agent::mode::SUPERVISED.into(), agent::mode::PLAN.into()],
+            folders: vec![AgentCatalogFolder {
+                id: "f1".into(),
+                modes: vec![AgentFolderMode { agent: "claude".into(), mode: agent::mode::FULL.into() }],
+                ..Default::default()
+            }],
             push: false,
             add_folders: false,
         }
         .for_legacy();
-        assert_eq!(catalog.modes, ["supervised"]);
         assert_eq!(keys(&catalog.agents[0]), ["id", "name", "installed", "signed_in", "login_hint"]);
+        assert!(catalog.folders[0].modes.is_empty());
 
         let plan = AgentItem {
             seq: 5,
@@ -1674,6 +1784,7 @@ mod tests {
                 class: Some(agent::tool_class::PLAN.into()),
                 path: Some("fix-login.md".into()),
                 by_rule: false,
+                review: None,
             }),
             ..Default::default()
         };

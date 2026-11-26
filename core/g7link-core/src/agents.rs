@@ -18,8 +18,8 @@
 //! stream of its own, checked the same way.
 //!
 //! The control messages (§5) need `agent.control` on both sides. To a phone
-//! without it the PC sends what phase 1 sent: no models, queue or
-//! questions, plan mode as supervised, a plan as an answer and a question
+//! without it the PC sends what phase 1 sent: no models, modes, queue or
+//! questions, a mode in the old words, a plan as an answer and a question
 //! as a tool step. Images travel on streams of their own, one upload at a
 //! time per phone, refused when more bytes come than were announced.
 //!
@@ -44,8 +44,8 @@ pub use g7link_protocol::messages::{
     AgentQuestionAsk, AgentQuestionOption, AgentQuestionReply, AgentQuestioned, AgentQueueChange,
     AgentQueued, AgentRead, AgentSend, AgentSession, AgentSessionContinue, AgentSessionEvent,
     AgentSessionItem, AgentSessionItems, AgentSessionLimit, AgentSessionRead, AgentSessionWatch,
-    AgentSessions, AgentStart, AgentThread, AgentThreads, AgentTool, AgentWatch, agent, clean_deny_message,
-    is_valid_agent_id,
+    AgentSessions, AgentStart, AgentThread, AgentThreads, AgentTool, AgentToolReview, AgentWatch, agent,
+    clean_deny_message, is_valid_agent_id,
 };
 use g7link_protocol::{
     DeviceId, Envelope, ErrorCode, ProtocolError,
@@ -140,8 +140,10 @@ pub enum AgentRequest {
     /// [`history::show`](g7link_protocol::messages::history::show)), or the
     /// next page (`before_ms`). Answered with `Threads`.
     ThreadsPage { show: Option<String>, before_ms: Option<u64> },
-    /// `agent.start`. `mode` is `"supervised"`, or `"plan"` from a phone
-    /// with `agent.control`; `model`, `effort` and `images` come only from
+    /// `agent.start`. `mode` is a word of [`agent::mode`] in today's words
+    /// (an old one is read as its new one); anything but `ask` comes only
+    /// from a phone with `agent.control`, and the host refuses a mode the
+    /// agent doesn't offer. `model`, `effort` and `images` come only from
     /// such a phone too (`model` as one argument: never a flag, no space).
     /// `custom_model`: the user typed `model` (it needn't be listed).
     /// `key`: 16 hex digits; one the thread took in the last 24 h starts nothing.
@@ -163,8 +165,8 @@ pub enum AgentRequest {
     /// `Duplicate` and nothing is sent.
     Send { thread: String, text: String, dispatch: Option<String>, images: Vec<String>, key: Option<String> },
     /// `agent.configure`: changes for the thread's next turn. An empty
-    /// `model` or `effort` goes back to the default; `mode` is
-    /// `"supervised"` or `"plan"`. Answered with `Thread`.
+    /// `model` or `effort` goes back to the default; `mode` is any word of
+    /// [`agent::mode`] in today's words. Answered with `Thread`.
     Configure {
         thread: String,
         model: Option<String>,
@@ -180,8 +182,9 @@ pub enum AgentRequest {
     /// `agent.reply` with `dismiss`: the user won't answer.
     QuestionDismiss { token: String },
     /// `agent.implement`: implement the thread's newest proposed plan
-    /// (`item`), asking before edits and commands (supervised, always).
-    Implement { thread: String, item: String },
+    /// (`item`) in `mode` (a word of [`agent::mode`], never `plan`); absent:
+    /// the mode the folder remembers for the thread's agent, else `ask`.
+    Implement { thread: String, item: String, mode: Option<String> },
     /// `agent.files`: files of a thread's folder, or of a folder, for `@`;
     /// at most `limit` (1 to [`agent::MAX_FILE_HITS`]). Paths relative to it.
     Files { thread: Option<String>, folder: Option<String>, query: String, limit: u32 },
@@ -219,8 +222,8 @@ pub enum AgentRequest {
     /// (`None`: none). The core keeps the watch too; it also sends `None`
     /// when the connection ends or a toggle goes off.
     SessionWatch { session: Option<String> },
-    /// `agent.session.continue`: make the session a supervised thread
-    /// started by the phone.
+    /// `agent.session.continue`: make the session a thread started by the
+    /// phone, in the mode its folder remembers for the agent (else `ask`).
     SessionContinue { session: String },
     /// `agent.export`: a thread, or a session, as Markdown (exactly one of
     /// the two; a session only with `agent_sessions` on).
@@ -249,8 +252,8 @@ pub enum AgentRequest {
     },
     /// `agent.rename`: `title` one line, 1 to 80 bytes. Answered with `Thread`.
     Rename { thread: String, title: String },
-    /// `agent.fork`: from `turn`, or the latest; supervised or plan from a
-    /// phone. Answered with `Thread`, the new one.
+    /// `agent.fork`: from `turn`, or the latest, in the source's mode.
+    /// Answered with `Thread`, the new one.
     Fork { thread: String, turn: Option<u32> },
     /// `agent.rewind.preview`: the conversation only, always. Answered with `RewindPlan`.
     RewindPreview { thread: String, turn: u32 },
@@ -324,7 +327,7 @@ pub enum AgentRequest {
     /// `agent.session.move` (§9.1), after the core checked that this PC
     /// offers `agent.move`, §9's three toggles and the limits: close the
     /// session where it runs and, only once nothing has it open, continue
-    /// it as a supervised thread started by the phone that asked (as
+    /// it as a thread started by the phone that asked (as
     /// `SessionContinue`, whose host checks stay the judge). `confirm`: the
     /// nonce of an earlier `confirm` answer, §9's and shared with replies.
     /// Answered with `Moved`.
@@ -420,9 +423,11 @@ impl std::fmt::Debug for AgentRequest {
                 f.debug_struct("QuestionAnswer").field("answers", answers).finish_non_exhaustive()
             }
             Self::QuestionDismiss { .. } => f.debug_struct("QuestionDismiss").finish_non_exhaustive(),
-            Self::Implement { thread, .. } => {
-                f.debug_struct("Implement").field("thread", thread).finish_non_exhaustive()
-            }
+            Self::Implement { thread, mode, .. } => f
+                .debug_struct("Implement")
+                .field("thread", thread)
+                .field("mode", mode)
+                .finish_non_exhaustive(),
             Self::Files { thread, folder, limit, .. } => f
                 .debug_struct("Files")
                 .field("thread", thread)
@@ -1412,19 +1417,11 @@ pub(crate) fn send_session_item(shared: &Arc<Shared>, session: String, item: Age
 }
 
 /// PC: replaces this PC's catalog (`None`: the host is gone) and sends it to
-/// the phones that may have it when it changed. A phone may start
-/// supervised threads, and plan-mode ones (an agent that can plan, a phone
-/// with `agent.control`); what §5 added goes only to such a phone.
+/// the phones that may have it when it changed. Each agent's `modes` go as
+/// the host offers them: a phone may choose any of them. What §5 added
+/// goes only to a phone with `agent.control`.
 pub(crate) fn set_catalog(shared: &Arc<Shared>, catalog: Option<AgentCatalog>) {
-    let catalog = catalog.map(AgentCatalog::sanitized).map(|mut c| {
-        let plan = c.agents.iter().any(|a| a.can(agent::can::PLAN));
-        c.modes = match (c.agents.is_empty(), plan) {
-            (true, _) => Vec::new(),
-            (false, false) => vec![agent::mode::SUPERVISED.to_owned()],
-            (false, true) => vec![agent::mode::SUPERVISED.to_owned(), agent::mode::PLAN.to_owned()],
-        };
-        c
-    });
+    let catalog = catalog.map(AgentCatalog::sanitized);
     let recipients = shared.agent_recipient_caps();
     let mut inner = shared.agents.lock();
     if inner.catalog == catalog {
@@ -1725,15 +1722,6 @@ fn control_refusal(shared: &Shared, peer: &DeviceId) -> Option<Envelope> {
         .then(|| Envelope::error(ErrorCode::Unsupported, "this PC or phone can't do that yet"))
 }
 
-/// The refusal of a mode a phone asked for: `supervised`, and `plan` with
-/// `agent.control`, are the only ones.
-fn mode_refusal(shared: &Shared, peer: &DeviceId, mode: &str) -> Option<Envelope> {
-    let allowed = mode == agent::mode::SUPERVISED || (mode == agent::mode::PLAN && shared.control_with(peer));
-    (!allowed).then(|| {
-        Envelope::error(ErrorCode::Denied, "a phone asks before edits and commands, or plans; nothing else")
-    })
-}
-
 /// PC: what to answer a phone's `agent.*` request, checked in the order of
 /// `docs/protocol/agents.md` and contract §6.2 (0.1.14 contract §A4.2 for
 /// §3; phase 2 contract §Q5 for §5).
@@ -1781,9 +1769,7 @@ async fn answer_envelope(shared: &Arc<Shared>, peer: DeviceId, env: &Envelope) -
         }
         types::AGENT_START => {
             let Some(start) = decode::<AgentStart>(env, AgentStart::is_valid) else { return bad().into() };
-            if let Some(refused) = mode_refusal(shared, &peer, &start.mode) {
-                return refused.into();
-            }
+            // Any mode the agent offers: the PC's host says when it doesn't.
             if start.uses_control()
                 && let Some(refused) = control_refusal(shared, &peer)
             {
@@ -1793,7 +1779,7 @@ async fn answer_envelope(shared: &Arc<Shared>, peer: DeviceId, env: &Envelope) -
                 agent: start.agent,
                 folder: start.folder,
                 prompt: clean_typed(start.prompt),
-                mode: start.mode,
+                mode: agent::mode::canonical(&start.mode).to_owned(),
                 model: start.model,
                 effort: start.effort,
                 images: start.images,
@@ -1873,16 +1859,11 @@ async fn answer_envelope(shared: &Arc<Shared>, peer: DeviceId, env: &Envelope) -
             let Some(c) = decode::<AgentConfigure>(env, AgentConfigure::is_valid) else {
                 return bad().into();
             };
-            if let Some(mode) = c.mode.as_deref()
-                && let Some(refused) = mode_refusal(shared, &peer, mode)
-            {
-                return refused.into();
-            }
             AgentRequest::Configure {
                 thread: c.thread,
                 model: c.model,
                 effort: c.effort,
-                mode: c.mode,
+                mode: c.mode.as_deref().map(|m| agent::mode::canonical(m).to_owned()),
                 custom_model: c.custom_model,
             }
         }
@@ -1915,7 +1896,11 @@ async fn answer_envelope(shared: &Arc<Shared>, peer: DeviceId, env: &Envelope) -
             let Some(implement) = decode::<AgentImplement>(env, AgentImplement::is_valid) else {
                 return bad().into();
             };
-            AgentRequest::Implement { thread: implement.thread, item: implement.item }
+            AgentRequest::Implement {
+                thread: implement.thread,
+                item: implement.item,
+                mode: implement.mode.as_deref().map(|m| agent::mode::canonical(m).to_owned()),
+            }
         }
         types::AGENT_FILES => {
             let Some(files) = decode::<AgentFilesRequest>(env, AgentFilesRequest::is_valid) else {
@@ -3105,7 +3090,7 @@ mod tests {
             agent: "claude".into(),
             folder: "f1".into(),
             prompt: "secret plan".into(),
-            mode: "supervised".into(),
+            mode: "ask".into(),
             model: None,
             effort: None,
             images: Vec::new(),

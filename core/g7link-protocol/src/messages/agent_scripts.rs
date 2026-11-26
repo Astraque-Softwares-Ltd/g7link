@@ -638,7 +638,7 @@ mod tests {
             id: THREAD.into(),
             agent: "claude".into(),
             state: agent::state::DONE.into(),
-            mode: agent::mode::SUPERVISED.into(),
+            mode: agent::mode::ASK.into(),
             runs: vec![
                 brief(RUN, "running"),
                 AgentRunBrief { exit: Some(3), ..brief("fedcba9876543210", "failed") },

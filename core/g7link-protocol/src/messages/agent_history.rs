@@ -1907,7 +1907,7 @@ mod tests {
             folder: "g7linux".into(),
             title: "Fork of a fix".into(),
             state: agent::state::DONE.into(),
-            mode: agent::mode::SUPERVISED.into(),
+            mode: agent::mode::ASK.into(),
             updated: 1,
             pinned: true,
             archived: true,
@@ -1980,7 +1980,7 @@ mod tests {
             agent: "claude".into(),
             folder: "f1".into(),
             prompt: "hi".into(),
-            mode: agent::mode::SUPERVISED.into(),
+            mode: agent::mode::ASK.into(),
             key: Some("0123456789abcdef".into()),
             ..Default::default()
         };

@@ -52,6 +52,10 @@ struct StoredFolder {
     scripts: Vec<api::Script>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     phone_scripts: bool,
+    /// The mode each agent last used here; a word a later version wrote is
+    /// dropped, never the file.
+    #[serde(default, deserialize_with = "api::lenient_list", skip_serializing_if = "Vec::is_empty")]
+    last_modes: Vec<api::FolderMode>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -67,6 +71,17 @@ struct SettingsFile {
 
 fn yes() -> bool {
     true
+}
+
+/// A folder's remembered modes as loaded: one per agent (the first), never `plan`.
+fn remembered(stored: Vec<api::FolderMode>) -> Vec<api::FolderMode> {
+    let mut kept: Vec<api::FolderMode> = Vec::new();
+    for m in stored {
+        if m.mode.remembered() && !kept.iter().any(|k| k.agent == m.agent) {
+            kept.push(m);
+        }
+    }
+    kept
 }
 
 /// An answered approval, kept beside the thread's items so an export can say
@@ -190,6 +205,7 @@ impl Store {
                 follow_remote: f.follow_remote,
                 scripts: crate::host::scripts::loaded(f.scripts),
                 phone_scripts: f.phone_scripts,
+                last_modes: remembered(f.last_modes),
             })
             .collect()
     }
@@ -210,6 +226,7 @@ impl Store {
                     follow_remote: f.follow_remote,
                     scripts: f.scripts.clone(),
                     phone_scripts: f.phone_scripts,
+                    last_modes: f.last_modes.clone(),
                 })
                 .collect(),
         };
@@ -572,6 +589,7 @@ mod tests {
             follow_remote: false,
             scripts: Vec::new(),
             phone_scripts: false,
+            last_modes: Vec::new(),
         };
         store.save_folders(std::slice::from_ref(&folder)).unwrap();
         let loaded = store.load_folders();
@@ -594,6 +612,42 @@ mod tests {
         let file: serde_json::Value =
             serde_json::from_slice(&fs::read(dir.path().join("folders.json")).unwrap()).unwrap();
         assert_eq!(file["version"], 1, "no migration");
+        assert!(file["folders"][0].get("last_modes").is_none(), "not written while empty");
+
+        // The remembered modes are kept, per agent.
+        let modes = vec![
+            api::FolderMode { agent: AgentId::Claude, mode: api::Mode::Full },
+            api::FolderMode { agent: AgentId::Codex, mode: api::Mode::Auto },
+        ];
+        let with = Folder { last_modes: modes.clone(), ..with };
+        store.save_folders(std::slice::from_ref(&with)).unwrap();
+        assert_eq!(store.load_folders()[0].last_modes, modes);
+    }
+
+    #[test]
+    fn remembered_modes_load_leniently_and_never_as_plan() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().to_owned()).unwrap();
+        let file = serde_json::json!({"version": 1, "folders": [
+            {"id": "f0123456789ab", "label": "a", "path": "/tmp", "added_ms": 1, "last_modes": [
+                {"agent": "claude", "mode": "a_later_mode"},
+                {"agent": "claude", "mode": "supervised"},
+                {"agent": "claude", "mode": "full"},
+                {"agent": "codex", "mode": "plan"},
+                {"agent": "codex", "mode": "auto"},
+                {"agent": "someone", "mode": "ask"}
+            ]}
+        ]});
+        fs::write(dir.path().join("folders.json"), file.to_string()).unwrap();
+        let loaded = store.load_folders();
+        assert_eq!(loaded.len(), 1, "a word this version doesn't know drops the entry, not the folder");
+        assert_eq!(
+            loaded[0].last_modes,
+            [
+                api::FolderMode { agent: AgentId::Claude, mode: api::Mode::Ask },
+                api::FolderMode { agent: AgentId::Codex, mode: api::Mode::Auto },
+            ]
+        );
     }
 
     #[test]

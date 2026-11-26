@@ -531,6 +531,7 @@ const MARKS: &[MarkKind] = &[
     MarkKind::Expired,
     MarkKind::Cancelled,
     MarkKind::Rule,
+    MarkKind::Reviewed,
 ];
 
 fn random_timeline(rng: &mut Rng, texts: &[String], ids: &[String]) {
@@ -552,6 +553,7 @@ fn random_timeline(rng: &mut Rng, texts: &[String], ids: &[String]) {
             status: STATUSES[rng.below(STATUSES.len())],
             output: if rng.chance(50) { text } else { "" },
             by_rule: rng.chance(10),
+            reviewed: rng.chance(10),
         });
         let ts = rng.next() % 100_000;
         items.push(ItemIn {
@@ -744,6 +746,7 @@ fn run(seed: u64, inputs: usize, code: bool) {
             status: ToolStatus::Ok,
             output: "",
             by_rule: false,
+            reviewed: false,
         });
         assert!(label.object.encode_utf16().count() <= LABEL_UNITS && !label.object.contains('\n'), "label");
         if code && n % HIGHLIGHT_EVERY == 0 {

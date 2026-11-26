@@ -1036,7 +1036,7 @@ mod tests {
 
     #[test]
     fn the_codex_exchange() {
-        let params = codex::fork_params("th", Some("tu_1"), "/w", Mode::Supervised);
+        let params = codex::fork_params("th", Some("tu_1"), "/w", Mode::Ask);
         let mut fork = CodexFork::new(params.clone());
         assert_eq!(fork.start()["method"], "initialize");
         assert_eq!(fork.start()["params"]["capabilities"], json!({"experimentalApi": true}));
@@ -1149,7 +1149,7 @@ mod tests {
         Job {
             hint: LaunchHint::new(agent, from, mark.map(super::tests::mark).as_ref()).unwrap(),
             cwd,
-            mode: Mode::Supervised,
+            mode: Mode::Ask,
             env: vec![(OsString::from("PATH"), OsString::from("/usr/bin:/bin"))],
             cut_dir: dir.join("run").join(CUT_DIR),
             claude_home: dir.join("claude"),
@@ -1303,7 +1303,7 @@ mod tests {
                 source,
                 Some("019a7c10-0000-7000-8000-00000000b001"),
                 &job.cwd.to_string_lossy(),
-                Mode::Supervised
+                Mode::Ask
             )
         );
         assert_eq!(read("refused")["error"]["code"], -32601);
@@ -1373,12 +1373,7 @@ mod tests {
             let fork = entries.iter().find(|e| e["msg"]["method"] == "thread/fork").unwrap();
             assert_eq!(
                 fork["msg"]["params"],
-                codex::fork_params(
-                    "019a7c10-0000-7000-8000-00000000a001",
-                    Some(last),
-                    "/work",
-                    Mode::Supervised
-                ),
+                codex::fork_params("019a7c10-0000-7000-8000-00000000a001", Some(last), "/work", Mode::Ask),
                 "{name}"
             );
         }

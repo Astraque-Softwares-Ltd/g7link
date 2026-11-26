@@ -726,15 +726,11 @@ impl Host {
             }
             let now = now_ms();
             let parent = &entry.info;
-            let mode = if p.by.kind == OriginKind::Phone && !parent.mode.phone_may() {
-                Mode::Supervised
-            } else {
-                parent.mode
-            };
+            // A copy keeps its source's mode, whoever made it.
             let new = ThreadInfo {
                 id,
                 state: State::Done,
-                mode,
+                mode: parent.mode,
                 origin: p.by.clone(),
                 created_ms: now,
                 updated_ms: now,

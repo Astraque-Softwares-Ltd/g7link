@@ -71,7 +71,9 @@ mod wire_stats;
 
 pub use actions::{PC_WAKE, PowerAction};
 pub use agent_beside::{AgentBeside, AgentPort};
-pub use agent_folders::{AgentFolderAdd, AgentFolderLast, AgentPlace, AgentPlaces, agent_places};
+pub use agent_folders::{
+    AgentFolderAdd, AgentFolderLast, AgentFolderMode, AgentPlace, AgentPlaces, agent_places,
+};
 pub use agent_git::{
     AgentBranch, AgentBranches, AgentCheck, AgentCheckCounts, AgentGhState, AgentGit, AgentGitChanged,
     AgentGitFile, AgentGitHub, AgentGitLast, AgentGitPatch, AgentGitPatchPage, AgentGitRemote,
@@ -98,8 +100,8 @@ pub use agents::{
     AgentLimit, AgentMcp, AgentModel, AgentPlanStep, AgentQuestion, AgentQuestionAnswer, AgentQuestionAsk,
     AgentQuestionOption, AgentQuestionReply, AgentQuestioned, AgentQueueChange, AgentQueued, AgentReply,
     AgentRequest, AgentSend, AgentSession, AgentSessionItems, AgentSessionLimit, AgentStart, AgentThread,
-    AgentTool, QueueAction, SESSIONS_TOGGLE as AGENT_SESSIONS_TOGGLE, TOGGLE as AGENTS_TOGGLE, agent,
-    is_valid_agent_id,
+    AgentTool, AgentToolReview, QueueAction, SESSIONS_TOGGLE as AGENT_SESSIONS_TOGGLE,
+    TOGGLE as AGENTS_TOGGLE, agent, is_valid_agent_id,
 };
 pub use ble_link::{
     BLE_LINK_CAPABILITY, BLE_LINK_TOGGLE, BLE_REMOTE_CAPABILITY, BleEndpoint,

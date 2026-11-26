@@ -36,7 +36,17 @@ fn item<'a>(seq: u64, id: &'a str, kind: ItemKind, text: &'a str) -> ItemIn<'a> 
 }
 
 fn tool<'a>(class: ToolClass, detail: &'a str, path: &'a str) -> ToolIn<'a> {
-    ToolIn { name: "", title: "", class, detail, path, status: ToolStatus::Ok, output: "", by_rule: false }
+    ToolIn {
+        name: "",
+        title: "",
+        class,
+        detail,
+        path,
+        status: ToolStatus::Ok,
+        output: "",
+        by_rule: false,
+        reviewed: false,
+    }
 }
 
 fn ctx(state: ThreadState) -> Ctx<'static> {

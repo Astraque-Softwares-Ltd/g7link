@@ -308,6 +308,10 @@ pub enum AgentMarkKind {
     /// for this thread"): a step with `AgentTool.by_rule`, which `rows`
     /// marks by itself.
     Rule,
+    /// Approved by the agent's own reviewer ("Approved by Codex's
+    /// reviewer", the thread's agent named): a step whose `AgentTool.review`
+    /// approved it, which `rows` marks by itself while the step shows.
+    Reviewed,
 }
 
 /// A request at its tool item (`item_id`): `by` names the device that
@@ -1114,6 +1118,7 @@ impl From<render::MarkKind> for AgentMarkKind {
             M::Expired => Self::Expired,
             M::Cancelled => Self::Cancelled,
             M::Rule => Self::Rule,
+            M::Reviewed => Self::Reviewed,
         }
     }
 }
@@ -1129,6 +1134,7 @@ impl From<AgentMarkKind> for render::MarkKind {
             AgentMarkKind::Expired => M::Expired,
             AgentMarkKind::Cancelled => M::Cancelled,
             AgentMarkKind::Rule => M::Rule,
+            AgentMarkKind::Reviewed => M::Reviewed,
         }
     }
 }
@@ -1533,6 +1539,7 @@ fn inputs<'a>(items: &'a [AgentItem], streaming: &'a [AgentStreaming]) -> Vec<re
                 status: tool_status(t.status),
                 output: t.output.as_deref().unwrap_or(""),
                 by_rule: t.by_rule,
+                reviewed: t.review.as_ref().is_some_and(crate::AgentToolReview::approved),
             });
             render::ItemIn {
                 seq: item.seq,
@@ -1633,6 +1640,7 @@ mod tests {
                 tool_class: Some(class),
                 path: (class == AgentToolClass::Edit).then(|| "src/lib.rs".into()),
                 by_rule: false,
+                review: None,
             }),
             end_ms: Some(1_000 * seq as i64 + 2_500),
             ..item(seq, AgentItemKind::Tool, "")
@@ -1784,6 +1792,7 @@ mod tests {
                 tool_class: Some(AgentToolClass::Command),
                 path: None,
                 by_rule: false,
+                review: None,
             }),
             ..item(2, AgentItemKind::Tool, "")
         });
@@ -1837,6 +1846,36 @@ mod tests {
     }
 
     #[test]
+    fn a_step_the_agents_reviewer_approved_says_so_while_it_shows() {
+        let review =
+            |status| Some(crate::AgentToolReview { status, risk: Some("low".into()), rationale: None });
+        let mut items = finished_turn();
+        items[1].tool.as_mut().unwrap().review = review(crate::AgentReviewStatus::Approved);
+        items[2].tool.as_mut().unwrap().review = review(crate::AgentReviewStatus::Denied);
+        let marks = |open: Vec<String>| {
+            let rows = AgentTimeline::new().rows(
+                items.clone(),
+                vec![],
+                AgentThreadState::Done,
+                9_000,
+                10_000,
+                vec![],
+                open,
+                vec![],
+                vec![],
+            );
+            rows.iter()
+                .filter_map(|row| match &row.kind {
+                    AgentRowKind::Mark { kind, .. } => Some((row.key.clone(), *kind)),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(marks(vec!["f:1".into(), "g:i2".into()]), [("m:i2".to_owned(), AgentMarkKind::Reviewed)]);
+        assert_eq!(marks(vec!["f:1".into()]), [], "a closed group keeps its steps' approvals inside");
+    }
+
+    #[test]
     fn plans_questions_and_steered_messages_have_rows_of_their_own() {
         let mut steered = item(1, AgentItemKind::User, "And the logout.");
         steered.via = Some(AgentVia::Steer);
@@ -1850,6 +1889,7 @@ mod tests {
                 tool_class: Some(AgentToolClass::Plan),
                 path: None,
                 by_rule: false,
+                review: None,
             }),
             ..item(2, AgentItemKind::Tool, "")
         };

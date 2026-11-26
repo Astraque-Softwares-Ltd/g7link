@@ -483,31 +483,29 @@ async fn continuing_a_claude_session() {
     assert_eq!(session.source, SessionSource::Terminal);
     assert!(session.state_guess, "no status file: a guess");
     assert_eq!(session.folder_id.as_deref(), Some(folder.id.as_str()));
-    let busy = client.session_continue(continue_params(&sc(&id), Mode::Supervised, Origin::launcher())).await;
+    let busy = client.session_continue(continue_params(&sc(&id), Mode::Ask, Origin::launcher())).await;
     let busy = busy.unwrap_err();
     assert_eq!(code(&busy), Some(ErrorCode::Busy));
     let ClientError::Remote(e) = &busy else { panic!() };
     assert_eq!(e.message, "Still open in a terminal. Close it there to continue here.");
     host.end_process(4100);
 
-    // Outside every folder, and a phone asking for auto_edit: refused.
-    let denied =
-        client.session_continue(continue_params(&sc(&uuid(4)), Mode::Supervised, Origin::launcher())).await;
+    // Outside every folder: refused.
+    let denied = client.session_continue(continue_params(&sc(&uuid(4)), Mode::Ask, Origin::launcher())).await;
     let denied = denied.unwrap_err();
     assert_eq!(code(&denied), Some(ErrorCode::Denied));
     let ClientError::Remote(e) = &denied else { panic!() };
     assert_eq!(e.message, "Add elsewhere to your agent folders first.");
-    let phone = client
-        .session_continue(continue_params(&sc(&id), Mode::AutoEdit, Origin::phone("p", "Pixel")))
-        .await
-        .unwrap_err();
-    assert_eq!(code(&phone), Some(ErrorCode::Denied));
 
-    // Closed now: it becomes a thread with the session's items, and no process starts.
+    // Closed now: it becomes a thread with the session's items, and no process
+    // starts. A phone may continue it in any mode Claude offers.
     let thread = client
-        .session_continue(continue_params(&sc(&id), Mode::Supervised, Origin::launcher()))
+        .session_continue(continue_params(&sc(&id), Mode::Full, Origin::phone("p", "Pixel")))
         .await
         .unwrap();
+    assert_eq!(thread.mode, Mode::Full);
+    let remembered = client.folders_list().await.unwrap().into_iter().find(|f| f.id == folder.id).unwrap();
+    assert_eq!(remembered.last_mode(AgentId::Claude), Some(Mode::Full), "the folder remembers it");
     assert!(thread.continued);
     assert_eq!(thread.state, State::Done);
     assert_eq!(thread.subdir.as_deref(), Some("sub"));
@@ -530,8 +528,7 @@ async fn continuing_a_claude_session() {
     assert_eq!(read.items[3].text.as_deref(), Some("Continued from a session started in a terminal."));
     assert!(!host.log().contains("--resume"), "nothing ran yet");
     assert!(!client.sessions_list(None).await.unwrap().iter().any(|s| s.id == sc(&id)), "it is a thread now");
-    let again =
-        client.session_continue(continue_params(&sc(&id), Mode::Supervised, Origin::launcher())).await;
+    let again = client.session_continue(continue_params(&sc(&id), Mode::Ask, Origin::launcher())).await;
     assert_eq!(code(&again.unwrap_err()), Some(ErrorCode::NotFound));
 
     // The first message resumes the session in folder/subdir.
@@ -539,6 +536,9 @@ async fn continuing_a_claude_session() {
     until_done(&mut events, &thread.id).await;
     let log = host.log();
     assert!(log.lines().any(|l| l.starts_with("args -p") && l.contains(&format!("--resume {id}"))), "{log}");
+    assert!(
+        log.lines().any(|l| l.starts_with("args -p") && l.contains("--permission-mode bypassPermissions"))
+    );
     assert!(log.lines().any(|l| l == format!("cwd {}", sub.display())), "{log}");
     let terminal = client.thread_terminal_command(thread.id.clone()).await.unwrap();
     assert_eq!(terminal.cwd, sub.to_string_lossy());
@@ -568,20 +568,19 @@ async fn continuing_a_codex_session_resumes_its_thread() {
         (from_app.source, from_app.open, from_app.blocked),
         (SessionSource::DesktopApp, false, Some(ContinueBlock::Open))
     );
-    let refused =
-        client.session_continue(continue_params(&sx(&app), Mode::Supervised, Origin::launcher())).await;
+    let refused = client.session_continue(continue_params(&sx(&app), Mode::Ask, Origin::launcher())).await;
     assert_eq!(code(&refused.unwrap_err()), Some(ErrorCode::Busy));
     // A Codex session written in the last 90 s is open.
     set_mtime(&path, now_ms());
-    let busy = client.session_continue(continue_params(&sx(&id), Mode::Supervised, Origin::launcher())).await;
+    let busy = client.session_continue(continue_params(&sx(&id), Mode::Ask, Origin::launcher())).await;
     assert_eq!(code(&busy.unwrap_err()), Some(ErrorCode::Busy));
     set_mtime(&path, now_ms() - 2 * MIN);
-    let auto = client.session_continue(continue_params(&sx(&id), Mode::AutoEdit, Origin::launcher())).await;
-    assert_eq!(code(&auto.unwrap_err()), Some(ErrorCode::Unavailable));
-    let thread = client
-        .session_continue(continue_params(&sx(&id), Mode::Supervised, Origin::launcher()))
-        .await
-        .unwrap();
+    // Codex has no "accept edits".
+    let edits =
+        client.session_continue(continue_params(&sx(&id), Mode::AcceptEdits, Origin::launcher())).await;
+    assert_eq!(code(&edits.unwrap_err()), Some(ErrorCode::Unavailable));
+    let thread =
+        client.session_continue(continue_params(&sx(&id), Mode::Ask, Origin::launcher())).await.unwrap();
     assert_eq!(thread.subdir, None);
     client.thread_send(thread.id.clone(), "Again.".into(), Origin::launcher()).await.unwrap();
     let asked = match next(&mut events, "approval", |e| matches!(e, Event::ApprovalRequested(_))).await {
@@ -606,7 +605,7 @@ async fn the_resume_guard_and_the_running_step() {
         AgentId::Claude,
         folder.id.clone(),
         "List the files here.".into(),
-        Mode::Supervised,
+        Mode::Ask,
         Origin::launcher(),
     );
     let thread = client.thread_start(params).await.unwrap();
@@ -757,11 +756,11 @@ async fn moving_a_session_ends_its_process_with_one_signal_then_continues_it() {
     assert_eq!(child.wait().unwrap().signal(), Some(15));
 
     // The host's own check still decides: open while its `/proc` shows it.
-    let busy = link.session_continue(continue_params(&sc(&id), Mode::Supervised, Origin::launcher())).await;
+    let busy = link.session_continue(continue_params(&sc(&id), Mode::Ask, Origin::launcher())).await;
     assert_eq!(code(&busy.unwrap_err()), Some(ErrorCode::Busy));
     host.end_process(pid);
     let thread =
-        link.session_continue(continue_params(&sc(&id), Mode::Supervised, Origin::launcher())).await.unwrap();
+        link.session_continue(continue_params(&sc(&id), Mode::Ask, Origin::launcher())).await.unwrap();
     assert!(thread.continued);
     assert_eq!(thread.native_id.as_deref(), Some(id.as_str()));
     host.stop().await;

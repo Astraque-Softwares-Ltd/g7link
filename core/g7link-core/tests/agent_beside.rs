@@ -160,7 +160,7 @@ fn thread_with(ports: Vec<AgentPort>) -> AgentThread {
         folder: "g7linux".into(),
         title: "Start the dev server".into(),
         state: "working".into(),
-        mode: "supervised".into(),
+        mode: "ask".into(),
         updated: 1_795_000_000_000,
         ports,
         ..Default::default()

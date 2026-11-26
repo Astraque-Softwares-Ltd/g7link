@@ -171,6 +171,11 @@ pub struct ToolIn<'a> {
     /// The host allowed it from the thread's "Always allow" rule: a `Rule`
     /// mark unless `Ctx.marks` names the tool.
     pub by_rule: bool,
+    /// The agent's own reviewer approved it without asking anyone (Codex's
+    /// "Approve for me", Claude's Auto): a `Reviewed` mark unless `Ctx.marks`
+    /// names the tool or a rule allowed it. It shows while the step does,
+    /// and never ends a run of steps.
+    pub reviewed: bool,
 }
 
 impl std::fmt::Debug for ToolIn<'_> {
@@ -243,6 +248,8 @@ pub enum MarkKind {
     Cancelled,
     /// Allowed by an "Always allow" rule of the thread.
     Rule,
+    /// Approved by the agent's own reviewer ([`ToolIn::reviewed`]).
+    Reviewed,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -1087,6 +1094,8 @@ struct View<'c, 'a> {
     marks: HashMap<&'c str, &'c Mark>,
     /// Tools the host allowed by a rule, with no mark of their own.
     by_rule: HashSet<&'c str>,
+    /// Tools the agent's reviewer approved, with no mark or rule of their own.
+    reviewed: HashSet<&'c str>,
     /// Marks whose item is not a tool line here, in their order.
     orphans: Vec<&'c Mark>,
     children: Vec<Vec<usize>>,
@@ -1161,9 +1170,19 @@ impl<'c, 'a> View<'c, 'a> {
                 _ => orphans.push(mark),
             }
         }
-        let by_rule = its
+        let by_rule: HashSet<&str> = its
             .iter()
             .filter(|i| is_tool_line(i) && i.tool.is_some_and(|t| t.by_rule) && !marks.contains_key(i.id))
+            .map(|i| i.id)
+            .collect();
+        let reviewed = its
+            .iter()
+            .filter(|i| {
+                is_tool_line(i)
+                    && i.tool.is_some_and(|t| t.reviewed)
+                    && !marks.contains_key(i.id)
+                    && !by_rule.contains(i.id)
+            })
             .map(|i| i.id)
             .collect();
         // Sub-agent work goes under the tool it ran in, when that tool came
@@ -1238,6 +1257,7 @@ impl<'c, 'a> View<'c, 'a> {
             open: ctx.open.iter().map(String::as_str).collect(),
             marks,
             by_rule,
+            reviewed,
             orphans,
             children,
             turns,
@@ -1309,7 +1329,7 @@ impl<'c, 'a> View<'c, 'a> {
             MarkKind::Allowed => Some((QuestionState::Answered, m.by.as_str())),
             MarkKind::Denied => Some((QuestionState::Dismissed, "")),
             MarkKind::Expired | MarkKind::Cancelled => Some((QuestionState::Expired, "")),
-            MarkKind::Rule => None,
+            MarkKind::Rule | MarkKind::Reviewed => None,
         });
         let (state, by) = match from_mark {
             Some(marked) => marked,
@@ -1785,13 +1805,15 @@ impl<'c, 'a> View<'c, 'a> {
         let id = self.its[n].id;
         match self.marks.get(id) {
             Some(m) => mark_shown(m).then_some((m.kind, m.by.as_str())),
-            None => self.by_rule.contains(id).then_some((MarkKind::Rule, "")),
+            None if self.by_rule.contains(id) => Some((MarkKind::Rule, "")),
+            None => self.reviewed.contains(id).then_some((MarkKind::Reviewed, "")),
         }
     }
 
-    /// A tool whose mark makes a row ends the run after it.
+    /// A tool whose mark makes a row ends the run after it; a reviewer's
+    /// approval doesn't (it shows when the step does).
     fn ends_run(&self, unit: &Unit) -> bool {
-        matches!(unit, Unit::Tool(n) if self.shown_mark(*n).is_some())
+        matches!(unit, Unit::Tool(n) if self.shown_mark(*n).is_some_and(|(kind, _)| kind != MarkKind::Reviewed))
     }
 
     fn emit_group(&self, out: &mut Emit<'_, '_>, run: &[Unit], depth: u8, turn: u32, settled: bool) {
@@ -1810,7 +1832,9 @@ impl<'c, 'a> View<'c, 'a> {
             for u in run {
                 self.emit_unit(out, u, depth.saturating_add(1), turn, settled);
             }
-        } else if let Some(Unit::Tool(n)) = run.last() {
+        } else if let Some(Unit::Tool(n)) = run.last()
+            && self.shown_mark(*n).is_some_and(|(kind, _)| kind != MarkKind::Reviewed)
+        {
             self.emit_mark(out, *n, depth, turn);
         }
     }

@@ -707,7 +707,7 @@ mod tests {
             folder: "g7linux".into(),
             title: format!("Thread {i}"),
             state: "done".into(),
-            mode: "supervised".into(),
+            mode: "ask".into(),
             updated,
             ..Default::default()
         }

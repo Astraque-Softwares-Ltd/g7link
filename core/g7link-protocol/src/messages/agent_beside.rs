@@ -123,7 +123,7 @@ mod tests {
             folder: "g7linux".into(),
             title: "Start the dev server".into(),
             state: agent::state::WORKING.into(),
-            mode: agent::mode::SUPERVISED.into(),
+            mode: agent::mode::ASK.into(),
             updated: 1_795_000_000_000,
             ports,
             ..Default::default()

@@ -95,6 +95,8 @@ pub struct ApprovalSpec {
     pub tool_key: Option<String>,
     /// That step, for when the agent asks before it reported it.
     pub tool: Option<ToolSpec>,
+    /// Denying it stops the turn ([`api::Approval::deny_stops`]).
+    pub deny_stops: bool,
 }
 
 impl ApprovalSpec {
@@ -108,6 +110,7 @@ impl ApprovalSpec {
             reason: None,
             tool_key,
             tool: Some(tool.clone()),
+            deny_stops: false,
         }
     }
 }
@@ -197,6 +200,13 @@ pub enum Step {
         output: Option<String>,
     },
     Notice(String),
+    /// The agent's own reviewer decided about a step (Codex's "Approve for
+    /// me"): `key` is the step's, absent when the review wasn't about one
+    /// (network access).
+    ToolReview {
+        key: Option<String>,
+        review: api::ToolReview,
+    },
     /// The agent's plan, replacing the one before.
     Plan(Vec<api::PlanStep>),
     TurnEnded(TurnEnd),
@@ -972,9 +982,11 @@ async fn apply(
 /// The CLI flags for a mode, for logs and tests.
 pub fn mode_name(mode: Mode) -> &'static str {
     match mode {
-        Mode::Supervised => "supervised",
-        Mode::AutoEdit => "auto_edit",
+        Mode::Ask => "ask",
+        Mode::AcceptEdits => "accept_edits",
+        Mode::Auto => "auto",
         Mode::Plan => "plan",
+        Mode::Full => "full",
     }
 }
 
