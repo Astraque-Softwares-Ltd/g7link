@@ -5,7 +5,8 @@ import QtQuick
 // Stroke icons as SVG paths on a 24×24 grid (round caps and joins), drawn
 // by Icon when G7Glyphs has no filled glyph for them.
 // chevronLeft, sparkle, island, hotspot and the paths after shield are
-// Tabler Icons, MIT (LICENSES/MIT-Tabler-Icons.txt).
+// Tabler Icons, MIT (LICENSES/MIT-Tabler-Icons.txt). cornerDownLeft is
+// Lucide, ISC (LICENSES/ISC-Lucide.txt).
 QtObject {
     readonly property string home: "M3 10a2 2 0 0 1 .71-1.53l7-6a2 2 0 0 1 2.58 0l7 6A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2zM9 21v-6a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v6"
     readonly property string messages: "M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2zM8 8.5h8M8 12.5h5"
@@ -20,6 +21,7 @@ QtObject {
     readonly property string clipboard: "M9 2h6a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1H9a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1zM16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"
     readonly property string mirror: "M12 17H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h13a2 2 0 0 1 2 2v2M6 21h6M9 17v4M16.5 9h3.5a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-3.5a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2zM17.5 18h1.5"
     readonly property string send: "M14.54 21.69a.5.5 0 0 0 .94-.02l6.5-19a.5.5 0 0 0-.64-.64l-19 6.5a.5.5 0 0 0-.02.94l7.93 3.18a2 2 0 0 1 1.11 1.11zM21.85 2.15L10.91 13.09"
+    readonly property string cornerDownLeft: "M20 4v7a4 4 0 0 1-4 4H4M9 10l-5 5 5 5"
     readonly property string play: "M6 5a2 2 0 0 1 3.01-1.73l11 6.99a2 2 0 0 1 0 3.48l-11 7A2 2 0 0 1 6 19z"
     readonly property string pause: "M6 4h3a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1zM15 4h3a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1h-3a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1z"
     readonly property string skipNext: "M6.03 4.29A2 2 0 0 0 3 6v12a2 2 0 0 0 3.03 1.72l10-6a2 2 0 0 0 0-3.44zM20 5v14"

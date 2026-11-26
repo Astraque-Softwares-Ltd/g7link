@@ -5,7 +5,10 @@ import app.g7link
 
 // The reply box and the request dock: Ctrl+Enter never allows while the box
 // has words; words deny only the request they were typed under, and never
-// one that's held; Stop stays in reach while a request waits.
+// one that's held; Stop stays in reach while a request waits, as an icon;
+// the agent's reason comes before its command, as its words, never markup.
+// The mode always shows by its full name and opens the agent's modes, which
+// number keys pick; a Deny that stops the turn says so.
 Item {
     id: root
     width: 700
@@ -43,6 +46,38 @@ Item {
         target: composer
         signalName: "send"
     }
+    SignalSpy {
+        id: stopped
+        target: composer
+        signalName: "stop"
+    }
+    SignalSpy {
+        id: modeMenuAsked
+        target: composer
+        signalName: "modeMenuRequested"
+    }
+    AgentModeMenu {
+        id: modeMenu
+        modes: root.codexModes
+    }
+    SignalSpy {
+        id: modePicked
+        target: modeMenu
+        signalName: "picked"
+    }
+
+    readonly property var codexModes: [
+        { id: "ask", name: "Ask for approval", line: "Asks before working outside the folder or using the internet",
+          on: true, why: "", checked: true, warn: false },
+        { id: "auto", name: "Approve for me", line: "Only ask for actions detected as potentially unsafe",
+          on: true, why: "", checked: false, warn: false },
+        { id: "full", name: "Full access", line: "Unrestricted access to the internet and any file on your computer",
+          on: false, why: "Not available now", checked: false, warn: true }
+    ]
+    function controls(mode, name, warn) {
+        return { control: true, picker: { mode: mode, modeName: name, modeLine: "", modeWarn: warn,
+                                           modes: root.codexModes, label: { model: "GPT X", effort: "" } } }
+    }
 
     function request(token, held) {
         return { token: token, kind: "command", command: "cargo test", held: held === true, position: 1, total: 3 }
@@ -61,6 +96,11 @@ Item {
             allowed.clear()
             denied.clear()
             sent.clear()
+            stopped.clear()
+            modeMenuAsked.clear()
+            modePicked.clear()
+            composer.controls = ({})
+            composer.busy = false
             composer.focusInput()
         }
 
@@ -113,6 +153,77 @@ Item {
             verify(stop.visible)
             composer.running = false
             verify(!stop.visible)
+        }
+
+        function test_stop_is_an_icon_that_stops_unless_already_stopping() {
+            const stop = findChild(composer, "stop")
+            compare(stop.text, "", "no word beside the icon")
+            verify(stop.label.startsWith("Stop"), "its name is the tooltip")
+            compare(stop.width, stop.height)
+            mouseClick(stop)
+            compare(stopped.count, 1)
+            composer.busy = true
+            mouseClick(stop)
+            compare(stopped.count, 1, "a second press while stopping does nothing")
+        }
+
+        function test_the_reason_comes_first_and_is_never_markup() {
+            dock.ask = { token: "r", kind: "command", command: "rm -rf build", position: 1, total: 1,
+                         reason: "Clean <b>build</b> & rebuild\nthen test" }
+            const reason = findChild(dock, "reason")
+            const request = findChild(dock, "request")
+            verify(reason.visible && request.visible)
+            tryVerify(() => reason.y + reason.height <= request.y && request.y > 0, 1000, "the reason sits above the command")
+            compare(dock.reasonMarkup, "<b>Codex says: </b>Clean &lt;b&gt;build&lt;/b&gt; &amp; rebuild<br>then test")
+            dock.ask = root.request("a")
+            verify(!reason.visible, "no reason, no line")
+        }
+
+        function test_the_mode_always_shows_by_its_full_name_and_opens_the_modes() {
+            composer.ask = ({})
+            composer.running = false
+            composer.controls = root.controls("ask", "Ask for approval", false)
+            const chip = findChild(composer, "mode")
+            verify(chip.visible, "ask first shows too")
+            compare(chip.Accessible.name, "Ask for approval")
+            verify(!chip.warn)
+            // After the model's name, once the footer is laid out.
+            tryVerify(() => chip.x > findChild(composer, "model").x)
+            mouseClick(chip)
+            compare(modeMenuAsked.count, 1)
+            composer.controls = root.controls("full", "Full access", true)
+            verify(chip.warn, "nothing asked: the warning tint")
+            compare(chip.ink, Theme.tintAmber)
+            // While it works the mode rests until the turn ends.
+            composer.running = true
+            mouseClick(chip)
+            compare(modeMenuAsked.count, 1)
+            verify(chip.opacity < 1)
+        }
+
+        function test_number_keys_pick_a_mode_but_never_one_that_is_off() {
+            modeMenu.openAt(10, 10, false, false)
+            verify(modeMenu.opened)
+            compare(modeMenu.current, 0, "on the one in use")
+            keyClick(Qt.Key_3)
+            verify(modeMenu.opened, "off: nothing happens")
+            compare(modePicked.count, 0)
+            keyClick(Qt.Key_2)
+            verify(!modeMenu.opened)
+            compare(modePicked.count, 1)
+            compare(modePicked.signalArguments[0][0], "auto")
+            modeMenu.openAt(10, 10, false, false)
+            keyClick(Qt.Key_Escape)
+            verify(!modeMenu.opened)
+            compare(modePicked.count, 1)
+        }
+
+        function test_a_deny_that_stops_the_turn_says_so() {
+            const note = findChild(dock, "denyNote")
+            dock.ask = Object.assign(root.request("a"), { deny_stops: true })
+            compare(note.text, "Deny stops this turn")
+            dock.ask = root.request("a")
+            verify(note.text !== "Deny stops this turn")
         }
 
         function test_without_say_why_the_box_waits_for_the_turn() {

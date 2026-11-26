@@ -77,7 +77,8 @@ FocusScope {
                 text: button.text
                 role: "label"
                 color: button.foreground
-                size: button.small ? 12 : 13
+                // The label size, a step up on the larger button.
+                size: button.small ? Theme.typography.label.size : Theme.typography.label.size + 1
                 weight: button.variant !== "fill" ? 400 : Theme.typography.label.weight
                 maximumLineCount: 1
                 elide: Text.ElideRight

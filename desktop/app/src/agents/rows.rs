@@ -427,6 +427,7 @@ fn mark_word(kind: MarkKind) -> &'static str {
         MarkKind::Expired => "expired",
         MarkKind::Cancelled => "cancelled",
         MarkKind::Rule => "rule",
+        MarkKind::Reviewed => "reviewed",
     }
 }
 

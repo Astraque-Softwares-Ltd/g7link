@@ -35,7 +35,7 @@ ListView {
     signal linkActivated(string key, int index)
     // A "Waiting for you" line was clicked: the page brings the dock into view.
     signal waitingClicked
-    // A plan's Implement ("supervised" or "auto_edit").
+    // A plan's Implement: in `mode`, or "" for the one the folder remembers.
     signal implementPlan(string itemId, string mode)
     // A plan's mode menu, under its Implement (in the window's coordinates).
     signal implementMenuRequested(string itemId, real x, real y)
@@ -240,7 +240,8 @@ ListView {
                     selectionColor: Theme.selection
                     selectedTextColor: Theme.surfaceContent
                     font.family: Theme.fontUi
-                    font.pixelSize: Theme.typography.body.size
+                    // What you wrote reads as the answer does.
+                    font.pixelSize: Theme.typography.prose.size
                 }
             }
             Row {
@@ -722,6 +723,7 @@ ListView {
         DelegateChoice {
             roleValue: "mark"
             delegate: AgentMarkLine {
+                agentName: timeline.agentName
                 onWaitingClicked: timeline.waitingClicked()
             }
         }

@@ -80,7 +80,13 @@ pub(super) fn agent_setting(s: &BridgeState, agent: AgentId, folder: &str) -> Se
 pub(super) fn picker_json(s: &BridgeState) -> Value {
     let form = &s.new_form;
     let agent = form.agent.and_then(|id| s.agents.iter().find(|a| a.id == id));
-    let mut picker = agent.map_or_else(|| json!({}), |a| control::picker_json(a, &form.setting, None));
+    let mut picker = agent.map_or_else(
+        || json!({}),
+        |a| {
+            let setting = Setting { mode: Some(form_mode(s, a)), ..form.setting.clone() };
+            control::picker_json(a, &setting, None)
+        },
+    );
     let lasts = control::lasts(s.threads.values());
     let uses = folder_uses(s, &lasts);
     let picks = control::quick_picks(&uses, &s.agents, &form.folder);
@@ -92,6 +98,17 @@ pub(super) fn picker_json(s: &BridgeState) -> Value {
         json!(control::left_out(&uses, &s.agents).iter().map(|a| a.as_str()).collect::<Vec<_>>());
     picker["added"] = json!(form.added.as_deref().filter(|id| *id == form.folder).unwrap_or_default());
     picker
+}
+
+/// The form's mode for `agent`: the one the user picked in the form while
+/// the agent offers it, else the one the folder remembers for the agent
+/// (plan §2.2: never `plan`; `ask` in a folder without one).
+pub(super) fn form_mode(s: &BridgeState, agent: &api::AgentInfo) -> api::Mode {
+    let form = &s.new_form;
+    form.setting
+        .mode
+        .filter(|m| agent.offers(*m))
+        .unwrap_or_else(|| super::folder_mode(s, Some(&form.folder), agent.id, form.setting.model.as_deref()))
 }
 
 /// A folder's newest thread as its card says it: the agent, the model and
@@ -376,6 +393,7 @@ mod tests {
             follow_remote: false,
             scripts: Vec::new(),
             phone_scripts: false,
+            last_modes: Vec::new(),
         }
     }
 
@@ -441,6 +459,50 @@ mod tests {
         s.folders.reverse();
         let order: Vec<&str> = by_use(&s.folders).iter().map(|f| f.id.as_str()).collect();
         assert_eq!(order, ["f000000000002", "f000000000001", "f000000000003"]);
+    }
+
+    #[test]
+    fn the_form_starts_in_the_folders_mode_for_its_agent_until_another_is_picked() {
+        use api::{FolderMode, Mode};
+        let mut claude = ready(AgentId::Claude);
+        claude.modes = vec![Mode::Ask, Mode::AcceptEdits, Mode::Plan, Mode::Full];
+        let mut codex = ready(AgentId::Codex);
+        codex.modes = vec![Mode::Ask, Mode::Auto, Mode::Full, Mode::Plan];
+        let mut used = folder("f000000000001", 5);
+        used.last_modes = vec![FolderMode { agent: AgentId::Claude, mode: Mode::Full }];
+        let mut s = BridgeState {
+            agents: vec![claude, codex],
+            folders: vec![used, folder("f000000000002", 1)],
+            ..BridgeState::default()
+        };
+        let form = |agent, folder: &str| NewForm {
+            agent: Some(agent),
+            folder: folder.into(),
+            setting: Setting::default(),
+            added: None,
+        };
+        let mode = |s: &BridgeState| {
+            let p = picker_json(s);
+            (p["mode"].as_str().unwrap().to_owned(), p["modeName"].as_str().unwrap().to_owned())
+        };
+        s.new_form = form(AgentId::Claude, "f000000000001");
+        assert_eq!(mode(&s), ("full".into(), "Bypass permissions".into()), "what Claude last ran there");
+        s.new_form = form(AgentId::Codex, "f000000000001");
+        assert_eq!(mode(&s), ("ask".into(), "Ask for approval".into()), "Claude's mode isn't Codex's");
+        s.new_form = form(AgentId::Claude, "f000000000002");
+        assert_eq!(mode(&s).0, "ask", "a folder without one starts ask-first");
+        s.new_form.setting.mode = Some(Mode::Plan);
+        assert_eq!(mode(&s).0, "plan", "what the user picked in the form");
+        s.new_form = form(AgentId::Codex, "f000000000001");
+        s.new_form.setting.mode = Some(Mode::AcceptEdits);
+        assert_eq!(mode(&s).0, "ask", "a pick the agent doesn't offer gives way");
+        let ids: Vec<String> = picker_json(&s)["modes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["id"].as_str().unwrap().to_owned())
+            .collect();
+        assert_eq!(ids, ["ask", "auto", "full", "plan"], "Codex's own order");
     }
 
     #[test]

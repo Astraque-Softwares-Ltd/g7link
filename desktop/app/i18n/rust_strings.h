@@ -7,8 +7,19 @@ static const char *const g7link_rust_strings[] = {
     QT_TRANSLATE_NOOP("Agents", "%1 isn't reachable."), // desktop/app/src/agents/beside.rs
     QT_TRANSLATE_NOOP("Agents", "A branch with that name exists."), // desktop/app/src/agents/source.rs
     QT_TRANSLATE_NOOP("Agents", "A newer plan took its place."), // desktop/app/src/agents.rs
+    QT_TRANSLATE_NOOP("Agents", "Accept edits"), // desktop/app/src/agents/control.rs
+    QT_TRANSLATE_NOOP("Agents", "Accepts all permissions"), // desktop/app/src/agents/control.rs
     QT_TRANSLATE_NOOP("Agents", "Add its folder to your agent folders first."), // desktop/app/src/agents.rs
+    QT_TRANSLATE_NOOP("Agents", "Always ask before making changes"), // desktop/app/src/agents/control.rs
     QT_TRANSLATE_NOOP("Agents", "Answer every question first."), // desktop/app/src/agents.rs
+    QT_TRANSLATE_NOOP("Agents", "Approve for me"), // desktop/app/src/agents/control.rs
+    QT_TRANSLATE_NOOP("Agents", "Ask for approval"), // desktop/app/src/agents/control.rs
+    QT_TRANSLATE_NOOP("Agents", "Asks before working outside the folder or using the internet"), // desktop/app/src/agents/control.rs
+    QT_TRANSLATE_NOOP("Agents", "Auto"), // desktop/app/src/agents/control.rs
+    QT_TRANSLATE_NOOP("Agents", "Automatically accept all file edits"), // desktop/app/src/agents/control.rs
+    QT_TRANSLATE_NOOP("Agents", "Bypass permissions"), // desktop/app/src/agents/control.rs
+    QT_TRANSLATE_NOOP("Agents", "Changes nothing until you say so"), // desktop/app/src/agents/control.rs
+    QT_TRANSLATE_NOOP("Agents", "Claude handles permission decisions"), // desktop/app/src/agents/control.rs
     QT_TRANSLATE_NOOP("Agents", "Copied as Markdown"), // desktop/app/src/agents.rs
     QT_TRANSLATE_NOOP("Agents", "Couldn't change that setting"), // desktop/app/src/agents.rs
     QT_TRANSLATE_NOOP("Agents", "Couldn't change the folders"), // desktop/app/src/agents.rs
@@ -20,11 +31,19 @@ static const char *const g7link_rust_strings[] = {
     QT_TRANSLATE_NOOP("Agents", "Couldn't restart agents"), // desktop/app/src/agents.rs
     QT_TRANSLATE_NOOP("Agents", "Couldn't save it"), // desktop/app/src/agents.rs
     QT_TRANSLATE_NOOP("Agents", "Couldn't stop it"), // desktop/app/src/agents.rs
+    QT_TRANSLATE_NOOP("Agents", "Create a plan before making changes"), // desktop/app/src/agents/control.rs
     QT_TRANSLATE_NOOP("Agents", "Five messages are waiting already."), // desktop/app/src/agents.rs
+    QT_TRANSLATE_NOOP("Agents", "Full access"), // desktop/app/src/agents/control.rs
     QT_TRANSLATE_NOOP("Agents", "It was already sent."), // desktop/app/src/agents.rs
     QT_TRANSLATE_NOOP("Agents", "It's no longer there."), // desktop/app/src/agents.rs
+    QT_TRANSLATE_NOOP("Agents", "Manual"), // desktop/app/src/agents/control.rs
+    QT_TRANSLATE_NOOP("Agents", "Not available now"), // desktop/app/src/agents/control.rs
+    QT_TRANSLATE_NOOP("Agents", "Not with this model"), // desktop/app/src/agents/control.rs
+    QT_TRANSLATE_NOOP("Agents", "Only ask for actions detected as potentially unsafe"), // desktop/app/src/agents/control.rs
     QT_TRANSLATE_NOOP("Agents", "Opened from %1"), // desktop/app/src/agents/handoff.rs
     QT_TRANSLATE_NOOP("Agents", "Output of %1:"), // desktop/app/src/agents/scripts.rs
+    QT_TRANSLATE_NOOP("Agents", "Plan"), // desktop/app/src/agents/control.rs
+    QT_TRANSLATE_NOOP("Agents", "Plan isn't available with this version of Codex."), // desktop/app/src/agents/control.rs
     QT_TRANSLATE_NOOP("Agents", "Saved %1"), // desktop/app/src/agents.rs
     QT_TRANSLATE_NOOP("Agents", "Something went wrong. Try again."), // desktop/app/src/agents/source.rs
     QT_TRANSLATE_NOOP("Agents", "Still open in a terminal. Close it there to continue here."), // desktop/app/src/agents.rs
@@ -50,6 +69,7 @@ static const char *const g7link_rust_strings[] = {
     QT_TRANSLATE_NOOP("Agents", "Too many sessions are being followed. New lines show when you open it again."), // desktop/app/src/agents.rs
     QT_TRANSLATE_NOOP("Agents", "Too many threads are running. Wait for one to finish."), // desktop/app/src/agents.rs
     QT_TRANSLATE_NOOP("Agents", "Too many worktrees. Remove one in Setup first."), // desktop/app/src/agents/source.rs
+    QT_TRANSLATE_NOOP("Agents", "Unrestricted access to the internet and any file on your computer"), // desktop/app/src/agents/control.rs
     QT_TRANSLATE_NOOP("Agents", "Up to 5 quotes in a message."), // desktop/app/src/agents/source.rs
     QT_TRANSLATE_NOOP("Agents", "Wait until it finishes."), // desktop/app/src/agents/source.rs
     QT_TRANSLATE_NOOP("Agents", "You can add up to %1 folders."), // desktop/app/src/agents.rs

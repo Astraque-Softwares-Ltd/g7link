@@ -624,17 +624,34 @@ NativeWindow {
     }
 
     // ---- Sidebar ----
+    // The Agents page can hide it (Ctrl+Shift+[, remembered); every other
+    // page shows it, so it's back as soon as you leave.
     Item {
         id: sidebar
-        visible: !window.welcome
+        visible: !window.welcome && width > 0
         y: Theme.headerHeight
-        width: window.width < 1000 ? 52 : Theme.sidebarWidth
+        readonly property real fullWidth: window.width < 1000 ? 52 : Theme.sidebarWidth
+        readonly property bool hidden: window.page === "agents" && Agents.navHidden
+        // How much of it shows, sliding as it hides and comes back.
+        property real shown: hidden ? 0 : 1
+        Behavior on shown {
+            enabled: !Theme.reduceMotion
+            NumberAnimation {
+                duration: sidebar.hidden ? Theme.largeOut : Theme.largeIn
+                easing.type: Easing.BezierSpline
+                easing.bezierCurve: sidebar.hidden ? Theme.easeExit : Theme.easeEnter
+            }
+        }
+        width: Math.round(fullWidth * shown)
         height: parent.height - Theme.headerHeight - Theme.footerHeight
-        readonly property bool iconsOnly: width < Theme.sidebarWidth
+        clip: true
+        readonly property bool iconsOnly: fullWidth < Theme.sidebarWidth
 
         Column {
-            anchors.fill: parent
-            anchors.margins: sidebar.iconsOnly ? 4 : 8
+            x: sidebar.iconsOnly ? 4 : 8
+            y: x
+            width: sidebar.fullWidth - 2 * x
+            height: parent.height - 2 * y
             spacing: 2
             Repeater {
                 model: window.navItems

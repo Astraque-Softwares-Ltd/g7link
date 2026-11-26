@@ -232,6 +232,10 @@ Item {
             page.forceActiveFocus()
         Agents.hideList(!Agents.listHidden)
     }
+    // The app's sidebar beside the page (Ctrl+Shift+[); only this page hides it.
+    function toggleNav() {
+        Agents.hideNav(!Agents.navHidden)
+    }
     function toggleDetails() {
         if (inspectorFits)
             Agents.hideInspector(!Agents.inspectorHidden)
@@ -244,6 +248,8 @@ Item {
     readonly property string listIcon: "M6 4h12a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zM9 4v16"
     // Tabler's layout-sidebar-right (MIT, as Icons.qml credits): the details panel's toggle.
     readonly property string detailsIcon: "M6 4h12a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zM15 4v16"
+    // Lucide's menu (ISC, as AgentGitGlyphs.qml credits): the app's sidebar's toggle.
+    readonly property string navIcon: "M4 6h16M4 12h16M4 18h16"
     // Lucide's columns-2, list-checks and server (ISC, as AgentGitGlyphs.qml
     // credits): the phone beside the PC, its Plan pane, and a dev server.
     readonly property string besideIcon: "M4 3h16a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2zM12 3v18"
@@ -722,6 +728,8 @@ Item {
           run: () => Agents.exportMarkdown() },
         { label: qsTr("Load earlier"), icon: Icons.history, enabled: Agents.more && !Agents.loading,
           run: () => Agents.loadEarlier() },
+        { label: Agents.navHidden ? qsTr("Show the sidebar") : qsTr("Hide the sidebar"), icon: page.navIcon,
+          keys: "Ctrl Shift [", checked: !Agents.navHidden, run: () => page.toggleNav() },
         { label: page.listShown ? qsTr("Hide the thread list") : qsTr("Show the thread list"), icon: page.listIcon,
           keys: "Ctrl [", checked: page.listShown, enabled: !page.narrow, run: () => page.toggleList() },
         { label: qsTr("Details"), icon: page.detailsIcon, keys: "Ctrl ]", checked: page.detailsShown,
@@ -754,6 +762,14 @@ Item {
         sequence: "Ctrl+["
         enabled: page.active && !page.narrow
         onActivated: page.toggleList()
+    }
+    // One step out from the list's: the app's sidebar. A US keyboard reports
+    // Ctrl+Shift+[ as Ctrl+{ too, and a press both names match comes ambiguous.
+    Shortcut {
+        sequences: ["Ctrl+Shift+[", "Ctrl+{"]
+        enabled: page.active
+        onActivated: page.toggleNav()
+        onActivatedAmbiguously: page.toggleNav()
     }
     Shortcut {
         sequence: "Ctrl+]"
@@ -816,6 +832,7 @@ Item {
         enabled: page.active && (page.openKind.length > 0 || page.pane.length > 0)
                  && !continueSheet.opened && !folderSheet.opened && !deleteSheet.opened && !restartSheet.opened
                  && !linkSheet.opened && !dockMenu.opened && !planMenu.opened && !threadPicker.opened
+                 && !modeMenu.opened && !newModeMenu.opened
                  && !composer.popupOpen && !AppController.commandPaletteOpen
                  && !(filterField.input.activeFocus && filterField.text.length > 0)
                  && !rewindDialog.opened && !rowMenu.opened && !snoozeMenu.opened && !bulkMenu.opened
@@ -827,7 +844,7 @@ Item {
         && !continueSheet.opened && !folderSheet.opened && !deleteSheet.opened && !restartSheet.opened
         && !linkSheet.opened && !dockMenu.opened && !attachMenu.opened && !headMenu.opened && !besideMenu.opened
         && !rowMenu.opened && !snoozeMenu.opened && !bulkMenu.opened && !diffMenu.opened && !planMenu.opened
-        && !gitMenu.opened && !modeMenu.opened && !runMenu.opened && !rewindDialog.opened && !branchMenu.opened
+        && !gitMenu.opened && !modeMenu.opened && !newModeMenu.opened && !runMenu.opened && !rewindDialog.opened && !branchMenu.opened
         && !switchDialog.opened && !worktreeDialog.opened && !mergeDialog.opened && !prDialog.opened
         && !threadPicker.opened && page.renamingId.length === 0
     // Deny the shown request: only while the composer is empty (with words
@@ -1722,11 +1739,23 @@ Item {
             id: head
             width: parent.width
             height: 56
+            // Hides or shows the app's sidebar (Ctrl+Shift+[), from every view of the page.
+            IconButton {
+                id: navToggle
+                objectName: "navToggle"
+                x: 8
+                anchors.verticalCenter: parent.verticalCenter
+                iconPath: page.navIcon
+                checked: !Agents.navHidden
+                label: Agents.navHidden ? qsTr("Show the sidebar") : qsTr("Hide the sidebar")
+                onClicked: page.toggleNav()
+            }
             IconButton {
                 id: backButton
                 visible: page.narrow || page.diffShown || page.prDetailShown || page.isPreview || page.shown === "import"
                          || page.shown === "prs"
-                x: 8
+                anchors.left: navToggle.right
+                anchors.leftMargin: 4
                 anchors.verticalCenter: parent.verticalCenter
                 iconPath: Icons.back
                 label: page.diffShown && page.diffState.scope === "pr" ? qsTr("Back to the pull request")
@@ -1738,7 +1767,8 @@ Item {
             IconButton {
                 id: listToggle
                 visible: !page.narrow && !backButton.visible
-                x: 8
+                anchors.left: navToggle.right
+                anchors.leftMargin: 4
                 anchors.verticalCenter: parent.verticalCenter
                 iconPath: page.listIcon
                 checked: page.listShown
@@ -2417,17 +2447,20 @@ Item {
                     }
                 }
 
-                // The request it waits on: one at a time, at most half the column.
+                // The request it waits on: one at a time, at most half the column,
+                // but never so little that its buttons are squeezed out.
                 AgentDock {
                     id: dock
                     function pulse() { pulseAnim.restart() }
                     visible: page.asking
                     width: parent.width
-                    height: visible ? Math.min(implicitHeight, openView.height / 2) : 0
+                    height: visible ? Math.min(implicitHeight, Math.max(floorHeight, openView.height / 2)) : 0
                     ask: page.ask
                     agentName: page.agentName
                     folder: page.info.folder || ""
-                    alwaysOffered: page.ask.can_allow_thread === true && page.info.mode !== "auto_edit"
+                    // Pointless where the agent decides or nothing is asked.
+                    alwaysOffered: page.ask.can_allow_thread === true
+                        && !["accept_edits", "auto", "full"].includes(page.info.mode || "")
                         && (page.ask.kind === "command" || page.ask.kind === "edit")
                     composerHasText: composer.hasText
                     busy: Agents.busy
@@ -2909,10 +2942,8 @@ Item {
                                 { icon: page.isSession || page.info.from === "cli" ? Icons.terminal
                                       : (page.info.from === "phone" ? Icons.phone : Icons.laptop),
                                   text: page.originLine },
-                                { icon: Icons.shield, text: page.isSession ? ""
-                                      : (page.info.mode === "auto_edit" ? qsTr("Asks before commands")
-                                         : page.info.mode === "plan" ? qsTr("Plan")
-                                         : qsTr("Asks before edits and commands")) },
+                                { icon: composer.modeIcon, text: page.isSession ? ""
+                                      : ((page.composerState.picker || {}).modeName || page.info.mode || "") },
                                 { icon: Icons.sparkle, text: page.isThread && page.composerState.control === true
                                       ? page.modelLine : "" },
                                 { icon: Icons.sparkle, text: page.isThread && (page.info.answered_model || "").length > 0
@@ -3067,13 +3098,12 @@ Item {
             // newest thread ran).
             readonly property string folder: page.newPicker.folder || ""
             readonly property string agent: page.newPicker.agent || ""
-            property string mode: "supervised"
+            // The form's mode: the one the folder remembers for the agent
+            // (never Plan; ask first in a new folder) until another is picked.
+            readonly property string mode: page.newPicker.mode || "ask"
             readonly property var folderInfo: page.usableFolders.find((f) => f.id === newView.folder) || null
             readonly property bool hasFolder: folderInfo !== null
             readonly property bool hasAgent: agent.length > 0 && page.readyAgents.some((a) => a.id === newView.agent)
-            // Plan, when the host and the agent can.
-            readonly property bool planAvailable: page.newPicker.control === true && page.newPicker.plan === true
-            onPlanAvailableChanged: if (!planAvailable && mode === "plan") mode = "supervised"
             // Where and What side by side while both fit; else one at a time, Where first.
             readonly property bool twoColumns: width >= 700
             property string step: "what"
@@ -3184,6 +3214,10 @@ Item {
             }
 
             // ---- Where ----
+            // Both columns hold every row (the folder tree can be long), so
+            // they must clip. Qt's software renderer (no GPU, and offscreen
+            // renders) draws the icons' shapes past a plain clip, over the
+            // status bar; a layer there keeps them inside.
             Flickable {
                 id: whereView
                 visible: newView.whereShown
@@ -3192,6 +3226,7 @@ Item {
                 contentHeight: whereColumn.height + 32
                 boundsBehavior: Flickable.StopAtBounds
                 clip: true
+                layer.enabled: GraphicsInfo.api === GraphicsInfo.Software
                 Column {
                     id: whereColumn
                     x: 16
@@ -3254,7 +3289,9 @@ Item {
                     Txt {
                         width: parent.width
                         topPadding: 8
-                        text: qsTr("All folders on %1").arg(AppController.deviceName)
+                        text: (AppController.deviceName || "").trim().length > 0
+                            ? qsTr("All folders on %1").arg(AppController.deviceName)
+                            : qsTr("All folders on this PC")
                         role: "label"
                         muted: true
                         maximumLineCount: 1
@@ -3314,6 +3351,7 @@ Item {
                 contentHeight: form.height + 32
                 boundsBehavior: Flickable.StopAtBounds
                 clip: true
+                layer.enabled: GraphicsInfo.api === GraphicsInfo.Software
 
                 Column {
                     id: form
@@ -3508,29 +3546,69 @@ Item {
                         }
                     }
 
+                    // The mode, in the agent's own words: the menu lists the ones it offers.
                     Column {
+                        visible: newView.hasAgent && page.newPicker.control === true
                         width: parent.width
                         spacing: 6
                         Txt {
-                            text: qsTr("Asks before")
+                            text: qsTr("Mode")
                             role: "label"
                             muted: true
                         }
-                        Segmented {
-                            options: [
-                                { value: "supervised", label: qsTr("Edits and commands") },
-                                { value: "auto_edit", label: qsTr("Commands only") }
-                            ].concat(newView.planAvailable ? [{ value: "plan", label: qsTr("Plan") }] : [])
-                            value: newView.mode
-                            onPicked: (value) => { newView.mode = value }
+                        Rectangle {
+                            id: newModeChip
+                            objectName: "newMode"
+                            readonly property bool warn: page.newPicker.modeWarn === true
+                            width: newModeRow.implicitWidth + 20
+                            height: 32
+                            radius: Theme.radiusSm
+                            color: warn ? Theme.wash(Theme.tintAmber)
+                                : (newModeHover.hovered ? Theme.surfaceContainerHighest : Theme.surfaceContainerHigh)
+                            Accessible.role: Accessible.ButtonMenu
+                            Accessible.name: newModeText.text
+                            Accessible.description: page.newPicker.modeLine || ""
+                            Accessible.onPressAction: page.openNewModeMenu()
+                            Row {
+                                id: newModeRow
+                                x: 10
+                                anchors.verticalCenter: parent.verticalCenter
+                                spacing: 6
+                                Icon {
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    width: 15
+                                    height: 15
+                                    path: newModeMenu.iconFor(newView.mode)
+                                    color: newModeChip.warn ? Theme.tintAmber : Theme.surfaceContentVariant
+                                }
+                                Txt {
+                                    id: newModeText
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    text: page.newPicker.modeName || newView.mode
+                                    weight: 600
+                                    color: newModeChip.warn ? Theme.tintAmber : Theme.surfaceContent
+                                    maximumLineCount: 1
+                                }
+                                Icon {
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    width: 12
+                                    height: 12
+                                    path: Icons.chevronDown
+                                    color: newModeChip.warn ? Theme.tintAmber : Theme.surfaceContentVariant
+                                }
+                            }
+                            HoverHandler {
+                                id: newModeHover
+                            }
+                            MouseArea {
+                                anchors.fill: parent
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: page.openNewModeMenu()
+                            }
                         }
                         Txt {
                             width: parent.width
-                            text: newView.mode === "auto_edit"
-                                ? qsTr("It changes files without asking, and asks before a command that could change something.")
-                                : newView.mode === "plan"
-                                    ? qsTr("Plan: it changes nothing until you say so.")
-                                    : qsTr("It asks before it changes a file or runs a command that could change something.")
+                            text: page.newPicker.modeLine || ""
                             role: "bodySmall"
                             muted: true
                             wrapMode: Text.WordWrap
@@ -4271,40 +4349,37 @@ Item {
         panelWidth: 240
     }
 
-    // A plan's Implement, with the mode it runs in.
+    // A plan's Implement: in the mode the folder remembers for the agent
+    // (checked), or another of the agent's modes but Plan.
     property string planItem: ""
-    PopupMenu {
+    AgentModeMenu {
         id: planMenu
-        actions: [
-            { label: qsTr("Implement, asking before edits and commands"), checked: true,
-              run: () => Agents.implement(page.planItem, "supervised") },
-            { label: qsTr("Implement, asking before commands"),
-              run: () => Agents.implement(page.planItem, "auto_edit") }
-        ]
-        panelWidth: 360
-        wrapLabels: true
+        modes: (page.composerState.picker || {}).implementModes || []
+        heading: qsTr("Implement in")
         z: 20
+        onPicked: (mode) => Agents.implement(page.planItem, mode)
     }
 
-    // The open thread's mode (Ctrl+Shift+M), the same three as the model control's.
-    PopupMenu {
+    // The open thread's mode (the chip, Ctrl+Shift+M): the agent's own modes.
+    AgentModeMenu {
         id: modeMenu
-        readonly property var picker: page.composerState.picker || ({})
-        readonly property string mode: picker.mode || "supervised"
-        actions: [
-            { label: qsTr("Asks before edits and commands"), checked: mode === "supervised",
-              run: () => Agents.pick(false, "mode", "supervised") },
-            { label: qsTr("Asks before commands"), checked: mode === "auto_edit",
-              run: () => Agents.pick(false, "mode", "auto_edit") },
-            { label: qsTr("Plan: it changes nothing until you say so"), checked: mode === "plan",
-              enabled: picker.plan === true, hidden: picker.plan !== true && picker.agent !== "codex",
-              detail: picker.plan === true ? "" : qsTr("Plan isn't available with this version of Codex."),
-              run: () => Agents.pick(false, "mode", "plan") }
-        ].filter((a) => a.hidden !== true)
-        panelWidth: 340
-        wrapLabels: true
+        modes: (page.composerState.picker || {}).modes || []
+        footnote: qsTr("Applies to the next message.")
         z: 20
+        onPicked: (mode) => Agents.pick(false, "mode", mode)
         onOpenedChanged: if (!opened) composer.focusInput()
+    }
+
+    // The new-thread form's mode: the chosen agent's modes.
+    function openNewModeMenu() {
+        const p = page.mapFromItem(newModeChip, 0, newModeChip.height)
+        newModeMenu.openAt(p.x, p.y, false, false, newModeChip.height)
+    }
+    AgentModeMenu {
+        id: newModeMenu
+        modes: page.newPicker.modes || []
+        z: 20
+        onPicked: (mode) => Agents.pick(true, "mode", mode)
     }
 
     // The model control's panels: the open thread's, and the new-thread form's.

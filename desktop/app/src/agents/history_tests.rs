@@ -18,7 +18,7 @@ pub(super) fn a_thread(id: &str) -> ThreadInfo {
         folder_label: "duka-pos".into(),
         title: "Stock sync".into(),
         state: State::Done,
-        mode: Mode::Supervised,
+        mode: Mode::Ask,
         origin: Origin::launcher(),
         created_ms: 1,
         updated_ms: 2,
@@ -183,6 +183,7 @@ fn a_turn_not_recorded_says_why() {
         status: api::ToolStatus::Ok,
         output: None,
         by_rule: false,
+        review: None,
     });
     let items = [user(1, 1, "Fix it"), edit, answer(4, 1)];
     let mut turn = a_turn(1, Checkpoint::Missing);

@@ -211,9 +211,7 @@ Item {
                     }
                     AgentModePicker {
                         width: sideColumn.width
-                        mode: panelRoot.picker.mode || "supervised"
-                        planAvailable: panelRoot.picker.plan === true
-                        agentId: panelRoot.picker.agent || ""
+                        rows: panelRoot.picker.modes || []
                         onPicked: (value) => panelRoot.pick("mode", value)
                     }
                 }

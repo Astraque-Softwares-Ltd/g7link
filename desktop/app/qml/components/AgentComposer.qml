@@ -6,8 +6,10 @@ import app.g7link
 
 // The reply box under a thread: one container with the queued messages on
 // top, the images to send, the text, and a quiet footer (add image, the
-// model and effort, the mode when it isn't the default, Stop, and one round
-// primary button). The folder sits under it. Add image opens a menu: a file,
+// model and effort, the mode by its full name, Stop, and one round primary
+// button). The mode chip opens the agent's modes (Ctrl+Shift+M); Bypass
+// permissions and Full access show in the warning tint. Like the model, the
+// mode changes between turns. The folder sits under it. Add image opens a menu: a file,
 // the clipboard, or a photo from a phone, which the box then waits for.
 //
 // Enter sends; Shift+Enter starts a new line. While the agent works, Enter
@@ -59,7 +61,7 @@ Item {
     readonly property bool answerWords: questionShown && answer.other === true && question.held !== true
     readonly property bool control: controls.control === true
     readonly property var picker: controls.picker || ({})
-    readonly property string mode: picker.mode || "supervised"
+    readonly property string mode: picker.mode || "ask"
     readonly property bool canSteer: controls.canSteer === true
     readonly property bool steerFirst: (controls.followUp || "steer") === "steer"
     // The request the words were typed under ("" for none).
@@ -84,10 +86,14 @@ Item {
     // The model control and the image button rest while a question waits
     // or a turn runs: settings apply between turns, an answer takes no image.
     readonly property bool settingsOpen: control && !running && !questionShown
-    // Tabler icons (MIT, as Icons.qml credits): arrow-up, player-track-next, stack-2.
-    readonly property string sendIcon: "M12 5v14M18 11l-6-6M6 11l6-6"
+    // Send is the Enter key's ↵ (Lucide's corner-down-left); steer and queue are
+    // Tabler icons (MIT, as Icons.qml credits): player-track-next, stack-2.
+    readonly property string sendIcon: Icons.cornerDownLeft
     readonly property string steerIcon: "M3 5v14l8-7zM14 5v14l8-7z"
     readonly property string queueIcon: "M12 4l-8 4 8 4 8-4-8-4M4 12l8 4 8-4M4 16l8 4 8-4"
+    // The mode's glyph: ask first, accept edits, auto, plan, nothing asked.
+    readonly property string modeIcon: mode === "accept_edits" ? Icons.edit : mode === "auto" ? Icons.sparkle
+        : mode === "plan" ? Icons.clipboardList : mode === "full" ? Icons.bolt : Icons.shield
 
     function clear() {
         settingText = true
@@ -142,7 +148,7 @@ Item {
     function openModeMenu() {
         if (!settingsOpen)
             return
-        const p = modelControl.mapToItem(null, 0, 0)
+        const p = modeChip.mapToItem(null, 0, 0)
         composer.modeMenuRequested(p.x, p.y)
     }
 
@@ -550,6 +556,10 @@ Item {
             x: 6
             width: parent.width - 12
             height: 34
+            // What the model's name may take: the footer less the image
+            // button, the mode chip and the buttons on the right.
+            readonly property real modelRoom: width - endButtons.width - 16
+                - (attach.visible ? attach.width + 4 : 0) - (modeChip.visible ? modeChip.width + 4 : 0)
             Row {
                 anchors.verticalCenter: parent.verticalCenter
                 spacing: 4
@@ -574,6 +584,7 @@ Item {
                     objectName: "model"
                     visible: composer.control
                     anchors.verticalCenter: parent.verticalCenter
+                    // Its name gives way first (it elides); the mode chip never does.
                     width: modelRow.implicitWidth + 16
                     height: 28
                     radius: Theme.radiusSm
@@ -590,12 +601,14 @@ Item {
                         Txt {
                             id: modelText
                             anchors.verticalCenter: parent.verticalCenter
+                            width: Math.min(implicitWidth, Math.max(24, actions.modelRoom - 16 - effortText.width - 20))
                             text: (composer.picker.label && composer.picker.label.model.length > 0)
                                 ? composer.picker.label.model : qsTr("Default")
                             role: "bodySmall"
                             weight: 600
                         }
                         Txt {
+                            id: effortText
                             visible: composer.picker.label !== undefined && composer.picker.label.effort.length > 0
                             anchors.verticalCenter: parent.verticalCenter
                             text: "· " + (composer.picker.label ? composer.picker.label.effort : "")
@@ -639,57 +652,109 @@ Item {
                         }
                     }
                 }
-                // The mode, only when it isn't the default.
+                // The mode, always, by its full name: it opens the agent's modes.
                 Rectangle {
+                    id: modeChip
                     objectName: "mode"
-                    visible: composer.control && composer.mode !== "supervised"
+                    readonly property bool warn: composer.picker.modeWarn === true
+                    readonly property color ink: warn ? Theme.tintAmber : Theme.surfaceContent
+                    visible: composer.control
                     anchors.verticalCenter: parent.verticalCenter
-                    width: modeRow.implicitWidth + 14
-                    height: 24
+                    width: modeRow.implicitWidth + 16
+                    height: 26
                     radius: Theme.radiusSm
-                    color: Theme.surfaceContainerHigh
+                    color: warn ? Theme.wash(Theme.tintAmber)
+                        : (modeHover.hovered && composer.settingsOpen ? Theme.surfaceContainerHighest : Theme.surfaceContainerHigh)
                     opacity: composer.settingsOpen ? 1 : 0.6
+                    Accessible.role: Accessible.ButtonMenu
+                    Accessible.name: modeText.text
+                    Accessible.description: composer.picker.modeLine || ""
+                    Accessible.onPressAction: composer.openModeMenu()
                     Row {
                         id: modeRow
-                        x: 7
+                        x: 8
                         anchors.verticalCenter: parent.verticalCenter
                         spacing: 5
                         Icon {
                             anchors.verticalCenter: parent.verticalCenter
-                            width: 13
-                            height: 13
-                            path: composer.mode === "plan" ? Icons.clipboardList : Icons.shield
-                            color: Theme.surfaceContentVariant
+                            width: 14
+                            height: 14
+                            path: composer.modeIcon
+                            color: modeChip.warn ? Theme.tintAmber : Theme.surfaceContentVariant
                         }
                         Txt {
+                            id: modeText
                             anchors.verticalCenter: parent.verticalCenter
-                            text: composer.mode === "plan" ? qsTr("Plan") : qsTr("Asks before commands")
-                            role: "caption"
+                            text: composer.picker.modeName || composer.mode
+                            role: "bodySmall"
+                            weight: 600
+                            color: modeChip.ink
+                            maximumLineCount: 1
                         }
+                        Icon {
+                            anchors.verticalCenter: parent.verticalCenter
+                            width: 12
+                            height: 12
+                            path: Icons.chevronDown
+                            color: modeChip.warn ? Theme.tintAmber : Theme.surfaceContentVariant
+                        }
+                    }
+                    HoverHandler {
+                        id: modeHover
                     }
                     MouseArea {
                         anchors.fill: parent
                         enabled: composer.settingsOpen
                         cursorShape: Qt.PointingHandCursor
-                        onClicked: composer.openPicker()
+                        onClicked: composer.openModeMenu()
+                    }
+                    // Why it rests: modes change between turns.
+                    Rectangle {
+                        visible: modeHover.hovered && !composer.settingsOpen
+                        y: -height - 6
+                        width: modeRest.implicitWidth + 16
+                        height: modeRest.implicitHeight + 8
+                        radius: Theme.radiusSm
+                        color: Theme.surfaceContainerHighest
+                        border.width: 1
+                        border.color: Theme.outlineVariant
+                        z: 30
+                        Txt {
+                            id: modeRest
+                            anchors.centerIn: parent
+                            text: composer.questionShown ? qsTr("Answer the question first.")
+                                                         : qsTr("You can change it when %1 stops.").arg(composer.agentName)
+                            role: "caption"
+                        }
                     }
                 }
             }
             Row {
+                id: endButtons
                 anchors.right: parent.right
                 anchors.verticalCenter: parent.verticalCenter
                 spacing: 6
-                Button {
+                // Stop, as an icon: its name is the tooltip and what a screen reader says.
+                IconButton {
                     id: stopButton
                     objectName: "stop"
                     visible: composer.running
                     anchors.verticalCenter: parent.verticalCenter
-                    variant: "tonal"
-                    size: "sm"
-                    iconPath: Icons.stopSquare
-                    text: qsTr("Stop")
-                    busy: composer.busy
-                    onClicked: composer.stop()
+                    width: 30
+                    height: 30
+                    tonal: true
+                    iconSize: 16
+                    iconPath: composer.busy ? "" : Icons.stopSquare
+                    label: qsTr("Stop") + " · Ctrl+."
+                    Accessible.name: qsTr("Stop")
+                    onClicked: if (!composer.busy) composer.stop()
+                    Spinner {
+                        visible: composer.busy
+                        anchors.centerIn: parent
+                        width: 16
+                        height: 16
+                        color: Theme.secondaryContainerContent
+                    }
                 }
                 Button {
                     id: denySendButton
@@ -697,7 +762,7 @@ Item {
                     visible: composer.sayWhy && composer.hasText && !composer.questionShown
                     anchors.verticalCenter: parent.verticalCenter
                     size: "sm"
-                    iconPath: Icons.send
+                    iconPath: Icons.cornerDownLeft
                     text: qsTr("Deny and send")
                     enabled: composer.canDenySend
                     onClicked: composer.submit(false)

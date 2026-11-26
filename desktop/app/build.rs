@@ -45,6 +45,7 @@ const QML: &[&str] = &[
     "qml/components/AgentMarkLine.qml",
     "qml/components/AgentMentionList.qml",
     "qml/components/AgentMergeDialog.qml",
+    "qml/components/AgentModeMenu.qml",
     "qml/components/AgentModePicker.qml",
     "qml/components/AgentModelPicker.qml",
     "qml/components/AgentPickRow.qml",

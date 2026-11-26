@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 
 use g7_agents::{
     api::{
-        CloseOutcome, CloseRefusal, ErrorCode, Mode, Origin, SessionCloseParams, SessionCloseResult,
+        CloseOutcome, CloseRefusal, ErrorCode, Origin, SessionCloseParams, SessionCloseResult,
         SessionContinueParams, cap,
     },
     client::{Client, ClientError},
@@ -372,11 +372,10 @@ impl Mover for LiveMover {
     }
 
     fn continue_here(&self, session: &str) -> Result<Continued, HostDown> {
-        let params = SessionContinueParams {
-            session_id: session.to_owned(),
-            mode: Mode::Supervised,
-            origin: self.origin.clone(),
-        };
+        // In the mode the session's folder remembers for its agent.
+        let mode = super::super::continue_mode(&super::super::lock(), session);
+        let params =
+            SessionContinueParams { session_id: session.to_owned(), mode, origin: self.origin.clone() };
         match self.host.runtime.block_on(self.host.client.session_continue(params)) {
             Ok(info) => {
                 super::super::bridge().remember(&info);

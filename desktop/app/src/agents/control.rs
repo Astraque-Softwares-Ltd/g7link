@@ -21,6 +21,8 @@ use g7_agents::api::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use crate::i18n::tr;
+
 // ---- Preferences: the follow-up key and the choices per agent and folder ----
 
 /// What Enter does with a message while the agent works; Alt+Enter does the other.
@@ -279,7 +281,8 @@ pub(crate) fn picker_json(agent: &AgentInfo, setting: &Setting, answered: Option
         })
         .unwrap_or_default();
     let effort_auto = model.is_some_and(|m| !m.efforts.is_empty() && m.default_effort.is_none());
-    let mode = setting.mode.unwrap_or(Mode::Supervised);
+    let mode = setting.mode.unwrap_or(Mode::Ask);
+    let (mode_name, mode_line) = mode_text(agent.id, mode);
     let (label_model, label_effort) = model_label(agent, setting, answered);
     json!({
         "agent": agent.id.as_str(),
@@ -294,6 +297,10 @@ pub(crate) fn picker_json(agent: &AgentInfo, setting: &Setting, answered: Option
         "effortAuto": effort_auto,
         "effortWord": effort_word(agent.id),
         "mode": api_word(&mode),
+        "modeName": mode_name,
+        "modeLine": mode_line,
+        "modeWarn": mode == Mode::Full,
+        "modes": modes_json(agent, setting, mode, true),
         "plan": agent.can(Can::Plan),
         "images": takes_images(agent, setting.model.as_deref()),
         "label": { "model": label_model, "effort": label_effort },
@@ -344,14 +351,121 @@ pub(crate) fn pick_effort(agent: &AgentInfo, setting: &Setting, effort: &str) ->
         .then(|| Setting { effort: Some(effort.to_owned()), ..setting.clone() })
 }
 
-/// A mode the page offers: the three, Plan only when the agent can.
+// ---- Modes (plan modes-approvals-composer §4.2) ----
+
+/// A mode's word (`ask`, `accept_edits`, `auto`, `plan`, `full`), as the
+/// page and phones send it, or one of the words before 0.1.31
+/// (`supervised`, `auto_edit`); `None` for any other.
+pub(crate) fn parse_mode(word: &str) -> Option<Mode> {
+    serde_json::from_value(Value::String(word.to_owned())).ok()
+}
+
+/// A mode as the page sends it back.
+pub(crate) fn mode_word(mode: Mode) -> String {
+    api_word(&mode)
+}
+
+/// A mode the page offers for `agent`: any word of the ones it lists.
 pub(crate) fn mode_of(word: &str, agent: &AgentInfo) -> Option<Mode> {
-    match word {
-        "supervised" => Some(Mode::Supervised),
-        "auto_edit" => Some(Mode::AutoEdit),
-        "plan" if agent.can(Can::Plan) => Some(Mode::Plan),
-        _ => None,
+    parse_mode(word).filter(|mode| agent.offers(*mode))
+}
+
+/// The mode a new thread of `agent` starts in (plan §2.2): the one `folder`
+/// remembers for it while the agent still offers it, else `ask`; never
+/// `plan`. Claude's Auto only while `model` (the CLI's default when `None`)
+/// can run it.
+pub(crate) fn remembered_mode(folder: Option<&api::Folder>, agent: &AgentInfo, model: Option<&str>) -> Mode {
+    folder
+        .and_then(|f| f.last_mode(agent.id))
+        .filter(|mode| mode.remembered() && agent.offers(*mode) && auto_runs(agent, *mode, model))
+        .unwrap_or(Mode::ask_first())
+}
+
+/// Claude's Auto runs with `model` unless the list says it can't; every
+/// other mode does, and Codex's Approve for me with any model.
+fn auto_runs(agent: &AgentInfo, mode: Mode, model: Option<&str>) -> bool {
+    mode != Mode::Auto || agent.id != AgentId::Claude || chosen(agent, model).is_none_or(|m| m.auto)
+}
+
+/// A mode's name and its one line in the agent's own words (plan §4.2;
+/// "Claude" and "Codex" stay names).
+pub(crate) fn mode_text(agent: AgentId, mode: Mode) -> (String, String) {
+    match (agent, mode) {
+        (AgentId::Claude, Mode::Ask) => {
+            (tr!("Agents", "Manual"), tr!("Agents", "Always ask before making changes"))
+        }
+        (AgentId::Claude, Mode::AcceptEdits) => {
+            (tr!("Agents", "Accept edits"), tr!("Agents", "Automatically accept all file edits"))
+        }
+        (AgentId::Claude, Mode::Auto) => {
+            (tr!("Agents", "Auto"), tr!("Agents", "Claude handles permission decisions"))
+        }
+        (AgentId::Claude, Mode::Plan) => {
+            (tr!("Agents", "Plan"), tr!("Agents", "Create a plan before making changes"))
+        }
+        (AgentId::Claude, Mode::Full) => {
+            (tr!("Agents", "Bypass permissions"), tr!("Agents", "Accepts all permissions"))
+        }
+        (AgentId::Codex, Mode::Ask) => (
+            tr!("Agents", "Ask for approval"),
+            tr!("Agents", "Asks before working outside the folder or using the internet"),
+        ),
+        // Codex has no such mode; a thread from elsewhere still says what it is.
+        (AgentId::Codex, Mode::AcceptEdits) => {
+            (tr!("Agents", "Accept edits"), tr!("Agents", "Automatically accept all file edits"))
+        }
+        (AgentId::Codex, Mode::Auto) => (
+            tr!("Agents", "Approve for me"),
+            tr!("Agents", "Only ask for actions detected as potentially unsafe"),
+        ),
+        (AgentId::Codex, Mode::Plan) => {
+            (tr!("Agents", "Plan"), tr!("Agents", "Changes nothing until you say so"))
+        }
+        (AgentId::Codex, Mode::Full) => (
+            tr!("Agents", "Full access"),
+            tr!("Agents", "Unrestricted access to the internet and any file on your computer"),
+        ),
     }
+}
+
+/// The modes the page offers for `agent` with `setting` (its model), in its
+/// CLI's order, each with its name and line, and why one is off (Claude's
+/// Auto with a model that can't run it; Plan with a Codex that can't);
+/// `current` is checked, and listed last (off) when the agent no longer
+/// offers it. Without `plan` for Implement.
+pub(crate) fn modes_json(agent: &AgentInfo, setting: &Setting, current: Mode, plan: bool) -> Vec<Value> {
+    // A mode the agent doesn't offer comes with why.
+    let mut modes: Vec<(Mode, Option<String>)> =
+        agent.modes.iter().filter(|m| plan || **m != Mode::Plan).map(|m| (*m, None)).collect();
+    if plan && agent.id == AgentId::Codex && !agent.modes.is_empty() && !agent.offers(Mode::Plan) {
+        modes.push((Mode::Plan, Some(tr!("Agents", "Plan isn't available with this version of Codex."))));
+    }
+    if !modes.iter().any(|(m, _)| *m == current) && (plan || current != Mode::Plan) {
+        modes.push((current, Some(tr!("Agents", "Not available now"))));
+    }
+    modes
+        .into_iter()
+        .map(|(mode, not_offered)| {
+            let (name, line) = mode_text(agent.id, mode);
+            let runs = auto_runs(agent, mode, setting.model.as_deref());
+            let on = not_offered.is_none() && runs;
+            let why = match not_offered {
+                Some(why) => why,
+                None if !runs => tr!("Agents", "Not with this model"),
+                None => String::new(),
+            };
+            json!({
+                "id": mode_word(mode),
+                "name": name,
+                "line": line,
+                "on": on,
+                "why": why,
+                "checked": mode == current,
+                // Nothing is asked: shown in the warning tint.
+                "warn": mode == Mode::Full,
+            })
+        })
+        .collect()
 }
 
 // ---- The new thread: what each folder last ran, and quick picks ----
@@ -1239,6 +1353,7 @@ mod tests {
             images: true,
             short,
             exact: None,
+            auto: false,
         }
     }
 
@@ -1253,6 +1368,7 @@ mod tests {
             model("sonnet", "Sonnet", &["low", "high"], false, true),
             model("claude-opus-4-7", "Opus 4.7", &[], false, false),
         ];
+        a.modes = vec![Mode::Ask, Mode::AcceptEdits, Mode::Plan, Mode::Full];
         a
     }
 
@@ -1262,7 +1378,169 @@ mod tests {
         let mut first = model("gpt-x", "GPT X", &["low", "medium", "high"], true, false);
         first.default_effort = Some("medium".into());
         a.models = vec![first, model("gpt-y", "GPT Y", &["low"], false, false)];
+        // An older Codex: no plan.
+        a.modes = vec![Mode::Ask, Mode::Auto, Mode::Full];
         a
+    }
+
+    /// Claude with a model that runs Auto (the default) and one that doesn't.
+    fn claude_auto() -> AgentInfo {
+        let mut a = claude();
+        a.models[0].auto = true;
+        a.modes = vec![Mode::Auto, Mode::Ask, Mode::AcceptEdits, Mode::Plan, Mode::Full];
+        a
+    }
+
+    fn folder_with(modes: &[(AgentId, Mode)]) -> api::Folder {
+        api::Folder {
+            id: "f000000000001".into(),
+            label: "app".into(),
+            path: "/home/me/app".into(),
+            exists: true,
+            added_ms: 1,
+            used_ms: 2,
+            repo: false,
+            mcp: true,
+            mcp_seen: Vec::new(),
+            checkpoints: true,
+            follow_remote: false,
+            scripts: Vec::new(),
+            phone_scripts: false,
+            last_modes: modes
+                .iter()
+                .map(|(agent, mode)| api::FolderMode { agent: *agent, mode: *mode })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn modes_are_read_in_the_new_words_and_the_old_ones() {
+        assert_eq!(parse_mode("ask"), Some(Mode::Ask));
+        assert_eq!(parse_mode("supervised"), Some(Mode::Ask), "a stored word from before 0.1.31");
+        assert_eq!(parse_mode("auto_edit"), Some(Mode::AcceptEdits));
+        assert_eq!(parse_mode("accept_edits"), Some(Mode::AcceptEdits));
+        assert_eq!(
+            (parse_mode("auto"), parse_mode("plan"), parse_mode("full")),
+            (Some(Mode::Auto), Some(Mode::Plan), Some(Mode::Full))
+        );
+        assert_eq!(parse_mode("bypass"), None);
+        assert_eq!(parse_mode(""), None);
+        for mode in Mode::ALL {
+            assert_eq!(parse_mode(&mode_word(mode)), Some(mode), "{mode:?} goes there and back");
+        }
+    }
+
+    #[test]
+    fn the_mode_menu_lists_the_agents_own_modes_in_its_words_and_order() {
+        let agent = claude_auto();
+        let p = picker_json(&agent, &Setting { mode: Some(Mode::Full), ..Setting::default() }, None);
+        let rows = p["modes"].as_array().unwrap();
+        let shown: Vec<(&str, &str)> =
+            rows.iter().map(|m| (m["id"].as_str().unwrap(), m["name"].as_str().unwrap())).collect();
+        assert_eq!(
+            shown,
+            [
+                ("auto", "Auto"),
+                ("ask", "Manual"),
+                ("accept_edits", "Accept edits"),
+                ("plan", "Plan"),
+                ("full", "Bypass permissions")
+            ]
+        );
+        assert_eq!(rows[0]["line"], "Claude handles permission decisions");
+        assert!(rows.iter().all(|m| m["on"] == true && m["why"] == ""));
+        let checked: Vec<&str> =
+            rows.iter().filter(|m| m["checked"] == true).map(|m| m["id"].as_str().unwrap()).collect();
+        assert_eq!(checked, ["full"]);
+        let warned: Vec<&str> =
+            rows.iter().filter(|m| m["warn"] == true).map(|m| m["id"].as_str().unwrap()).collect();
+        assert_eq!(warned, ["full"], "only nothing-asked is in the warning tint");
+        assert_eq!(
+            (p["modeName"].as_str(), p["modeWarn"].as_bool()),
+            (Some("Bypass permissions"), Some(true))
+        );
+        assert_eq!(p["modeLine"], "Accepts all permissions");
+
+        // Claude's Auto is per model: off, saying why, with one that can't.
+        let p = picker_json(&agent, &Setting { model: Some("sonnet".into()), ..Setting::default() }, None);
+        let auto = &p["modes"][0];
+        assert_eq!((auto["id"].as_str(), auto["on"].as_bool()), (Some("auto"), Some(false)));
+        assert_eq!(auto["why"], "Not with this model");
+        assert_eq!((p["mode"].as_str(), p["modeName"].as_str()), (Some("ask"), Some("Manual")));
+
+        let codex = codex();
+        let p = picker_json(&codex, &Setting { mode: Some(Mode::Auto), ..Setting::default() }, None);
+        let shown: Vec<(&str, &str)> = p["modes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| (m["id"].as_str().unwrap(), m["name"].as_str().unwrap()))
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                ("ask", "Ask for approval"),
+                ("auto", "Approve for me"),
+                ("full", "Full access"),
+                ("plan", "Plan")
+            ]
+        );
+        let plan = &p["modes"][3];
+        assert_eq!(plan["on"], false, "this Codex can't plan, and says so");
+        assert_eq!(plan["why"], "Plan isn't available with this version of Codex.");
+        assert_eq!(p["modes"][0]["line"], "Asks before working outside the folder or using the internet");
+        assert_eq!(p["modeName"], "Approve for me");
+    }
+
+    #[test]
+    fn a_mode_the_agent_no_longer_offers_still_shows_checked_but_off() {
+        // Claude in Accept edits, then the host stopped offering it.
+        let mut no_edits = claude();
+        no_edits.modes.retain(|m| *m != Mode::AcceptEdits);
+        let p =
+            picker_json(&no_edits, &Setting { mode: Some(Mode::AcceptEdits), ..Setting::default() }, None);
+        let last = p["modes"].as_array().unwrap().last().unwrap().clone();
+        assert_eq!(
+            (last["id"].as_str(), last["on"].as_bool(), last["checked"].as_bool()),
+            (Some("accept_edits"), Some(false), Some(true))
+        );
+        assert_eq!(last["why"], "Not available now");
+        // A Codex thread planned, then Codex lost its experimental switch: one row.
+        let p = picker_json(&codex(), &Setting { mode: Some(Mode::Plan), ..Setting::default() }, None);
+        let plans: Vec<&Value> =
+            p["modes"].as_array().unwrap().iter().filter(|m| m["id"] == "plan").collect();
+        assert_eq!(plans.len(), 1);
+        assert_eq!((plans[0]["checked"].as_bool(), plans[0]["on"].as_bool()), (Some(true), Some(false)));
+        // Implement never offers Plan.
+        let implement = modes_json(&claude(), &Setting::default(), Mode::Ask, false);
+        let ids: Vec<&str> = implement.iter().map(|m| m["id"].as_str().unwrap()).collect();
+        assert_eq!(ids, ["ask", "accept_edits", "full"]);
+    }
+
+    #[test]
+    fn a_new_thread_starts_in_the_mode_its_folder_remembers_for_that_agent() {
+        let claude = claude_auto();
+        let codex = codex();
+        let folder = folder_with(&[(AgentId::Claude, Mode::Full), (AgentId::Codex, Mode::Auto)]);
+        assert_eq!(remembered_mode(Some(&folder), &claude, None), Mode::Full);
+        assert_eq!(remembered_mode(Some(&folder), &codex, None), Mode::Auto, "per agent");
+        assert_eq!(remembered_mode(None, &claude, None), Mode::Ask, "a new folder starts ask-first");
+        let only_claude = folder_with(&[(AgentId::Claude, Mode::Auto)]);
+        assert_eq!(
+            remembered_mode(Some(&only_claude), &codex, None),
+            Mode::Ask,
+            "Claude's mode isn't Codex's"
+        );
+        assert_eq!(remembered_mode(Some(&only_claude), &claude, None), Mode::Auto);
+        assert_eq!(
+            remembered_mode(Some(&only_claude), &claude, Some("sonnet")),
+            Mode::Ask,
+            "not with this model"
+        );
+        let planned = folder_with(&[(AgentId::Claude, Mode::Plan)]);
+        assert_eq!(remembered_mode(Some(&planned), &claude, None), Mode::Ask, "never Plan");
+        let edits = folder_with(&[(AgentId::Codex, Mode::AcceptEdits)]);
+        assert_eq!(remembered_mode(Some(&edits), &codex, None), Mode::Ask, "only while the agent offers it");
     }
 
     #[test]
@@ -1303,7 +1581,9 @@ mod tests {
         assert_eq!((medium["isDefault"].as_bool(), medium["checked"].as_bool()), (Some(true), Some(true)));
         assert_eq!(p["plan"], false);
         assert_eq!(mode_of("plan", &agent), None);
-        assert_eq!(mode_of("auto_edit", &agent), Some(Mode::AutoEdit));
+        assert_eq!(mode_of("auto_edit", &agent), None, "Codex has no Accept edits");
+        assert_eq!(mode_of("supervised", &agent), Some(Mode::Ask));
+        assert_eq!(mode_of("full", &agent), Some(Mode::Full));
         assert_eq!(mode_of("full_access", &agent), None, "no other mode exists");
     }
 
@@ -1706,7 +1986,7 @@ mod tests {
             folder_label: "g7linux".into(),
             title: "Check the build".into(),
             state: api::State::Working,
-            mode: Mode::Supervised,
+            mode: Mode::Ask,
             origin: Origin::launcher(),
             created_ms: 1,
             updated_ms: 2,
@@ -1835,6 +2115,7 @@ mod tests {
             created_ms,
             expires_ms: created_ms + 1,
             item_id: None,
+            deny_stops: false,
         }
     }
 

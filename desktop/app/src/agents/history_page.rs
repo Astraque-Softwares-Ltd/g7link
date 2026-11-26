@@ -1336,7 +1336,7 @@ pub(super) async fn phone(
             AgentReply::Thread(thread(&info, Some(&from)))
         }
         AgentRequest::Fork { thread: thread_id, turn } => {
-            // The host makes a phone's fork supervised or plan.
+            // A fork keeps its source's mode, from a phone too.
             let info =
                 client.thread_fork(ThreadForkParams { thread_id, turn, by: origin() }).await.map_err(fail)?;
             bridge().remember(&info);

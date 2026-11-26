@@ -72,6 +72,9 @@ pub mod qobject {
         #[qproperty(bool, list_hidden)]
         /// The user hid the details beside the transcript.
         #[qproperty(bool, inspector_hidden)]
+        /// The user hid the app's sidebar while on the Agents page (it
+        /// stays hidden across restarts; other pages always show it).
+        #[qproperty(bool, nav_hidden)]
         /// The question the dock shows rather than a request (JSON, `{}` for none).
         #[qproperty(QString, question)]
         /// The open thread's composer around its text: the model control,
@@ -154,7 +157,8 @@ pub mod qobject {
         fn open_session(self: &Agents, id: &QString);
         #[qinvokable]
         fn close(self: &Agents);
-        /// Starts a thread (`mode`: "supervised" or "auto_edit") and opens it.
+        /// Starts a thread in `mode` (one of the agent's: "ask", "accept_edits",
+        /// "auto", "plan", "full") and opens it.
         #[qinvokable]
         fn start(self: &Agents, agent: &QString, folder_id: &QString, prompt: &QString, mode: &QString);
         /// Sends the composer's message; while the agent works it steers or
@@ -269,8 +273,8 @@ pub mod qobject {
         /// "send_now", "remove" or "edit" (with `text`) a queued message.
         #[qinvokable]
         fn queue(self: &Agents, op: &QString, id: &QString, text: &QString);
-        /// Implements a plan, asking before edits and commands
-        /// ("supervised") or before commands ("auto_edit").
+        /// Implements a plan in `mode`, any of the agent's modes but "plan"
+        /// ("": the one the folder remembers for the agent).
         #[qinvokable]
         fn implement(self: &Agents, item_id: &QString, mode: &QString);
         /// Picks an option of the shown ask (one past them: "Something else").
@@ -318,6 +322,9 @@ pub mod qobject {
         /// Hides or shows the details beside the transcript; remembered.
         #[qinvokable]
         fn hide_inspector(self: &Agents, hidden: bool);
+        /// Hides or shows the app's sidebar on the Agents page; remembered.
+        #[qinvokable]
+        fn hide_nav(self: &Agents, hidden: bool);
         /// The list shows "main", "archived" or "snoozed".
         #[qinvokable]
         fn show_shelf(self: &Agents, shelf: &QString);
@@ -705,6 +712,7 @@ pub struct AgentsRust {
     can_say_why: bool,
     list_hidden: bool,
     inspector_hidden: bool,
+    nav_hidden: bool,
     question: QString,
     composer: QString,
     popup: QString,
@@ -841,6 +849,7 @@ impl qobject::Agents {
         self.as_mut().set_can_say_why(view.can_say_why);
         self.as_mut().set_list_hidden(view.list_hidden);
         self.as_mut().set_inspector_hidden(view.inspector_hidden);
+        self.as_mut().set_nav_hidden(view.nav_hidden);
         self.as_mut().set_more(view.more);
         self.as_mut().set_loading(view.loading);
         self.as_mut().set_busy(view.busy);
@@ -1169,11 +1178,15 @@ impl qobject::Agents {
     }
 
     pub fn hide_list(&self, hidden: bool) {
-        agents::set_panels(Some(hidden), None);
+        agents::set_panels(Some(hidden), None, None);
     }
 
     pub fn hide_inspector(&self, hidden: bool) {
-        agents::set_panels(None, Some(hidden));
+        agents::set_panels(None, Some(hidden), None);
+    }
+
+    pub fn hide_nav(&self, hidden: bool) {
+        agents::set_panels(None, None, Some(hidden));
     }
 
     pub fn show_shelf(&self, shelf: &QString) {

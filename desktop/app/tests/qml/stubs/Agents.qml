@@ -16,6 +16,7 @@ QtObject {
     function copyText(key) { record("copy " + key); return true }
     function typed() { record("typed") }
     function composerFocus(focused) { record("focus " + focused) }
+    function composerEdited(text, cursor, typed) {}
     function answer(token, decision) { record("answer " + token + " " + decision) }
     function denyWithMessage(token, text) { record("deny " + token + " " + text) }
     function linkTarget(key, index) { return "" }

@@ -803,6 +803,7 @@ mod tests {
                 })
                 .collect(),
             phone_scripts: false,
+            last_modes: Vec::new(),
         }
     }
 

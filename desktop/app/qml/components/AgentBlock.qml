@@ -138,13 +138,14 @@ Item {
                 x: -18
                 width: 16
                 text: block.markerText
+                role: "prose"
                 horizontalAlignment: Text.AlignRight
                 muted: true
             }
             Rectangle {
                 visible: block.marker === "todo" || block.marker === "done"
                 x: -19
-                y: 4
+                y: Math.round((text.lineHeight - height) / 2)
                 width: 13
                 height: 13
                 radius: 3
@@ -171,12 +172,13 @@ Item {
                 color: block.quote > 0 ? Theme.surfaceContentVariant : Theme.surfaceContent
                 linkColor: Theme.accent
                 font.family: Theme.fontUi
-                font.pixelSize: block.heading
-                    ? (block.level <= 1 ? Theme.typography.title.size + 2
-                       : block.level === 2 ? Theme.typography.title.size : Theme.typography.body.size)
-                    : Theme.typography.body.size
-                font.weight: block.heading ? 650 : Theme.typography.body.weight
-                lineHeight: 1.25
+                // The answer reads as prose, a size up from the app's text;
+                // headings stand above it.
+                font.pixelSize: block.heading && block.level <= 1 ? Theme.typography.prose.size + 2
+                    : Theme.typography.prose.size
+                font.weight: block.heading ? 650 : Theme.typography.prose.weight
+                lineHeightMode: Text.FixedHeight
+                lineHeight: Math.round(font.pixelSize * (block.heading ? 1.3 : Theme.typography.prose.lineHeight))
                 onLinkActivated: (link) => block.linkActivated(block.key, parseInt(link))
                 HoverHandler {
                     cursorShape: text.hoveredLink.length > 0 ? Qt.PointingHandCursor : Qt.ArrowCursor

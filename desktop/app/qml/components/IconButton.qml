@@ -94,7 +94,7 @@ FocusScope {
                 anchors.verticalCenter: parent.verticalCenter
                 text: button.text
                 role: "label"
-                size: 13
+                size: Theme.typography.label.size + 1
                 color: button.tonal ? Theme.secondaryContainerContent : Theme.surfaceContent
             }
         }

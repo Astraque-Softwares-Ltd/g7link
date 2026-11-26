@@ -3,11 +3,14 @@ import QtQuick
 import app.g7link
 
 // The request the agent waits on, above the composer: one at a time ("1 of
-// 3"), the folder beside the command or the change, the agent's reason as
-// the agent's, Deny then Allow. With words in the composer, Allow is an
-// outline and its shortcut is off ("Deny and send" is the composer's). A
-// request that arrived while you were typing waits, its buttons off, until
-// you pause. Its content scrolls inside; the page caps its height.
+// 3"), the agent's reason first and as the agent's words, then the folder
+// beside the command or the change, Deny then Allow. With words in the
+// composer, Allow is an outline and its shortcut is off ("Deny and send" is
+// the composer's). A request that arrived while you were typing waits, its
+// buttons off, until you pause. The reason and the command scroll inside
+// between the title and the buttons, which stay put; the page caps its height.
+// When Codex can't refuse just this step, the line by the buttons says Deny
+// stops the turn.
 Item {
     id: dock
     // The request (`Agents.ask`, parsed).
@@ -28,11 +31,27 @@ Item {
     signal stop
 
     readonly property bool held: ask.held === true
+    // Codex can't refuse just this step: Deny stops its turn, and says so.
+    readonly property bool denyStops: ask.deny_stops === true
     readonly property bool isCommand: (ask.command || "").length > 0
     readonly property bool isDiff: (ask.diffDoc || "").length > 0
     readonly property string title: ask.kind === "command" ? qsTr("%1 wants to run a command").arg(agentName)
         : ask.kind === "edit" ? qsTr("%1 wants to change %2").arg(agentName).arg(ask.path || ask.title || "")
         : (ask.title || "")
+    // "Claude says:" in semibold, then the reason as written: escaped, never
+    // markup, its line breaks kept.
+    readonly property string reasonMarkup: {
+        const reason = dock.ask.reason || ""
+        if (reason.length === 0)
+            return ""
+        const full = qsTr("%1 says: %2").arg(dock.agentName).arg(reason)
+        const at = Math.max(0, full.lastIndexOf(reason))
+        return "<b>" + dock.escaped(full.slice(0, at)) + "</b>" + dock.escaped(full.slice(at))
+    }
+    function escaped(text) {
+        return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;")
+            .replace(/\r?\n/g, "<br>")
+    }
     readonly property string asked: {
         const minutes = Math.max(0, Math.floor((now - (ask.created_ms || now)) / 60000))
         return minutes < 1 ? qsTr("Asked just now") : qsTr("Asked %n min ago", "", minutes)
@@ -48,6 +67,9 @@ Item {
     signal overflowRequested(real x, real y)
 
     implicitHeight: card.implicitHeight
+    // The least the page may give it: the title, the buttons and a few lines
+    // between, however short the window.
+    readonly property real floorHeight: header.height + buttons.height + 38 + 60
 
     Rectangle {
         id: card
@@ -128,7 +150,29 @@ Item {
                 id: content
                 width: scroll.width
                 spacing: 10
+                // The agent's own words, set apart from G7's, read before the command.
+                Row {
+                    objectName: "reason"
+                    visible: dock.reasonMarkup.length > 0
+                    width: parent.width
+                    spacing: 8
+                    Rectangle {
+                        width: 2
+                        height: reason.height
+                        color: Theme.outlineVariant
+                    }
+                    Txt {
+                        id: reason
+                        width: parent.width - 10
+                        text: dock.reasonMarkup
+                        // Built above from escaped text.
+                        textFormat: Text.StyledText
+                        wrapMode: Text.Wrap
+                        elide: Text.ElideNone
+                    }
+                }
                 Rectangle {
+                    objectName: "request"
                     visible: dock.isCommand || dock.isDiff
                     width: parent.width
                     height: visible ? inner.height + 16 : 0
@@ -176,26 +220,6 @@ Item {
                         }
                     }
                 }
-                // The agent's own words, set apart from G7's.
-                Row {
-                    visible: (dock.ask.reason || "").length > 0
-                    width: parent.width
-                    spacing: 8
-                    Rectangle {
-                        width: 2
-                        height: reason.height
-                        color: Theme.outlineVariant
-                    }
-                    Txt {
-                        id: reason
-                        width: parent.width - 10
-                        text: qsTr("%1 says: %2").arg(dock.agentName).arg(dock.ask.reason || "")
-                        role: "bodySmall"
-                        muted: true
-                        wrapMode: Text.WordWrap
-                        elide: Text.ElideNone
-                    }
-                }
                 Txt {
                     visible: dock.ask.truncated === true
                     width: parent.width
@@ -228,6 +252,7 @@ Item {
                     variant: "outline"
                     size: "sm"
                     text: qsTr("Deny")
+                    Accessible.description: dock.denyStops ? qsTr("Deny stops this turn") : ""
                     enabled: !dock.held && !dock.busy
                     onClicked: dock.deny()
                 }
@@ -253,16 +278,18 @@ Item {
                 anchors.verticalCenter: parent.verticalCenter
                 spacing: 6
                 Icon {
-                    visible: dock.held
+                    visible: dock.held || dock.denyStops
                     anchors.verticalCenter: parent.verticalCenter
                     width: 13
                     height: 13
-                    path: Icons.keyboard
-                    color: AgentPalette.needsYou
+                    path: dock.held ? Icons.keyboard : Icons.stopSquare
+                    color: dock.held ? AgentPalette.needsYou : Theme.surfaceContentVariant
                 }
                 Txt {
+                    objectName: "denyNote"
                     anchors.verticalCenter: parent.verticalCenter
-                    text: dock.held ? qsTr("Arrived while you were typing") : dock.asked
+                    text: dock.held ? qsTr("Arrived while you were typing")
+                        : dock.denyStops ? qsTr("Deny stops this turn") : dock.asked
                     role: "caption"
                     color: dock.held ? AgentPalette.needsYou : Theme.surfaceContentVariant
                 }

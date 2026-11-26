@@ -142,12 +142,13 @@ Item {
             }
             Row {
                 spacing: 1
+                // In the mode the folder remembers for the agent; the menu has the others.
                 Button {
                     objectName: "implement"
                     size: "sm"
                     text: qsTr("Implement")
                     enabled: !card.running
-                    onClicked: card.implement(card.itemId, "supervised")
+                    onClicked: card.implement(card.itemId, "")
                 }
                 IconButton {
                     id: modeButton

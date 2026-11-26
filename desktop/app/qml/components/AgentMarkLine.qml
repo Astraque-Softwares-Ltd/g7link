@@ -3,12 +3,15 @@ import QtQuick
 import app.g7link
 
 // A line under a tool about its request: waiting for you, answered on a
-// phone, allowed by a rule, expired or cancelled.
+// phone, allowed by a rule, approved by the agent's own reviewer, expired or
+// cancelled.
 Item {
     id: mark
     required property int depth
     required property string markKind
     required property string by
+    // "Claude" or "Codex": whose reviewer approved a step.
+    property string agentName
 
     // A waiting request was clicked: the page brings its dock into view.
     signal waitingClicked
@@ -21,6 +24,7 @@ Item {
         case "allowed": return by.length > 0 ? qsTr("Allowed on %1").arg(by) : qsTr("Allowed")
         case "denied": return by.length > 0 ? qsTr("Denied on %1").arg(by) : qsTr("Denied")
         case "rule": return qsTr("Allowed by your rule for this thread")
+        case "reviewed": return qsTr("Approved by %1's reviewer").arg(agentName)
         case "expired": return qsTr("Expired")
         case "cancelled": return qsTr("Cancelled")
         default: return ""
@@ -29,7 +33,8 @@ Item {
     readonly property string icon: {
         switch (markKind) {
         case "allowed": return Icons.check
-        case "rule": return Icons.shield
+        case "rule":
+        case "reviewed": return Icons.shield
         case "denied":
         case "cancelled": return Icons.close
         default: return Icons.history

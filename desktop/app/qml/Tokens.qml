@@ -463,19 +463,19 @@ QtObject {
           "typography": {
             "body": {
               "lineHeight": 1.4,
-              "size": 13,
+              "size": 14,
               "tracking": 0,
               "weight": 400
             },
             "bodySmall": {
               "lineHeight": 1.4,
-              "size": 12,
+              "size": 13,
               "tracking": 0,
               "weight": 400
             },
             "caption": {
               "lineHeight": 1.4,
-              "size": 11,
+              "size": 12,
               "tracking": 0,
               "weight": 400
             },
@@ -505,13 +505,19 @@ QtObject {
             },
             "label": {
               "lineHeight": 1.4,
-              "size": 12,
+              "size": 13,
               "tracking": 0,
               "weight": 500
             },
+            "prose": {
+              "lineHeight": 1.55,
+              "size": 15,
+              "tracking": 0,
+              "weight": 400
+            },
             "title": {
               "lineHeight": 1.4,
-              "size": 13,
+              "size": 14,
               "tracking": 0,
               "weight": 500
             }

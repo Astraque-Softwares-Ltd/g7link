@@ -38,8 +38,8 @@ use g7link_core::{
     AgentDraft, AgentDraftSaved, AgentEvent, AgentExport, AgentFailure, AgentFileHit, AgentFiles, AgentImage,
     AgentItem, AgentItemQuestion, AgentItems, AgentLimit, AgentMcp, AgentModel, AgentPlanStep, AgentQuestion,
     AgentQuestionAsk, AgentQuestionOption, AgentQuestioned, AgentQueued, AgentReply, AgentRequest,
-    AgentSession, AgentSessionItems, AgentSessionLimit, AgentThread, AgentTool, AgentTurn, DeviceId, Node,
-    QueueAction, agent,
+    AgentSession, AgentSessionItems, AgentSessionLimit, AgentThread, AgentTool, AgentToolReview, AgentTurn,
+    DeviceId, Node, QueueAction, agent,
 };
 use g7link_core::{
     AgentCut, AgentFolderLast, AgentImportJob, AgentImportProgress, AgentPatchPage, AgentPort, AgentPresence,
@@ -266,6 +266,7 @@ impl Entry {
             },
             output: t.output.as_deref().unwrap_or_default(),
             by_rule: t.by_rule,
+            reviewed: t.review.as_ref().is_some_and(|r| r.status == api::ReviewStatus::Approved),
         });
         Some(render::ItemIn {
             seq: item.seq,
@@ -1523,34 +1524,50 @@ pub fn start() {
     });
 }
 
-/// The page's side panels the user closed: the thread list and the
-/// details beside the transcript.
+/// The page's side panels the user closed: the thread list, the details
+/// beside the transcript, and the app's own sidebar while on this page.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 struct Panels {
     #[serde(default)]
     list_hidden: bool,
     #[serde(default)]
     inspector_hidden: bool,
+    #[serde(default)]
+    nav_hidden: bool,
 }
 
 impl Panels {
     /// The panels when the app starts: the thread list always shows (hiding
-    /// it lasts until the app quits); the details are as the user left them.
+    /// it lasts until the app quits); the details and the sidebar are as the
+    /// user left them.
     fn at_start(saved: Panels) -> Panels {
         Panels { list_hidden: false, ..saved }
+    }
+
+    /// These panels with the given ones changed (`None` leaves one as it is).
+    fn with(
+        self,
+        list_hidden: Option<bool>,
+        inspector_hidden: Option<bool>,
+        nav_hidden: Option<bool>,
+    ) -> Panels {
+        Panels {
+            list_hidden: list_hidden.unwrap_or(self.list_hidden),
+            inspector_hidden: inspector_hidden.unwrap_or(self.inspector_hidden),
+            nav_hidden: nav_hidden.unwrap_or(self.nav_hidden),
+        }
     }
 }
 
 const PANELS_FILE: &str = "agents-panels.json";
 
-/// The user shows or hides the thread list or the details (`None` leaves
-/// one as it is). Saved at once, whole or not at all.
-pub fn set_panels(list_hidden: Option<bool>, inspector_hidden: Option<bool>) {
+/// The user shows or hides the thread list, the details or the app's
+/// sidebar (`None` leaves one as it is). Saved at once, whole or not at all.
+pub fn set_panels(list_hidden: Option<bool>, inspector_hidden: Option<bool>, nav_hidden: Option<bool>) {
     {
         let mut s = lock();
         let was = s.panels;
-        s.panels.list_hidden = list_hidden.unwrap_or(was.list_hidden);
-        s.panels.inspector_hidden = inspector_hidden.unwrap_or(was.inspector_hidden);
+        s.panels = was.with(list_hidden, inspector_hidden, nav_hidden);
         s.panels_set = true;
         if s.panels == was {
             return;
@@ -1615,8 +1632,6 @@ fn word<T: Serialize>(value: &T) -> String {
     serde_json::to_value(value).ok().and_then(|v| v.as_str().map(str::to_owned)).unwrap_or_default()
 }
 
-/// What phones may start: every agent, the folders that exist (id and
-/// label only), and supervised threads only.
 /// A folder's newest thread as phones get it (§15); `None` when it can't be sent.
 fn wire_last(l: control::FolderLast) -> Option<AgentFolderLast> {
     AgentFolderLast {
@@ -1662,12 +1677,18 @@ pub(crate) fn catalog_folder(f: &Folder, last: Option<AgentFolderLast>) -> Agent
         used: f.used_ms,
         repo: f.repo,
         last,
+        modes: f
+            .last_modes
+            .iter()
+            .map(|m| g7link_core::AgentFolderMode { agent: m.agent.as_str().to_owned(), mode: word(&m.mode) })
+            .collect(),
     }
 }
 
-/// The catalog phones get: the agents, and the folders on this PC now, the
-/// most recently used first and at most the wire's limit, each with its
-/// newest thread (`lasts`, from [`wire_lasts`]).
+/// The catalog phones get: the agents with the modes each offers (a phone
+/// may choose any), and the folders on this PC now, the most recently used
+/// first and at most the wire's limit, each with its newest thread (`lasts`,
+/// from [`wire_lasts`]) and the mode each agent last ran there.
 pub(crate) fn catalog(
     agents: &[AgentInfo],
     folders: &[Folder],
@@ -1686,6 +1707,7 @@ pub(crate) fn catalog(
                 models: a.models.iter().take(agent::MAX_MODELS).map(wire_model).collect(),
                 can: a.can.iter().map(word).collect(),
                 limits: a.limits.iter().take(agent::MAX_LIMITS).map(wire_limit).collect(),
+                modes: a.modes.iter().take(agent::MAX_MODES).map(word).collect(),
             })
             .collect(),
         folders: new_thread::by_use(folders)
@@ -1694,7 +1716,6 @@ pub(crate) fn catalog(
             .take(agent::MAX_FOLDERS)
             .map(|f| catalog_folder(f, lasts.get(&f.id).cloned()))
             .collect(),
-        modes: vec![agent::mode::SUPERVISED.to_owned()],
         // Each phone's own `agent_push`: the core sets it for the phone it sends to.
         push: false,
         // Each phone's own `agent_folders`, likewise.
@@ -1863,6 +1884,11 @@ pub(crate) fn item(item: &Item) -> AgentItem {
             class: t.class.as_ref().map(word),
             path: t.path.clone(),
             by_rule: t.by_rule,
+            review: t.review.as_ref().map(|r| AgentToolReview {
+                status: word(&r.status),
+                risk: r.risk.clone(),
+                rationale: r.rationale.clone(),
+            }),
         }),
         turn: item.turn,
         phase: item.phase.as_ref().map(word),
@@ -1929,6 +1955,7 @@ pub(crate) fn ask(approval: &Approval, info: Option<&ThreadInfo>) -> AgentAsk {
         truncated: approval.truncated,
         expires: approval.expires_ms,
         item: approval.item_id.clone(),
+        deny_stops: approval.deny_stops,
     }
 }
 
@@ -2159,6 +2186,7 @@ fn approval_json(a: &Approval, position: usize, total: usize, held: bool, palett
         "reason": a.reason.clone().unwrap_or_default(),
         "truncated": a.truncated,
         "can_allow_thread": a.can_allow_thread,
+        "deny_stops": a.deny_stops,
         "created_ms": a.created_ms,
         "position": position,
         "total": total,
@@ -3060,8 +3088,8 @@ async fn run_request(from: DeviceId, request: AgentRequest) -> Result<AgentReply
             key,
         } => {
             let agent_id = AgentId::parse(&agent_id).ok_or(AgentFailure::NotFound)?;
-            // A phone starts supervised, or in plan mode; never anything else.
-            let mode = if mode == agent::mode::PLAN { Mode::Plan } else { Mode::Supervised };
+            // Any mode the agent offers (plan §2.3); the host refuses one it doesn't.
+            let mode = control::parse_mode(&mode).ok_or(AgentFailure::BadMessage)?;
             let mut params = ThreadStartParams::new(agent_id, folder, prompt, mode, origin());
             params.model = model;
             params.effort = effort;
@@ -3102,9 +3130,7 @@ async fn run_request(from: DeviceId, request: AgentRequest) -> Result<AgentReply
         AgentRequest::Configure { thread: thread_id, model, effort, mode, custom_model } => {
             let mode = match mode.as_deref() {
                 None => None,
-                Some(agent::mode::PLAN) => Some(Mode::Plan),
-                Some(agent::mode::SUPERVISED) => Some(Mode::Supervised),
-                Some(_) => return Err(AgentFailure::Denied),
+                Some(word) => Some(control::parse_mode(word).ok_or(AgentFailure::BadMessage)?),
             };
             let params =
                 ThreadConfigureParams { thread_id, model, effort, mode, custom_model, by: Some(origin()) };
@@ -3140,10 +3166,15 @@ async fn run_request(from: DeviceId, request: AgentRequest) -> Result<AgentReply
             client.question_dismiss(token, origin()).await.map_err(fail)?;
             AgentReply::Ok
         }
-        AgentRequest::Implement { thread: thread_id, item } => {
-            // From a phone always supervised.
-            let params =
-                PlanImplementParams { thread_id, item_id: item, mode: Mode::Supervised, by: origin() };
+        AgentRequest::Implement { thread: thread_id, item, mode } => {
+            // In the mode the phone chose, or the one the folder remembers for the agent.
+            let mode = match mode.as_deref() {
+                Some(word) => {
+                    control::parse_mode(word).filter(|m| *m != Mode::Plan).ok_or(AgentFailure::BadMessage)?
+                }
+                None => implement_mode(&lock(), &thread_id),
+            };
+            let params = PlanImplementParams { thread_id, item_id: item, mode, by: origin() };
             client.plan_implement(params).await.map_err(fail)?;
             AgentReply::Ok
         }
@@ -3247,7 +3278,8 @@ async fn run_request(from: DeviceId, request: AgentRequest) -> Result<AgentReply
         }
         AgentRequest::SessionWatch { session: None } => AgentReply::Ok,
         AgentRequest::SessionContinue { session: session_id } => {
-            let params = SessionContinueParams { session_id, mode: Mode::Supervised, origin: origin() };
+            let mode = continue_mode(&lock(), &session_id);
+            let params = SessionContinueParams { session_id, mode, origin: origin() };
             let info = client.session_continue(params).await.map_err(fail)?;
             bridge().remember(&info);
             lists_changed();
@@ -3463,6 +3495,8 @@ pub(crate) struct View {
     pub list_hidden: bool,
     /// The user hid the details beside the transcript.
     pub inspector_hidden: bool,
+    /// The user hid the app's sidebar while on this page.
+    pub nav_hidden: bool,
     /// The question the dock shows, when it shows one rather than a request
     /// (`{}` for none).
     pub question: String,
@@ -3594,6 +3628,7 @@ pub(crate) fn view() -> View {
         can_say_why: s.says_why && open.is_some_and(|o| o.kind == OpenKind::Thread),
         list_hidden: s.panels.list_hidden,
         inspector_hidden: s.panels.inspector_hidden,
+        nav_hidden: s.panels.nav_hidden,
         question: question.to_string(),
         composer: composer.to_string(),
         popup: open.map_or_else(|| json!({}), |o| popup_json(&s, o)).to_string(),
@@ -3712,8 +3747,16 @@ fn composer_json(s: &BridgeState, open: &OpenView, cameras: &[(usize, DeviceId, 
         .collect();
     json!({
         "control": s.control,
-        "picker": agent
-            .map_or_else(|| json!({}), |a| control::picker_json(a, &setting, info.answered_model.as_deref())),
+        "picker": agent.map_or_else(
+            || json!({}),
+            |a| {
+                let mut picker = control::picker_json(a, &setting, info.answered_model.as_deref());
+                // What Implement runs in unless another mode is chosen.
+                picker["implementMode"] = json!(control::mode_word(implement_mode(s, &info.id)));
+                picker["implementModes"] = json!(control::modes_json(a, &setting, implement_mode(s, &info.id), false));
+                picker
+            },
+        ),
         "canSteer": agent.is_some_and(|a| a.can(Can::Steer)),
         "images": takes_images,
         // "Take a photo with <phone>", and the phone a photo is awaited from.
@@ -4527,12 +4570,11 @@ pub(crate) fn new_thread_params(
 ) -> ThreadStartParams {
     let s = lock();
     let info = s.agents.iter().find(|a| a.id == agent);
-    let plan = s.control && info.is_some_and(|a| a.can(Can::Plan));
-    let mode = match mode {
-        "auto_edit" => Mode::AutoEdit,
-        "plan" if plan => Mode::Plan,
-        _ => Mode::Supervised,
-    };
+    // A mode the agent offers (Plan with a host that plans), else ask first.
+    let mode = info
+        .and_then(|a| control::mode_of(mode, a))
+        .filter(|m| s.control || *m != Mode::Plan)
+        .unwrap_or(Mode::ask_first());
     let mut params = ThreadStartParams::new(agent, folder_id, prompt, mode, Origin::launcher());
     if s.control {
         let setting = new_form_setting(&s, agent, &params.folder_id);
@@ -5451,6 +5493,35 @@ async fn read_thumb(id: String) {
 
 // ---- Model, effort, mode ----
 
+/// The mode a new thread of `agent` in `folder_id` starts in (plan §2.2):
+/// the one the folder remembers for that agent while it still offers it
+/// (and, for Claude's Auto, while `model` can run it), else `ask`.
+fn folder_mode(s: &BridgeState, folder_id: Option<&str>, agent: AgentId, model: Option<&str>) -> Mode {
+    let folder = folder_id.and_then(|id| s.folders.iter().find(|f| f.id == id));
+    s.agents
+        .iter()
+        .find(|a| a.id == agent)
+        .map_or(Mode::ask_first(), |a| control::remembered_mode(folder, a, model))
+}
+
+/// What a thread's plan is implemented in when no mode is named: the mode
+/// its folder remembers for its agent, else `ask`.
+fn implement_mode(s: &BridgeState, thread_id: &str) -> Mode {
+    s.threads
+        .get(thread_id)
+        .map_or(Mode::ask_first(), |t| folder_mode(s, Some(&t.folder_id), t.agent, t.model.as_deref()))
+}
+
+/// What "Continue here" starts a session's thread in: the mode its folder
+/// remembers for the session's agent, else `ask` (a session outside every
+/// folder, or one not listed).
+fn continue_mode(s: &BridgeState, session_id: &str) -> Mode {
+    s.sessions
+        .iter()
+        .find(|x| x.id == session_id)
+        .map_or(Mode::ask_first(), |x| folder_mode(s, x.folder_id.as_deref(), x.agent, None))
+}
+
 /// The new-thread form's setting for `agent` in `folder`: what the user
 /// picked there, else what they last chose for them.
 fn new_form_setting(s: &BridgeState, agent: AgentId, folder: &str) -> control::Setting {
@@ -5506,11 +5577,9 @@ fn pick_quick(index: &str) {
         let mut s = lock();
         let folder = s.new_form.folder.clone();
         let Some(pick) = new_thread::picks(&s, &folder).into_iter().nth(index) else { return };
-        let setting = control::Setting {
-            model: pick.model.clone(),
-            effort: pick.effort.clone(),
-            mode: s.new_form.setting.mode,
-        };
+        // The mode is read again for another agent (the folder's for it).
+        let mode = s.new_form.setting.mode.filter(|_| s.new_form.agent == Some(pick.agent));
+        let setting = control::Setting { model: pick.model.clone(), effort: pick.effort.clone(), mode };
         if s.new_form.agent == Some(pick.agent) && s.new_form.setting == setting {
             return;
         }
@@ -5665,11 +5734,22 @@ pub fn queue(op: &str, id: String, text: String) {
     );
 }
 
-/// Implements the open thread's plan `item_id`, asking before edits and
-/// commands (`supervised`) or before commands only (`auto_edit`).
+/// Implements the open thread's plan `item_id` in `mode`, any of the
+/// agent's modes but `plan` ("": the one the folder remembers for it).
 pub fn implement(item_id: String, mode: &str) {
     let Some(thread_id) = open_id(OpenKind::Thread) else { return };
-    let mode = if mode == "auto_edit" { Mode::AutoEdit } else { Mode::Supervised };
+    let mode = {
+        let s = lock();
+        if mode.is_empty() {
+            implement_mode(&s, &thread_id)
+        } else {
+            let agent = s.threads.get(&thread_id).and_then(|t| s.agents.iter().find(|a| a.id == t.agent));
+            match agent.and_then(|a| control::mode_of(mode, a)).filter(|m| *m != Mode::Plan) {
+                Some(mode) => mode,
+                None => return,
+            }
+        }
+    };
     page_request(
         Request::Implement,
         move |client| async move {
@@ -5975,16 +6055,19 @@ pub fn delete_thread(id: String, remove_worktree: bool) {
 
 /// Makes a session started outside G7 a thread here, and opens it.
 pub fn continue_session(id: String) {
-    let (source, agent) = lock()
-        .sessions
-        .iter()
-        .find(|s| s.id == id)
-        .map_or((SessionSource::Other, AgentId::Claude), |s| (s.source, s.agent));
+    let (source, agent, mode) = {
+        let s = lock();
+        let (source, agent) = s
+            .sessions
+            .iter()
+            .find(|x| x.id == id)
+            .map_or((SessionSource::Other, AgentId::Claude), |x| (x.source, x.agent));
+        (source, agent, continue_mode(&s, &id))
+    };
     page_request(
         Request::Continue(source, agent),
         move |client| async move {
-            let params =
-                SessionContinueParams { session_id: id, mode: Mode::Supervised, origin: Origin::launcher() };
+            let params = SessionContinueParams { session_id: id, mode, origin: Origin::launcher() };
             client.session_continue(params).await
         },
         |info: ThreadInfo| {
@@ -6180,6 +6263,7 @@ mod tests {
             follow_remote: false,
             scripts: Vec::new(),
             phone_scripts: false,
+            last_modes: Vec::new(),
         }
     }
 
@@ -6191,7 +6275,7 @@ mod tests {
             folder_label: "g7linux".into(),
             title: "Fix the build".into(),
             state: State::Waiting,
-            mode: Mode::Supervised,
+            mode: Mode::Ask,
             origin,
             created_ms: 1,
             updated_ms: 2,
@@ -6272,6 +6356,7 @@ mod tests {
             class: None,
             path: None,
             by_rule: false,
+            review: None,
         }
     }
 
@@ -6301,7 +6386,7 @@ mod tests {
         );
         assert_eq!(wire.folders.len(), 1, "a folder that's gone is left out");
         assert_eq!(wire.folders[0].label, "g7linux");
-        assert_eq!(wire.modes, vec!["supervised".to_owned()]);
+        assert!(wire.agents.iter().all(|a| a.modes.is_empty()), "no mode before a probe");
         assert_eq!(wire.agents[0].id, "claude");
         assert!(wire.agents[0].signed_in && !wire.agents[1].installed);
         assert_eq!(wire.agents[1].login_hint, "codex login");
@@ -6434,7 +6519,7 @@ mod tests {
         let wire = thread(&mine, Some(&phone));
         assert_eq!(
             (wire.state.as_str(), wire.mode.as_str(), wire.agent.as_str()),
-            ("waiting", "supervised", "codex")
+            ("waiting", "ask", "codex")
         );
         assert_eq!((wire.folder.as_str(), wire.asks, wire.updated), ("g7linux", 1, 2));
         assert_eq!(wire.error_code.as_deref(), Some("usage_limit"));
@@ -6606,6 +6691,7 @@ mod tests {
             created_ms: 1,
             expires_ms: 7_200_001,
             item_id: Some("toolu_02".into()),
+            deny_stops: false,
         };
         let thread_info = info(Origin::launcher());
         let wire = ask(&approval, Some(&thread_info));
@@ -6647,6 +6733,7 @@ mod tests {
             created_ms,
             expires_ms: created_ms + 7_200_000,
             item_id: Some(format!("toolu_{token}")),
+            deny_stops: false,
         }
     }
 
@@ -6809,6 +6896,7 @@ mod tests {
             images: true,
             short: true,
             exact: None,
+            auto: false,
         }];
         claude.limits = vec![api::Limit {
             window: "five_hour".into(),
@@ -7562,24 +7650,114 @@ mod tests {
     }
 
     #[test]
+    fn implement_and_continue_here_use_the_mode_the_folder_remembers_for_the_agent() {
+        let ready = |id: AgentId, modes: Vec<Mode>| {
+            let mut a = AgentInfo::missing(id);
+            a.installed = true;
+            a.signed_in = true;
+            a.modes = modes;
+            a
+        };
+        let mut here = folder("f0123456789ab", true);
+        here.last_modes = vec![
+            api::FolderMode { agent: AgentId::Claude, mode: Mode::Full },
+            api::FolderMode { agent: AgentId::Codex, mode: Mode::Auto },
+        ];
+        let mut s = BridgeState {
+            agents: vec![
+                ready(AgentId::Claude, vec![Mode::Ask, Mode::AcceptEdits, Mode::Plan, Mode::Full]),
+                ready(AgentId::Codex, vec![Mode::Ask, Mode::Auto, Mode::Full, Mode::Plan]),
+            ],
+            folders: vec![here],
+            ..BridgeState::default()
+        };
+        let thread = info(Origin::launcher());
+        s.threads.insert(thread.id.clone(), thread.clone());
+        assert_eq!(implement_mode(&s, &thread.id), Mode::Auto, "Codex's mode there");
+        assert_eq!(implement_mode(&s, "f".repeat(32).as_str()), Mode::Ask, "a thread not known");
+        let session = a_session(SessionState::Idle, false);
+        s.sessions = vec![session.clone()];
+        assert_eq!(continue_mode(&s, &session.id), Mode::Full, "Claude's mode there");
+        let mut outside = session.clone();
+        outside.id = format!("sc{}", "cd".repeat(16));
+        outside.folder_id = None;
+        s.sessions.push(outside.clone());
+        assert_eq!(continue_mode(&s, &outside.id), Mode::Ask, "outside every folder: ask first");
+        s.folders[0].last_modes = vec![api::FolderMode { agent: AgentId::Claude, mode: Mode::Plan }];
+        assert_eq!(continue_mode(&s, &session.id), Mode::Ask, "never Plan");
+    }
+
+    #[test]
+    fn a_reviewed_step_and_a_deny_that_stops_reach_phones_and_the_page() {
+        let mut tool = a_tool("Bash", "Run command", "curl -sI https://example.com", ToolStatus::Ok);
+        tool.review = Some(api::ToolReview {
+            status: api::ReviewStatus::Approved,
+            risk: Some("low".into()),
+            rationale: Some("Asked for.".into()),
+        });
+        let step = Item { tool: Some(tool), ..Item::new(4, "exec-1", ItemKind::Tool, 1) };
+        let wire = item(&step).tool.unwrap().review.unwrap();
+        assert_eq!(
+            (wire.status.as_str(), wire.risk.as_deref(), wire.rationale.as_deref()),
+            ("approved", Some("low"), Some("Asked for."))
+        );
+        let entry = Entry::from_item(&step);
+        assert!(entry.item_in().unwrap().tool.unwrap().reviewed, "the timeline marks it");
+        let mut denied = step.clone();
+        denied.tool.as_mut().unwrap().review.as_mut().unwrap().status = api::ReviewStatus::Denied;
+        assert!(!Entry::from_item(&denied).item_in().unwrap().tool.unwrap().reviewed);
+
+        let mut approval = command_ask("t1", "curl -sI https://example.com", 1);
+        approval.deny_stops = true;
+        assert!(ask(&approval, None).deny_stops);
+        assert_eq!(approval_json(&approval, 1, 1, false, &CodePalette::default())["deny_stops"], true);
+    }
+
+    #[test]
     fn the_panels_are_remembered_as_the_user_left_them() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(PANELS_FILE);
-        assert_eq!(crate::atomic_file::read_json::<Panels>(&path), Panels::default(), "both shown at first");
-        let panels = Panels { list_hidden: true, inspector_hidden: false };
+        assert_eq!(crate::atomic_file::read_json::<Panels>(&path), Panels::default(), "all shown at first");
+        let panels = Panels { list_hidden: true, inspector_hidden: false, nav_hidden: true };
         crate::atomic_file::write_json(&path, &panels).unwrap();
         assert_eq!(crate::atomic_file::read_json::<Panels>(&path), panels);
         std::fs::write(&path, br#"{"inspector_hidden":true}"#).unwrap();
         let read = crate::atomic_file::read_json::<Panels>(&path);
-        assert_eq!(read, Panels { list_hidden: false, inspector_hidden: true }, "a missing field is shown");
+        let shown = Panels { inspector_hidden: true, ..Panels::default() };
+        assert_eq!(read, shown, "a missing field is shown");
     }
 
     #[test]
-    fn the_thread_list_shows_at_every_start_and_the_details_stay_as_left() {
-        let saved = Panels { list_hidden: true, inspector_hidden: true };
-        assert_eq!(Panels::at_start(saved), Panels { list_hidden: false, inspector_hidden: true });
-        let saved = Panels { list_hidden: true, inspector_hidden: false };
+    fn a_panels_file_from_before_the_sidebar_could_hide_keeps_the_sidebar() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(PANELS_FILE);
+        std::fs::write(&path, br#"{"list_hidden":false,"inspector_hidden":true}"#).unwrap();
+        let read = crate::atomic_file::read_json::<Panels>(&path);
+        assert_eq!(read, Panels { inspector_hidden: true, ..Panels::default() });
+        assert!(!read.nav_hidden, "the sidebar shows");
+        std::fs::write(&path, br#"{"list_hidden":false,"inspector_hidden":false,"nav_hidden":true}"#)
+            .unwrap();
+        assert!(crate::atomic_file::read_json::<Panels>(&path).nav_hidden);
+    }
+
+    #[test]
+    fn the_thread_list_shows_at_every_start_and_the_details_and_sidebar_stay_as_left() {
+        let saved = Panels { list_hidden: true, inspector_hidden: true, nav_hidden: true };
+        assert_eq!(
+            Panels::at_start(saved),
+            Panels { list_hidden: false, inspector_hidden: true, nav_hidden: true }
+        );
+        let saved = Panels { list_hidden: true, ..Panels::default() };
         assert_eq!(Panels::at_start(saved), Panels::default());
+    }
+
+    #[test]
+    fn hiding_one_panel_leaves_the_others_as_they_are() {
+        let all = Panels { list_hidden: true, inspector_hidden: true, nav_hidden: false };
+        assert_eq!(all.with(None, None, Some(true)), Panels { nav_hidden: true, ..all });
+        assert_eq!(all.with(Some(false), None, None), Panels { list_hidden: false, ..all });
+        assert_eq!(all.with(None, Some(false), None), Panels { inspector_hidden: false, ..all });
+        assert_eq!(all.with(None, None, None), all);
     }
 
     #[test]
@@ -7604,6 +7782,7 @@ mod tests {
             images: true,
             short: true,
             exact: Some("Opus 5".into()),
+            auto: true,
         }];
         let mut old = folder("f000000000001", true);
         old.used_ms = 10;
