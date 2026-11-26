@@ -46,7 +46,7 @@ class AgentsHistoryStateTest {
         folder = "g7linux",
         title = title,
         state = state,
-        mode = AgentMode.SUPERVISED,
+        mode = AgentMode.ASK,
         fromPhone = false,
         updatedMs = updatedMs,
         asks = 0u,

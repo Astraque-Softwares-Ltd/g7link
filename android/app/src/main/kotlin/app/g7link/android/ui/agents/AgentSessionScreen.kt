@@ -456,7 +456,7 @@ fun AgentSessionScreen(
                     }
                     AgentRowsList(
                         rows = rows,
-                        context = remember(itemsById, session.folder) { RowsContext(itemsById, session.folder) },
+                        context = remember(itemsById, session.folder, agentName) { RowsContext(itemsById, session.folder, agentName = agentName) },
                         actions = actions,
                         earlier = open.moreBefore && open.items.isNotEmpty(),
                         loadingEarlier = loadingEarlier,
@@ -794,7 +794,7 @@ private fun ReplyBox(box: ReplyFooter.Box, draft: String, agentName: String, pcN
                 } else {
                     val canSend = box.canSend && !moving
                     G7IconButton(
-                        icon = G7Icons.send,
+                        icon = G7Icons.cornerDownLeft,
                         contentDescription = stringResource(R.string.agents_send),
                         onClick = actions.send,
                         enabled = canSend,
@@ -1150,9 +1150,10 @@ private fun RunningCommand(running: app.g7link.core.AgentItem?, folder: String) 
 
 /**
  * Idle or ended: Continue here when it can be (it becomes a thread on the PC,
- * started from this phone, which asks before each change; nothing runs until
- * something is sent), else why not: still open where it runs, a folder that
- * isn't an agent folder (added on the PC), or the agent can't run there now.
+ * started from this phone in the folder's last mode for the agent, else
+ * asking first; nothing runs until something is sent), else why not: still
+ * open where it runs, a folder that isn't an agent folder (added on the PC),
+ * or the agent can't run there now.
  * Still open in a terminal on a PC that can move it: "Move to G7" instead of
  * the Continue here it can't do yet, then how the move goes.
  */
@@ -1221,10 +1222,6 @@ private fun ContinueCard(
                 onClick = onContinue,
                 enabled = blocked == null && session.canContinue,
             )
-        }
-        // The thread either way asks before it changes something.
-        if (blocked == null || move.show == MoveShow.OFFER) {
-            Text(stringResource(R.string.agents_home_asks_first), style = MaterialTheme.typography.bodySmall, color = scheme.onSurfaceVariant)
         }
     }
 }

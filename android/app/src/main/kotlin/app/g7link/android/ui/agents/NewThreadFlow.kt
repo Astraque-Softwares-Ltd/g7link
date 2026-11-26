@@ -64,7 +64,6 @@ import app.g7link.android.ui.theme.G7Header
 import app.g7link.android.ui.theme.G7IconButton
 import app.g7link.android.ui.theme.G7Icons
 import app.g7link.android.ui.theme.G7PrimaryButton
-import app.g7link.android.ui.theme.G7RaisedButton
 import app.g7link.android.ui.theme.G7SectionLabel
 import app.g7link.android.ui.theme.g7Plate
 import app.g7link.android.ui.theme.g7StateFraction
@@ -80,7 +79,7 @@ import kotlinx.coroutines.launch
  * behind "N more recent folders", and the PC's Home and disks to browse.
  * What: the task with a picture and the mic, Run with (up to three quick
  * picks from what each folder's newest thread ran), "Other agent, model or
- * thinking…", Asks before, Start. Browse: [AgentPlacesPage]. Back goes from
+ * thinking…", Mode, Start. Browse: [AgentPlacesPage]. Back goes from
  * Browse and What to Where, and Where closes it, dropping the task as the
  * sheet did. The task, pictures, pick and mode stay while it's open.
  */
@@ -159,8 +158,9 @@ internal fun NewThreadFlow(
     val agentInfo = catalog.agents.firstOrNull { it.id == run?.agent }
     val agentReady = agentInfo != null && agentInfo.installed && agentInfo.signedIn
     val abilities = remember(agentInfo, catalog.canControl) { AgentControlFfi.abilities(agentInfo, catalog.canControl) }
-    val canPlan = abilities.can(AgentAbilities.PLAN)
-    val mode = NewThreadFlowModel.mode(state, canPlan)
+    val offered = AgentModes.offered(abilities)
+    // The folder's last mode for this agent (never Plan), else Ask; re-read as the agent or the folder changes.
+    val mode = NewThreadFlowModel.mode(state, run?.agent, offered, folder)
     val settings = run?.settings(mode) ?: ThreadSettings(mode = mode)
 
     // ---- Pictures: a share's, uploaded as the flow opens, and ones added here ----
@@ -230,6 +230,7 @@ internal fun NewThreadFlow(
     val pickers = rememberImagePickers(onPicked = addImages, onCameraFailed = { core.say(resources.getString(R.string.agents_image_failed)) })
     var imageSheet by remember { mutableStateOf(false) }
     var settingsOpen by remember { mutableStateOf(false) }
+    var modeOpen by remember { mutableStateOf(false) }
 
     // ---- Start ----
     var busy by remember { mutableStateOf(false) }
@@ -318,7 +319,7 @@ internal fun NewThreadFlow(
                     onAddPicture = { imageSheet = true },
                     onPick = { choice -> state = NewThreadFlowModel.pick(state, choice) },
                     onOther = { settingsOpen = true },
-                    onPlan = { on -> state = NewThreadFlowModel.plan(state, on) },
+                    onMode = { modeOpen = true },
                     onWhere = { state = state.copy(step = FlowStep.WHERE) },
                     error = error,
                     busy = busy,
@@ -341,6 +342,19 @@ internal fun NewThreadFlow(
                 agents.firstOrNull { it.id == agentId }?.let { agent -> state = NewThreadFlowModel.pick(state, AgentSettings.choiceOf(agent, picked)) }
             },
             onDismiss = { settingsOpen = false },
+        )
+    }
+    if (modeOpen && run != null) {
+        AgentModeSheet(
+            title = stringResource(R.string.agents_settings_mode),
+            modes = offered,
+            codex = run.agent == "codex",
+            selected = mode,
+            onPick = { picked ->
+                modeOpen = false
+                state = NewThreadFlowModel.pickMode(state, run.agent, picked)
+            },
+            onDismiss = { modeOpen = false },
         )
     }
     if (imageSheet) {
@@ -484,7 +498,7 @@ private fun FolderCard(folder: FolderUse, agents: List<PickAgent>, marked: Boole
     }
 }
 
-/** What: the folder, the task, Run with, Asks before and Start. */
+/** What: the folder, the task, Run with, Mode and Start. */
 @Composable
 private fun WhatPage(
     pcName: String,
@@ -506,7 +520,7 @@ private fun WhatPage(
     onAddPicture: () -> Unit,
     onPick: (RunChoice) -> Unit,
     onOther: () -> Unit,
-    onPlan: (Boolean) -> Unit,
+    onMode: () -> Unit,
     onWhere: () -> Unit,
     error: String?,
     busy: Boolean,
@@ -591,32 +605,23 @@ private fun WhatPage(
                     AgentChoiceRows(catalog.agents, selected = agentInfo?.id, onSelect = { id -> onPick(RunChoice(id)) })
                 }
             }
-            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                G7SectionLabel(stringResource(R.string.agents_asks_before))
-                val canPlan = abilities.can(AgentAbilities.PLAN)
-                Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    G7RaisedButton(
-                        label = stringResource(R.string.agents_asks_edits),
-                        selected = mode == ThreadMode.SUPERVISED,
-                        onClick = { onPlan(false) },
-                        modifier = Modifier.weight(1f),
-                    )
-                    if (canPlan) {
-                        G7RaisedButton(
-                            label = stringResource(R.string.agents_asks_plan),
-                            selected = mode == ThreadMode.PLAN,
-                            onClick = { onPlan(true) },
-                            modifier = Modifier.weight(1f),
-                        )
+            if (abilities.control) {
+                // The agent's mode, one row: a tap lists every mode it offers.
+                Column {
+                    G7SectionLabel(stringResource(R.string.agents_settings_mode))
+                    val codex = agentInfo?.id == "codex"
+                    ChoiceRow(
+                        label = modeName(mode, codex),
+                        icon = modeIcon(mode),
+                        iconTint = modeTint(mode, Color.Unspecified),
+                        lines = listOf(SubLine(modeLine(mode, codex), maxLines = 2)),
+                        role = Role.Button,
+                        onClick = onMode,
+                    ) {
+                        Icon(G7Icons.chevronRight, contentDescription = null, tint = scheme.onSurfaceVariant, modifier = Modifier.size(12.dp))
                     }
                 }
-                Text(
-                    stringResource(if (mode == ThreadMode.PLAN) R.string.agents_mode_plan else R.string.agents_supervised_note),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = scheme.onSurfaceVariant,
-                    modifier = Modifier.padding(horizontal = 12.dp),
-                )
-                if (agentInfo?.id == "codex" && abilities.control && !canPlan) {
+                if (agentInfo?.id == "codex" && ThreadMode.PLAN !in AgentModes.offered(abilities)) {
                     Text(
                         stringResource(R.string.agents_plan_unavailable),
                         style = MaterialTheme.typography.bodySmall,
@@ -769,9 +774,9 @@ internal fun PickLabel(
     }
 }
 
-/** A line under a row's label: one line, amber when it warns. */
+/** A line under a row's label: one line (a mode's description: up to [maxLines]), amber when it warns. */
 @Immutable
-internal data class SubLine(val text: String, val warn: Boolean = false)
+internal data class SubLine(val text: String, val warn: Boolean = false, val maxLines: Int = 1)
 
 /**
  * A choice: an icon or an agent's logo, a label on one line (never wrapped),
@@ -834,7 +839,13 @@ internal fun ChoiceRow(
                 if (tag != null) OneLine(tag, MaterialTheme.typography.labelSmall, scheme.onSurfaceVariant.copy(alpha = fade))
             }
             for (line in lines) {
-                OneLine(line.text, MaterialTheme.typography.bodySmall, (if (line.warn) tints.amber else scheme.onSurfaceVariant).copy(alpha = fade))
+                Text(
+                    line.text,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = (if (line.warn) tints.amber else scheme.onSurfaceVariant).copy(alpha = fade),
+                    maxLines = line.maxLines,
+                    overflow = TextOverflow.Ellipsis,
+                )
             }
         }
         trailing?.invoke(this)
@@ -894,7 +905,7 @@ private fun Note(text: String) {
 /** The flow kept across a rotation or the app going to the background. */
 private val NEW_THREAD_SAVER: Saver<NewThreadState, Any> = listSaver<NewThreadState, Any?>(
     save = { s ->
-        listOf(s.step.name, s.folderId, s.prompt, s.chosen?.agent, s.chosen?.model, s.chosen?.effort, s.chosen?.custom == true, s.plan, s.shared)
+        listOf(s.step.name, s.folderId, s.prompt, s.chosen?.agent, s.chosen?.model, s.chosen?.effort, s.chosen?.custom == true, s.shared, s.mode?.agent, s.mode?.mode?.name)
     },
     restore = { l ->
         NewThreadState(
@@ -902,8 +913,8 @@ private val NEW_THREAD_SAVER: Saver<NewThreadState, Any> = listSaver<NewThreadSt
             folderId = l[1] as String?,
             prompt = l[2] as String? ?: "",
             chosen = (l[3] as String?)?.let { agent -> RunChoice(agent, l[4] as String?, l[5] as String?, l[6] as Boolean? == true) },
-            plan = l[7] as Boolean? == true,
-            shared = l[8] as Boolean? == true,
+            shared = l[7] as Boolean? == true,
+            mode = (l.getOrNull(8) as String?)?.let { agent -> ThreadMode.entries.firstOrNull { it.name == l.getOrNull(9) }?.let { ModeChoice(agent, it) } },
         )
     },
 )

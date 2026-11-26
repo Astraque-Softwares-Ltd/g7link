@@ -198,24 +198,12 @@ class AgentControlTest {
     }
 
     @Test
-    fun `the phone offers two modes, Plan only when the agent has it`() {
-        assertEquals(listOf(ThreadMode.SUPERVISED, ThreadMode.PLAN), AgentSettings.phoneModes(abilities(AgentAbilities.PLAN)))
-        assertEquals(listOf(ThreadMode.SUPERVISED), AgentSettings.phoneModes(abilities()))
-        // A PC without control offers nothing of it, whatever it says.
-        assertEquals(listOf(ThreadMode.SUPERVISED), AgentSettings.phoneModes(AgentAbilities(can = setOf(AgentAbilities.PLAN), control = false)))
-        assertEquals(ThreadSettings(), AgentSettings.pickMode(abilities(), ThreadSettings(), ThreadMode.AUTO_EDIT))
-        assertEquals(ThreadSettings(), AgentSettings.pickMode(abilities(), ThreadSettings(), ThreadMode.PLAN))
-        assertEquals(ThreadMode.PLAN, AgentSettings.pickMode(abilities(AgentAbilities.PLAN), ThreadSettings(), ThreadMode.PLAN).mode)
-    }
-
-    @Test
-    fun `configure sends only what changed, an empty value for back to the default, never auto-edit`() {
+    fun `configure sends only what changed, an empty value for back to the default`() {
         val now = ThreadSettings(model = "opus", effort = "high")
         assertNull(AgentSettings.change(now, now))
         assertEquals(ConfigureChange(model = null, effort = "max", mode = null, customModel = false), AgentSettings.change(now, now.copy(effort = "max")))
         assertEquals(ConfigureChange(model = "", effort = "", mode = null, customModel = false), AgentSettings.change(now, ThreadSettings()))
         assertEquals(ConfigureChange(model = null, effort = null, mode = ThreadMode.PLAN, customModel = false), AgentSettings.change(now, now.copy(mode = ThreadMode.PLAN)))
-        assertNull(AgentSettings.change(now, now.copy(mode = ThreadMode.AUTO_EDIT)))
         assertEquals(
             ConfigureChange(model = "my-model", effort = "", mode = null, customModel = true),
             AgentSettings.change(now, ThreadSettings(model = "my-model", customModel = true)),

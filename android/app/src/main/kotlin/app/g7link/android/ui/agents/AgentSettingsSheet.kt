@@ -40,8 +40,8 @@ import app.g7link.core.AgentInfo
  * mode (contract §Q6.3, the phone board 7B): the models the agent's CLI
  * reports by their exact names, the short names first and the rest under
  * "More models", "Other…" for a typed name; the chosen model's efforts; and
- * the phone's two modes. Nothing changes until Done, and on a thread it
- * applies to the next message.
+ * the modes the agent offers, by its own names. Nothing changes until Done,
+ * and on a thread it applies to the next message.
  */
 @Composable
 internal fun AgentSettingsSheet(
@@ -69,7 +69,7 @@ internal fun AgentSettingsSheet(
  * The same sheet for a new thread ("Other agent, model or thinking…",
  * contract C §5.5): an Agent section on top, every agent of the PC with its
  * logo (one that can't start a thread is there, off, with why), and no Mode
- * (a new thread chooses it under "Asks before").
+ * (a new thread chooses it under its own Mode).
  */
 @Composable
 internal fun NewThreadSettingsSheet(
@@ -246,15 +246,8 @@ private fun SettingsSheet(
             }
             if (agents == null) {
                 G7SectionLabel(stringResource(R.string.agents_settings_mode))
-                for (each in AgentSettings.phoneModes(abilities)) {
-                    ChoiceRow(
-                        label = modeLabel(each),
-                        lines = if (each == ThreadMode.SUPERVISED) listOf(SubLine(stringResource(R.string.agents_mode_default_note))) else emptyList(),
-                        selected = mode == each,
-                        onClick = { mode = AgentSettings.pickMode(abilities, settings, each).mode },
-                    )
-                }
-                if (codex && !abilities.can(AgentAbilities.PLAN)) {
+                ModeRows(AgentModes.offered(abilities), codex, selected = mode) { each -> mode = AgentSettings.pickMode(abilities, settings, each).mode }
+                if (codex && ThreadMode.PLAN !in AgentModes.offered(abilities)) {
                     Text(
                         stringResource(R.string.agents_plan_unavailable),
                         style = MaterialTheme.typography.bodySmall,
@@ -304,14 +297,6 @@ private fun ModelRow(option: ModelOption, note: String?, selected: Boolean, onCl
 @Composable
 internal fun effortWord(codex: Boolean): String =
     stringResource(if (codex) R.string.agents_reasoning else R.string.agents_thinking)
-
-/** A mode in words (contract §Q8). */
-@Composable
-internal fun modeLabel(mode: ThreadMode): String = when (mode) {
-    ThreadMode.SUPERVISED -> stringResource(R.string.agents_mode_supervised)
-    ThreadMode.AUTO_EDIT -> stringResource(R.string.agents_mode_auto_edit)
-    ThreadMode.PLAN -> stringResource(R.string.agents_mode_plan)
-}
 
 /** A typed model name never needs more than the wire's 64 bytes; a little room to see it's too long. */
 private const val MAX_TYPED = 80

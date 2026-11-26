@@ -22,6 +22,7 @@ import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -641,8 +642,8 @@ internal fun SearchButton(onClick: () -> Unit, modifier: Modifier = Modifier) {
     Box(
         modifier
             .size(56.dp)
-            .shadow(6.dp, RoundedCornerShape(16.dp))
-            .clip(RoundedCornerShape(16.dp))
+            .shadow(6.dp, CircleShape)
+            .clip(CircleShape)
             .background(scheme.primary)
             .clickable(role = Role.Button, onClick = onClick)
             .semantics { contentDescription = label },

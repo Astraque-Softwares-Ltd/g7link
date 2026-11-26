@@ -4,7 +4,6 @@ package app.g7link.android.ui.agents
 import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
-import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -31,13 +30,9 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Immutable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
-import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -67,7 +62,6 @@ import app.g7link.core.AgentItem
 import app.g7link.core.AgentToolStatus
 import app.g7link.core.agentDiff
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
 
 /** What fills the screen over a thread: an edit request, a step's output, or an edit. */
@@ -129,24 +123,24 @@ private fun FullHeader(
 }
 
 /**
- * The agent's own words about a request, set apart from ours: "Claude says:" in
- * the text colour, the reason muted, a bar before it.
+ * The agent's own words about a request, set apart from ours and read first:
+ * "Claude says:" in semibold, the reason in body text, a bar before it.
  */
 @Composable
 internal fun AgentSays(agentName: String, reason: String, modifier: Modifier = Modifier) {
     val scheme = MaterialTheme.colorScheme
     val resources = LocalResources.current
-    val text = remember(agentName, reason, resources, scheme.onSurface) {
+    val text = remember(agentName, reason, resources) {
         val full = resources.getString(R.string.agents_ask_says, agentName, reason)
         val at = full.lastIndexOf(reason).takeIf { it > 0 } ?: 0
         buildAnnotatedString {
-            withStyle(SpanStyle(color = scheme.onSurface, fontWeight = FontWeight.Medium)) { append(full.substring(0, at)) }
+            withStyle(SpanStyle(fontWeight = FontWeight.SemiBold)) { append(full.substring(0, at)) }
             append(full.substring(at))
         }
     }
     Row(modifier.fillMaxWidth().height(IntrinsicSize.Min)) {
         Box(Modifier.width(2.dp).fillMaxHeight().background(scheme.outline))
-        Text(text, style = MaterialTheme.typography.bodySmall.copy(lineHeight = 18.sp), color = scheme.onSurfaceVariant, modifier = Modifier.padding(start = 10.dp))
+        Text(text, style = MaterialTheme.typography.bodyMedium, color = scheme.onSurface, modifier = Modifier.padding(start = 10.dp))
     }
 }
 
@@ -159,23 +153,10 @@ internal fun rememberDiff(text: String?): AgentDiffDoc? {
     return doc
 }
 
-/** True once [scroll] has been laid out and is at its end: everything has been on screen. */
-@Composable
-internal fun rememberSeenToEnd(key: Any, scroll: ScrollState, ready: Boolean): Boolean {
-    var seen by remember(key) { mutableStateOf(false) }
-    LaunchedEffect(key, ready) {
-        if (!ready || seen) return@LaunchedEffect
-        snapshotFlow { scroll.maxValue != Int.MAX_VALUE && scroll.value >= scroll.maxValue }.first { it }
-        seen = true
-    }
-    return seen
-}
-
 /**
  * An edit request full-screen: the file's name, "Claude wants to edit a file · 2
  * of 2" and its counts; the folder and the file's path in it; the agent's reason;
- * the whole change, long lines wrapped; Deny, and Allow once the end of the
- * change has been on screen.
+ * the whole change, long lines wrapped; Deny and Allow, pinned under it.
  */
 @Composable
 internal fun EditFullScreen(
@@ -190,7 +171,6 @@ internal fun EditFullScreen(
     val ask = queue.shown
     val doc = rememberDiff(ask.diff)
     val scroll = rememberScrollState()
-    val seen = rememberSeenToEnd(ask.token, scroll, ready = ask.diff.isNullOrBlank() || doc != null)
     val name = ask.path?.takeIf { it.isNotBlank() }?.let { AgentText.splitPath(it).second } ?: ask.title
     Column(Modifier.fillMaxSize().background(scheme.surface)) {
         FullHeader(
@@ -247,7 +227,6 @@ internal fun EditFullScreen(
         AnswerButtons(
             queue = queue,
             answering = answering,
-            seenAll = seen,
             allowPrimary = true,
             onAnswer = onAnswer,
             modifier = Modifier.padding(start = 12.dp, end = 12.dp, top = 10.dp, bottom = 16.dp),
@@ -256,19 +235,18 @@ internal fun EditFullScreen(
 }
 
 /**
- * Deny then Allow, and under them why Allow waits: the request came while you
- * were typing, or the end of it hasn't been on screen yet.
+ * Deny then Allow, and under them why they wait when the request came while
+ * you were typing, and that Deny stops the turn when it does (Codex can't
+ * refuse just the one step).
  */
 @Composable
 internal fun AnswerButtons(
     queue: AskQueue,
     answering: Boolean,
-    seenAll: Boolean,
     allowPrimary: Boolean,
     onAnswer: (Boolean) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val scheme = MaterialTheme.colorScheme
     Column(modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             G7RaisedButton(
@@ -277,7 +255,7 @@ internal fun AnswerButtons(
                 enabled = AgentDock.canDeny(queue, answering),
                 modifier = Modifier.weight(1f),
             )
-            val canAllow = AgentDock.canAllow(queue, answering, seenAll)
+            val canAllow = AgentDock.canAllow(queue, answering)
             // With words in the reply box "Deny and send" is the primary, and Allow an outline.
             if (allowPrimary) {
                 G7PrimaryButton(label = stringResource(R.string.agents_allow), onClick = { onAnswer(true) }, enabled = canAllow, modifier = Modifier.weight(1f))
@@ -285,16 +263,20 @@ internal fun AnswerButtons(
                 G7RaisedButton(label = stringResource(R.string.agents_allow), onClick = { onAnswer(true) }, enabled = canAllow, modifier = Modifier.weight(1f))
             }
         }
-        val note = when {
-            queue.held -> stringResource(R.string.agents_held)
-            !seenAll && !queue.shown.truncated -> stringResource(R.string.agents_scroll_to_allow)
-            else -> null
-        }
-        if (note != null) {
+        if (queue.held) {
             Text(
-                note,
+                stringResource(R.string.agents_held),
                 style = MaterialTheme.typography.bodySmall,
-                color = if (queue.held) g7Tints().amber else scheme.onSurfaceVariant,
+                color = g7Tints().amber,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+        if (AgentDock.denyStops(queue)) {
+            Text(
+                stringResource(R.string.agents_deny_stops),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center,
                 modifier = Modifier.fillMaxWidth(),
             )

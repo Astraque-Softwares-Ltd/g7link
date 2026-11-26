@@ -48,7 +48,7 @@ class AgentNotificationsTest {
         folder = "g7linux",
         title = "Add a dark mode toggle",
         state = state,
-        mode = AgentMode.SUPERVISED,
+        mode = AgentMode.ASK,
         fromPhone = fromPhone,
         updatedMs = 1_000L,
         asks = 0u,
@@ -76,7 +76,6 @@ class AgentNotificationsTest {
     private val catalog = AgentCatalog(
         agents = listOf(AgentInfo(id = "codex", name = "Codex", installed = true, signedIn = true, loginHint = "codex login")),
         folders = emptyList(),
-        modes = listOf(AgentMode.SUPERVISED),
     )
 
     /** The PC's state after [event], as Core hands it to the planner. */
@@ -432,7 +431,7 @@ class AgentNotificationsTest {
         assertEquals(listOf(NoticeAction.Kind.DENY, NoticeAction.Kind.REVIEW), kinds(AgentNotifications.publicWaitingActions()))
 
         // The plan says whether the PC takes a reason, and what else waits in the thread.
-        val withWhy = AgentCatalog(agents = catalog.agents, folders = emptyList(), modes = catalog.modes, canSayWhy = true)
+        val withWhy = AgentCatalog(agents = catalog.agents, folders = emptyList(), canSayWhy = true)
         var state = AgentsModel.withThreads(AgentsState(catalog = withWhy), listOf(thread(state = AgentThreadState.WAITING)))
         state = after(state, Event.AgentAsk(pc, ask("a1")))
         val notice = plan(Event.AgentAsk(pc, ask("a2", expiresMs = 20_000L)), state).single() as AgentNotice.Waiting

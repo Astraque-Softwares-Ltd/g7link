@@ -28,7 +28,7 @@ class AgentLimitAlarmTest {
         AgentLimit(window = window, usedPct = null, resetsMs = resetsMs, state = state)
 
     private fun catalog(vararg agents: AgentInfo) =
-        AgentCatalog(agents = agents.toList(), folders = emptyList(), modes = listOf(AgentMode.SUPERVISED), canControl = true)
+        AgentCatalog(agents = agents.toList(), folders = emptyList(), canControl = true)
 
     private fun paused(id: String = "t1", agent: String = "claude", resetsMs: Long?, updatedMs: Long = 1_000L) = AgentThread(
         id = id,
@@ -36,7 +36,7 @@ class AgentLimitAlarmTest {
         folder = "safari-web",
         title = "Tafsiri ya ukurasa wa malipo",
         state = AgentThreadState.FAILED,
-        mode = AgentMode.SUPERVISED,
+        mode = AgentMode.ASK,
         fromPhone = true,
         updatedMs = updatedMs,
         asks = 0u,

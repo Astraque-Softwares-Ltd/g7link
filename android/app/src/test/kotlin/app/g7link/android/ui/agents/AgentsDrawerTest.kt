@@ -20,7 +20,7 @@ class AgentsDrawerTest {
         folder = "g7linux-phone",
         title = "Thread $id",
         state = state,
-        mode = AgentMode.SUPERVISED,
+        mode = AgentMode.ASK,
         fromPhone = true,
         updatedMs = updatedMs,
         asks = asks,

@@ -251,13 +251,15 @@ object AgentDock {
     fun editedUnder(queue: AskQueue?): String? = queue?.shown?.token
 
     /**
-     * Whether Allow can be pressed: never while held or while an answer is on its
-     * way, and only once the whole command or change has been on screen and the
-     * PC didn't cut it (the phone's rule in agents-reconcile.md).
+     * Whether Allow can be pressed: at once, unless the request is held or an
+     * answer is on its way, or the PC cut it (the phone wasn't sent all of it).
      */
-    fun canAllow(queue: AskQueue, answering: Boolean, seenAll: Boolean): Boolean =
-        !queue.held && !answering && seenAll && !queue.shown.truncated
+    fun canAllow(queue: AskQueue, answering: Boolean): Boolean =
+        !queue.held && !answering && !queue.shown.truncated
 
     /** Whether Deny can be pressed. */
     fun canDeny(queue: AskQueue, answering: Boolean): Boolean = !queue.held && !answering
+
+    /** Denying the shown request stops the agent's turn (Codex can't refuse just the one step): Deny says so. */
+    fun denyStops(queue: AskQueue): Boolean = queue.shown.denyStops
 }

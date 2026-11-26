@@ -64,7 +64,7 @@ internal fun AgentDetailsSheet(
             if (answered != null) {
                 DetailLine(null, stringResource(R.string.agents_answered_by, AgentSettings.modelName(models, answered) ?: answered))
             }
-            DetailLine(G7Icons.shield, modeLabel(control.mode))
+            DetailLine(modeIcon(control.mode), modeName(control.mode, codex = thread.agent == "codex"))
             if (AgentsModel.running(thread)) DetailLine(G7Icons.clock, workingFor(thread.sinceMs, now))
             val mcp = control.mcp
             if (mcp != null && AgentUsage.mcpShown(mcp)) {

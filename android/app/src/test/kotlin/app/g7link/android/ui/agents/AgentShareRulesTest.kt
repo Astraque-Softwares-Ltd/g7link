@@ -69,7 +69,7 @@ class AgentShareRulesTest {
         folder = "duka-pos",
         title = "Thread $id",
         state = AgentThreadState.DONE,
-        mode = AgentMode.SUPERVISED,
+        mode = AgentMode.ASK,
         fromPhone = false,
         updatedMs = updatedMs,
         asks = 0u,

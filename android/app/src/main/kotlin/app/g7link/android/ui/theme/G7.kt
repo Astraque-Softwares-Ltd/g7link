@@ -721,6 +721,58 @@ object G7Icons {
             width = 2f,
         )
     }
+    /** Lucide's corner-down-left (ISC, LICENSES/ISC-Lucide.txt), the Enter key's ↵: sends to an agent, as on the PC. */
+    val cornerDownLeft by lazy {
+        strokeIcon("cornerDownLeft", "M20 4v7a4 4 0 0 1-4 4H4M9 10l-5 5 5 5", width = 2f)
+    }
+
+    // An agent's modes (plans/modes-approvals-composer.md §4.2): Lucide (ISC, LICENSES/ISC-Lucide.txt).
+
+    /** Lucide's hand: the mode that asks first (Claude's Manual, Codex's Ask for approval). */
+    val hand by lazy {
+        strokeIcon(
+            "hand",
+            "M18 11V6a2 2 0 0 0-2-2a2 2 0 0 0-2 2M14 10V4a2 2 0 0 0-2-2a2 2 0 0 0-2 2v2M10 10.5V6a2 2 0 0 0-2-2a2 2 0 0 0-2 2v8" +
+                "M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15",
+            width = 2f,
+        )
+    }
+
+    /** Lucide's file-pen: edits without asking (Claude's Accept edits). */
+    val filePen by lazy {
+        strokeIcon(
+            "filePen",
+            "M12.5 22H18a2 2 0 0 0 2-2V7l-5-5H6a2 2 0 0 0-2 2v9.5M14 2v4a2 2 0 0 0 2 2h4" +
+                "M13.378 15.626a1 1 0 1 0-3.004-3.004l-5.01 5.012a2 2 0 0 0-.506.854l-.837 2.87a.5.5 0 0 0 .62.62l2.87-.837a2 2 0 0 0 .854-.506z",
+            width = 2f,
+        )
+    }
+
+    /** Lucide's sparkles: the agent decides (Claude's Auto, Codex's Approve for me). */
+    val sparkles by lazy {
+        strokeIcon(
+            "sparkles",
+            "M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0" +
+                "L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z" +
+                "M20 3v4M22 5h-4M4 17v2M5 18H3",
+            width = 2f,
+        )
+    }
+
+    /** Lucide's list-checks: Plan. */
+    val listChecks by lazy {
+        strokeIcon("listChecks", "M3 17l2 2 4-4M3 7l2 2 4-4M13 6h8M13 12h8M13 18h8", width = 2f)
+    }
+
+    /** Lucide's shield-alert: nothing is asked (Claude's Bypass permissions, Codex's Full access). */
+    val shieldAlert by lazy {
+        strokeIcon(
+            "shieldAlert",
+            "M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0" +
+                "C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1zM12 8v4M12 16h.01",
+            width = 2f,
+        )
+    }
 }
 
 /** The G7 mark in the accent color, with nothing behind it. */

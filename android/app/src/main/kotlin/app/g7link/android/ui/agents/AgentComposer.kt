@@ -54,6 +54,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
@@ -78,8 +79,8 @@ data class ComposerSettings(
     val model: String?,
     /** The effort, as the CLI names it (first letter capitalised); null when none applies. */
     val effort: String?,
-    /** "Plan" beside it: the mode isn't the phone's default. */
-    val plan: Boolean,
+    /** The thread's mode, always beside the model (plans/modes-approvals-composer.md §4.2); null: not shown. */
+    val mode: ThreadMode?,
 )
 
 /** What the reply box says while it's empty. */
@@ -104,8 +105,8 @@ internal fun composerHint(hint: ComposerHint, agentName: String, pausedUntil: Lo
 
 /**
  * The reply box (contract §Q6.1, the phone board 7A, 7D): the images going with
- * the message, the text, and a row with Add image, the model and effort, Plan
- * when it's on, Stop whenever a turn runs or waits, the mic when the phone can
+ * the message, the text, and a row with Add image, the model and effort, the
+ * mode, Stop whenever a turn runs or waits, the mic when the phone can
  * hear a reply on the device (phase 5 §V8.1, its one slot: [voice]), and the
  * button: send, deny with the words, or while it works steer (long-press:
  * "Queue it instead") or queue. Under it the folder, and what the message will do.
@@ -130,6 +131,8 @@ internal fun AgentComposer(
     codex: Boolean,
     settings: ComposerSettings,
     onSettings: () -> Unit,
+    /** The mode chip: the mode list between turns (it says why not while a turn runs). */
+    onMode: () -> Unit,
     attachShown: Boolean,
     onAttach: () -> Unit,
     images: List<PendingImage>,
@@ -194,10 +197,17 @@ internal fun AgentComposer(
                         tint = scheme.onSurfaceVariant,
                     )
                 }
+                // The model gives way first; the mode chip never does.
                 if (settings.shown) SettingsChip(settings, agentName, view.settings, onSettings, Modifier.weight(1f, fill = false))
+                settings.mode?.let { mode -> ModeChipView(AgentModes.chip(mode, view.settings), codex, onMode) }
                 Spacer(Modifier.weight(1f))
                 if (view.showStop) {
-                    ComposerPill(G7Icons.stop, stringResource(R.string.agents_stop), accent = false, enabled = !stopping, onClick = onStop)
+                    G7IconButton(
+                        icon = G7Icons.stop,
+                        contentDescription = stringResource(R.string.agents_stop),
+                        onClick = onStop,
+                        enabled = !stopping,
+                    )
                 }
                 if (voice != null && view.enabled) voice()
                 if (sending) {
@@ -208,7 +218,7 @@ internal fun AgentComposer(
                     when (view.action) {
                         ComposerAction.NONE -> Unit
                         ComposerAction.SEND -> G7IconButton(
-                            icon = G7Icons.send,
+                            icon = G7Icons.cornerDownLeft,
                             contentDescription = stringResource(R.string.agents_send),
                             onClick = { onSend(null) },
                             enabled = view.actionEnabled,
@@ -216,7 +226,7 @@ internal fun AgentComposer(
                             tint = if (view.actionEnabled) scheme.primary else scheme.onSurfaceVariant,
                         )
                         ComposerAction.DENY_AND_SEND -> ComposerPill(
-                            G7Icons.send,
+                            G7Icons.cornerDownLeft,
                             stringResource(R.string.agents_deny_and_send),
                             accent = true,
                             enabled = view.actionEnabled,
@@ -308,33 +318,55 @@ private fun SettingsChip(settings: ComposerSettings, agentName: String, access: 
     val model = settings.model ?: stringResource(R.string.agents_agent_default, agentName)
     val label = listOfNotNull(model, settings.effort).joinToString(" · ")
     val inert = access == SettingsAccess.INERT
-    Row(modifier, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+    Row(
+        modifier = modifier
+            .heightIn(min = 40.dp)
+            .clip(RoundedCornerShape(8.dp))
+            .clickable(enabled = !inert, role = Role.Button, onClick = onClick)
+            .then(if (inert) Modifier.alpha(0.45f) else Modifier)
+            .padding(horizontal = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        Text(label, style = MaterialTheme.typography.labelLarge, color = scheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+        Icon(G7Icons.chevronDown, contentDescription = null, tint = scheme.onSurfaceVariant, modifier = Modifier.size(12.dp))
+    }
+}
+
+/**
+ * The thread's mode, always there: its icon and one word (Ask, Edits, Auto,
+ * Plan, Full), Full in amber; the agent's own name for a screen reader. A tap
+ * opens the mode list between turns; it does what the model control does
+ * otherwise ([ModeChip.tap]).
+ */
+@Composable
+private fun ModeChipView(chip: ModeChip, codex: Boolean, onClick: () -> Unit) {
+    val scheme = MaterialTheme.colorScheme
+    val tints = g7Tints()
+    val inert = chip.tap == SettingsAccess.INERT
+    val content = modeTint(chip.mode, scheme.onSurface)
+    val name = modeName(chip.mode, codex)
+    Box(
+        modifier = Modifier
+            .heightIn(min = 40.dp)
+            .clip(RoundedCornerShape(8.dp))
+            .clickable(enabled = !inert, role = Role.Button, onClick = onClick)
+            .semantics { contentDescription = name }
+            .then(if (inert) Modifier.alpha(0.45f) else Modifier),
+        contentAlignment = Alignment.Center,
+    ) {
         Row(
             modifier = Modifier
-                .heightIn(min = 40.dp)
+                .height(32.dp)
                 .clip(RoundedCornerShape(8.dp))
-                .clickable(enabled = !inert, role = Role.Button, onClick = onClick)
-                .then(if (inert) Modifier.alpha(0.45f) else Modifier)
+                .background(if (chip.warn) tints.amber.copy(alpha = 0.14f) else scheme.surfaceContainerHigh)
+                .clearAndSetSemantics {}
                 .padding(horizontal = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(4.dp),
         ) {
-            Text(label, style = MaterialTheme.typography.labelLarge, color = scheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Icon(G7Icons.chevronDown, contentDescription = null, tint = scheme.onSurfaceVariant, modifier = Modifier.size(12.dp))
-        }
-        if (settings.plan) {
-            Row(
-                modifier = Modifier
-                    .heightIn(min = 32.dp)
-                    .clip(RoundedCornerShape(6.dp))
-                    .background(scheme.surfaceContainerHigh)
-                    .padding(horizontal = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
-            ) {
-                Icon(G7Icons.clipboardList, contentDescription = null, tint = scheme.onSurface, modifier = Modifier.size(14.dp))
-                Text(stringResource(R.string.agents_plan), style = MaterialTheme.typography.labelLarge, maxLines = 1)
-            }
+            Icon(modeIcon(chip.mode), contentDescription = null, tint = content, modifier = Modifier.size(14.dp))
+            Text(modeShort(chip.mode), style = MaterialTheme.typography.labelLarge, color = content, maxLines = 1, softWrap = false)
         }
     }
 }

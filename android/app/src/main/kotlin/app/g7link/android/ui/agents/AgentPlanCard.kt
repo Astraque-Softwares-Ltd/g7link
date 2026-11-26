@@ -4,12 +4,17 @@ package app.g7link.android.ui.agents
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -18,14 +23,18 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Immutable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import app.g7link.android.R
 import app.g7link.android.ui.theme.G7Icons
+import app.g7link.android.ui.theme.G7RaisedButton
 import app.g7link.core.AgentBlock
 import app.g7link.core.AgentBlockKind
 import app.g7link.core.AgentPlanState
@@ -154,15 +163,49 @@ internal fun PlanCard(unit: RowUnit.Plan, context: RowsContext, actions: RowActi
         if (state == AgentPlanState.PROPOSED) {
             val newest = context.newestPlan == itemId
             val enabled = newest && !context.running && !context.implementing
-            ButtonPair(
-                secondary = stringResource(R.string.agents_plan_change),
-                onSecondary = actions.changePlan,
-                secondaryEnabled = enabled,
-                primary = stringResource(R.string.agents_plan_implement),
-                onPrimary = { actions.implement(itemId) },
-                primaryEnabled = enabled,
-                modifier = Modifier.padding(top = 4.dp),
-            )
+            Row(Modifier.fillMaxWidth().padding(top = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                G7RaisedButton(
+                    label = stringResource(R.string.agents_plan_change),
+                    onClick = actions.changePlan,
+                    enabled = enabled,
+                    modifier = Modifier.weight(1f),
+                )
+                ImplementButton(enabled, { actions.implement(itemId) }, { actions.implementIn(itemId) }, Modifier.weight(1f))
+            }
+        }
+    }
+}
+
+/** Implement in the mode the folder remembers; the arrow beside it offers the others, as on the PC. */
+@Composable
+private fun ImplementButton(enabled: Boolean, onImplement: () -> Unit, onModes: () -> Unit, modifier: Modifier = Modifier) {
+    val scheme = MaterialTheme.colorScheme
+    Row(
+        modifier
+            .height(IntrinsicSize.Min)
+            .heightIn(min = 48.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .background(scheme.primary)
+            .then(if (enabled) Modifier else Modifier.alpha(0.45f)),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            Modifier.weight(1f).fillMaxHeight().clickable(enabled = enabled, role = Role.Button, onClick = onImplement),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(stringResource(R.string.agents_plan_implement), style = MaterialTheme.typography.titleSmall, color = scheme.onPrimary, maxLines = 1)
+        }
+        Box(Modifier.width(1.dp).fillMaxHeight().padding(vertical = 12.dp).background(scheme.onPrimary.copy(alpha = 0.35f)))
+        val how = stringResource(R.string.agents_plan_implement_how)
+        Box(
+            Modifier
+                .width(44.dp)
+                .fillMaxHeight()
+                .clickable(enabled = enabled, role = Role.Button, onClick = onModes)
+                .semantics { contentDescription = how },
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(G7Icons.chevronDown, contentDescription = null, tint = scheme.onPrimary, modifier = Modifier.size(16.dp))
         }
     }
 }

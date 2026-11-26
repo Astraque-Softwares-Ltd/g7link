@@ -25,7 +25,6 @@ class AgentDndTest {
     private val catalog = AgentCatalog(
         agents = listOf(AgentInfo(id = "claude", name = "Claude", installed = true, signedIn = true, loginHint = "claude login")),
         folders = emptyList(),
-        modes = listOf(AgentMode.SUPERVISED),
     )
 
     private fun thread(state: AgentThreadState) = AgentThread(
@@ -34,7 +33,7 @@ class AgentDndTest {
         folder = "duka-pos",
         title = "Stock sync drops rows on reconnect",
         state = state,
-        mode = AgentMode.SUPERVISED,
+        mode = AgentMode.ASK,
         fromPhone = true,
         updatedMs = 1_000L,
         asks = 0u,

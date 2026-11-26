@@ -49,7 +49,6 @@ import app.g7link.android.toggles.PhoneToggles
 import app.g7link.android.webcam.WebcamRequests
 import app.g7link.android.webcam.WebcamService
 import app.g7link.core.AgentExport
-import app.g7link.core.AgentMode
 import app.g7link.core.AgentPage
 import app.g7link.core.AgentSession
 import app.g7link.core.AgentSessionPage
@@ -95,6 +94,7 @@ import app.g7link.android.ui.agents.AgentControlFfi
 import app.g7link.android.ui.agents.ConfigureChange
 import app.g7link.android.ui.agents.FollowUp
 import app.g7link.android.ui.agents.QuestionAnswer
+import app.g7link.android.ui.agents.ThreadMode
 import app.g7link.android.ui.agents.ThreadSettings
 import app.g7link.core.AgentQueueOp
 import kotlinx.coroutines.CancellationException
@@ -3791,8 +3791,7 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
         return result
     }
 
-    /** Starts a thread on the PC; a phone only ever starts one that asks before each change. */
-    /** Starts a thread on the PC; a phone starts one that asks before each change, or plans first (contract §Q5). */
+    /** Starts a thread on the PC in [settings]' mode: any the agent offers (plans/modes-approvals-composer.md §2.1). */
     suspend fun agentStart(
         pcId: String,
         agent: String,
@@ -3808,7 +3807,7 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
                 agent,
                 folder,
                 prompt,
-                AgentControlFfi.phoneMode(settings.mode),
+                AgentControlFfi.wire(settings.mode),
                 settings.model,
                 settings.effort,
                 images,
@@ -3873,7 +3872,7 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
     /** Changes a thread's model, effort or mode for its next turn; the thread as the PC has it now. */
     suspend fun agentConfigure(pcId: String, threadId: String, change: ConfigureChange): AgentCall<AgentThread> {
         val result = agentCall {
-            it.agentConfigure(pcId, threadId, change.model, change.effort, change.mode?.let(AgentControlFfi::phoneMode), change.customModel)
+            it.agentConfigure(pcId, threadId, change.model, change.effort, change.mode?.let(AgentControlFfi::wire), change.customModel)
         }
         if (result is AgentCall.Ok) updateAgents(pcId) { AgentsModel.withThread(it, result.value) }
         return result
@@ -3906,9 +3905,14 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
         return result
     }
 
-    /** Implements the thread's newest proposed plan, asking before edits and commands. */
-    suspend fun agentImplement(pcId: String, threadId: String, itemId: String): AgentCall<Unit> =
-        agentCall { it.agentImplement(pcId, threadId, itemId) }
+    /**
+     * Implements the thread's newest proposed plan in [mode]: any the agent offers but Plan (refused here, nothing
+     * sent); null: the one the PC remembers for the agent in that folder, else Ask.
+     */
+    suspend fun agentImplement(pcId: String, threadId: String, itemId: String, mode: ThreadMode?): AgentCall<Unit> {
+        if (mode == ThreadMode.PLAN) return AgentCall.Failed(AgentFailure.OTHER)
+        return agentCall { it.agentImplement(pcId, threadId, itemId, mode?.let(AgentControlFfi::wire)) }
+    }
 
     /** Sends one picture for a message; its id goes with agentStart or agentSend. */
     suspend fun agentImageSend(pcId: String, name: String, bytes: ByteArray): AgentCall<String> =

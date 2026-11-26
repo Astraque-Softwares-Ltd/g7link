@@ -4,6 +4,7 @@ package app.g7link.android.ui.agents
 import app.g7link.core.AgentAnswer
 import app.g7link.core.AgentCan
 import app.g7link.core.AgentDispatch
+import app.g7link.core.AgentFolderMode
 import app.g7link.core.AgentInfo
 import app.g7link.core.AgentItem
 import app.g7link.core.AgentLimitState
@@ -59,19 +60,36 @@ internal object AgentControlFfi {
                     },
                 )
             },
+            modes = agent.modes.map(::mode).distinct(),
         )
     }
 
+    /** A mode as the phone reads it; the FFI reads the old words too (`supervised` is Ask, `auto_edit` Accept edits). */
     fun mode(mode: AgentMode): ThreadMode = when (mode) {
-        AgentMode.SUPERVISED -> ThreadMode.SUPERVISED
-        AgentMode.AUTO_EDIT -> ThreadMode.AUTO_EDIT
+        AgentMode.ASK -> ThreadMode.ASK
+        AgentMode.ACCEPT_EDITS -> ThreadMode.ACCEPT_EDITS
+        AgentMode.AUTO -> ThreadMode.AUTO
         AgentMode.PLAN -> ThreadMode.PLAN
+        AgentMode.FULL -> ThreadMode.FULL
     }
 
-    /** The wire's mode; a phone never sends [ThreadMode.AUTO_EDIT], so it reads as supervised. */
-    fun phoneMode(mode: ThreadMode): AgentMode = when (mode) {
+    /** The mode a start, a change or an implement sends: any the agent offers. */
+    fun wire(mode: ThreadMode): AgentMode = when (mode) {
+        ThreadMode.ASK -> AgentMode.ASK
+        ThreadMode.ACCEPT_EDITS -> AgentMode.ACCEPT_EDITS
+        ThreadMode.AUTO -> AgentMode.AUTO
         ThreadMode.PLAN -> AgentMode.PLAN
-        ThreadMode.SUPERVISED, ThreadMode.AUTO_EDIT -> AgentMode.SUPERVISED
+        ThreadMode.FULL -> AgentMode.FULL
+    }
+
+    /** A folder's remembered mode per agent (`AgentFolder.modes`): the first for each agent, never Plan. */
+    fun folderModes(modes: List<AgentFolderMode>): Map<String, ThreadMode> {
+        val byAgent = LinkedHashMap<String, ThreadMode>()
+        for (each in modes) {
+            val mode = mode(each.mode)
+            if (mode != ThreadMode.PLAN) byAgent.putIfAbsent(each.agent, mode)
+        }
+        return byAgent
     }
 
     fun control(thread: AgentThread): ThreadControl = ThreadControl(

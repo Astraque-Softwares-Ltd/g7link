@@ -48,7 +48,7 @@ const val MONO_FEATURES = "\"liga\" 0, \"calt\" 0"
 fun TextStyle.mono(fonts: AppFonts): TextStyle = copy(fontFamily = fonts.mono, fontFeatureSettings = MONO_FEATURES)
 
 /**
- * G7's type scale, smaller than Material's: rows are 15 sp with 12 sp labels.
+ * G7's type scale, smaller than Material's: rows are 16 sp with 12 sp labels.
  */
 internal fun typography(fonts: AppFonts): Typography {
     val family = fonts.sans
@@ -69,11 +69,11 @@ internal fun typography(fonts: AppFonts): Typography {
         titleLarge = style(20, 500, 1.3f),
         titleMedium = style(17, 500),
         titleSmall = style(15, 500),
-        bodyLarge = style(15, 400),
+        bodyLarge = style(16, 400),
         bodyMedium = style(14, 400),
-        bodySmall = style(12, 400),
+        bodySmall = style(13, 400),
         labelLarge = style(13, 500),
         labelMedium = style(12, 500),
-        labelSmall = style(11, 500),
+        labelSmall = style(12, 500),
     )
 }

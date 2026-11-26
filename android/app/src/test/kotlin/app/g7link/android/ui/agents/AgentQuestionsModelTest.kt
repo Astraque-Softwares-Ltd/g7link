@@ -38,7 +38,7 @@ class AgentQuestionsModelTest {
     private fun thread(
         id: String = "t1",
         state: AgentThreadState = AgentThreadState.WAITING,
-        mode: AgentMode = AgentMode.SUPERVISED,
+        mode: AgentMode = AgentMode.ASK,
         asking: UInt = 0u,
         updatedMs: Long = 1_000L,
     ) = AgentThread(
@@ -242,7 +242,7 @@ class AgentQuestionsModelTest {
             can = listOf(AgentCan.STEER, AgentCan.IMAGES),
             limits = listOf(AgentLimit(window = "300", usedPct = 85u, resetsMs = 5L, state = AgentLimitState.WARN)),
         )
-        val catalog = AgentCatalog(agents = listOf(codex), folders = listOf(AgentFolder(id = "f1", label = "g7linux")), modes = listOf(AgentMode.SUPERVISED), canControl = true)
+        val catalog = AgentCatalog(agents = listOf(codex), folders = listOf(AgentFolder(id = "f1", label = "g7linux")), canControl = true)
         val abilities = AgentsState(catalog = catalog).abilities("codex")
         assertTrue(abilities.control)
         assertEquals(setOf(AgentAbilities.STEER, AgentAbilities.IMAGES), abilities.can)

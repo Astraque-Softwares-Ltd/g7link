@@ -27,7 +27,7 @@ class AgentGitStateTest {
         folder = "duka-pos",
         title = "Stock sync drops rows on reconnect",
         state = AgentThreadState.DONE,
-        mode = AgentMode.SUPERVISED,
+        mode = AgentMode.ASK,
         fromPhone = false,
         updatedMs = 1_000L,
         asks = 0u,

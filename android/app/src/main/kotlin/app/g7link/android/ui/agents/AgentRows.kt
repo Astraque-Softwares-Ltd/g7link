@@ -182,6 +182,8 @@ internal class RowsContext(
     val highlightSeq: ULong? = null,
     /** An undo is on its way. */
     val undoing: Boolean = false,
+    /** The agent's name ("Approved by Codex's reviewer"); blank: the thread's agent id. */
+    val agentName: String = "",
 )
 
 /** What a tap on a row does. */
@@ -199,8 +201,10 @@ internal class RowActions(
     val diff: (String, AgentDiffDoc) -> Unit,
     /** The "Waiting for you" line: bring the request into view. */
     val mark: () -> Unit,
-    /** "Implement" on a plan's card: the plan item's id. */
+    /** "Implement" on a plan's card, in the mode the folder remembers: the plan item's id. */
     val implement: (String) -> Unit = {},
+    /** The arrow beside it: the modes it may be implemented in. */
+    val implementIn: (String) -> Unit = {},
     /** "Change the plan": the reply box, to say what to change. */
     val changePlan: () -> Unit = {},
     /** Long-press on your message or a turn's final answer: its sheet (Copy, Edit, Rewind, Fork). */
@@ -212,7 +216,7 @@ internal class RowActions(
 ) {
     /** The same actions, opening and closing rows with [toggle]. */
     fun withToggle(toggle: (String) -> Unit): RowActions =
-        RowActions(toggle, link, copy, output, diff, mark, implement, changePlan, messageActions, openChanges, undo)
+        RowActions(toggle, link, copy, output, diff, mark, implement, implementIn, changePlan, messageActions, openChanges, undo)
 }
 
 /**
@@ -576,7 +580,7 @@ private fun AgentRowView(row: AgentRow, context: RowsContext, actions: RowAction
         is AgentRowKind.Fold -> FoldRow(row, kind, actions)
         is AgentRowKind.Changes -> ChangesRow(row, kind, actions)
         is AgentRowKind.ChangesNote -> ChangesNoteRow(kind)
-        is AgentRowKind.Mark -> MarkRow(kind, actions)
+        is AgentRowKind.Mark -> MarkRow(kind, actions, context)
         is AgentRowKind.Notice -> NoticeRow(kind, context, actions)
         is AgentRowKind.Live -> LiveRow(kind)
         // A plan's rows are drawn as one card (AgentRowsList); one on its own is its header.
@@ -645,9 +649,9 @@ private fun UserRow(row: AgentRow, kind: AgentRowKind.User, item: AgentItem?, th
 
 // ---- What the agent said: Markdown blocks ----
 
-/** Agent text's look: the body size of the design (14.5 on 1.5). */
+/** Agent text's look: the body size of the design (16 on about 1.45). */
 @Composable
-private fun bodyStyle(): TextStyle = MaterialTheme.typography.bodyLarge.copy(lineHeight = 22.sp)
+private fun bodyStyle(): TextStyle = MaterialTheme.typography.bodyLarge.copy(lineHeight = 23.sp)
 
 @Composable
 private fun textLook(): AgentText.Look {
@@ -1601,9 +1605,13 @@ private fun ChangesRow(row: AgentRow, kind: AgentRowKind.Changes, actions: RowAc
     }
 }
 
-/** A request's state under its step: "Waiting for you" in amber (tapping brings the request up), or how it ended. */
+/**
+ * A request's state under its step: "Waiting for you" in amber (tapping brings
+ * the request up), or how it ended; a step the agent's own reviewer approved
+ * says so ("Approved by Codex's reviewer").
+ */
 @Composable
-private fun MarkRow(kind: AgentRowKind.Mark, actions: RowActions) {
+private fun MarkRow(kind: AgentRowKind.Mark, actions: RowActions, context: RowsContext) {
     val scheme = MaterialTheme.colorScheme
     val needsYou = agentPalette().statusNeedsYou
     val by = kind.by.takeIf { it.isNotBlank() }
@@ -1612,6 +1620,7 @@ private fun MarkRow(kind: AgentRowKind.Mark, actions: RowActions) {
         AgentMarkKind.ALLOWED -> G7Icons.check to (by?.let { stringResource(R.string.agents_answered_allowed_on, it) } ?: stringResource(R.string.agents_answered_allowed))
         AgentMarkKind.DENIED -> G7Icons.close to (by?.let { stringResource(R.string.agents_answered_denied_on, it) } ?: stringResource(R.string.agents_answered_denied))
         AgentMarkKind.RULE -> G7Icons.shield to stringResource(R.string.agents_mark_rule)
+        AgentMarkKind.REVIEWED -> G7Icons.sparkles to stringResource(R.string.agents_mark_reviewed, reviewerOf(context))
         AgentMarkKind.EXPIRED -> G7Icons.history to stringResource(R.string.agents_mark_expired)
         AgentMarkKind.CANCELLED -> G7Icons.close to stringResource(R.string.agents_mark_cancelled)
     }
@@ -1636,6 +1645,10 @@ private fun MarkRow(kind: AgentRowKind.Mark, actions: RowActions) {
         )
     }
 }
+
+/** Whose reviewer approved a step: the agent's name, else its id as a name. */
+internal fun reviewerOf(context: RowsContext): String =
+    context.agentName.ifBlank { context.thread?.agent?.replaceFirstChar { it.uppercaseChar() }.orEmpty() }
 
 /**
  * A question at its place in the thread: "Asked you 2 questions", then how it

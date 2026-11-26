@@ -45,7 +45,7 @@ class AgentTimelineInputTest {
         folder = "g7linux-phone",
         title = "Fix the test",
         state = state,
-        mode = AgentMode.SUPERVISED,
+        mode = AgentMode.ASK,
         fromPhone = true,
         updatedMs = updatedMs,
         asks = 0u,
@@ -74,7 +74,7 @@ class AgentTimelineInputTest {
     )
 
     private fun opened(items: List<AgentItem> = listOf(item(1u, kind = AgentItemKind.USER), item(2u))): AgentsState {
-        val catalog = AgentCatalog(agents = emptyList(), folders = emptyList(), modes = emptyList())
+        val catalog = AgentCatalog(agents = emptyList(), folders = emptyList())
         val open = AgentsModel.opened(AgentsState(catalog = catalog), "t1")
         return AgentsModel.withPage(open, AgentPage(thread = thread(), items = items, moreBefore = false, asks = emptyList()))
     }
@@ -109,7 +109,7 @@ class AgentTimelineInputTest {
         // Nothing the rows show: another thread, the catalog, the thread's own time.
         val other = AgentsModel.reduce(state, Event.AgentThreadChanged(pc, thread("t2", updatedMs = 9_000L))).state
         assertEquals(before, input(other))
-        val catalog = AgentsModel.reduce(state, Event.AgentCatalog(pc, AgentCatalog(agents = emptyList(), folders = emptyList(), modes = emptyList(), canSayWhy = true))).state
+        val catalog = AgentsModel.reduce(state, Event.AgentCatalog(pc, AgentCatalog(agents = emptyList(), folders = emptyList(), canSayWhy = true))).state
         assertEquals(before, input(catalog))
         val touched = AgentsModel.withThread(state, thread(updatedMs = 5_000L))
         assertEquals(before, input(touched))

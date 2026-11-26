@@ -20,11 +20,15 @@ data class NewThreadState(
     val prompt: String = "",
     /** What it runs with when the user chose it; null: the folder's first quick pick. */
     val chosen: RunChoice? = null,
-    /** Plan first, when the agent can (else it asks before edits and commands). */
-    val plan: Boolean = false,
+    /** The mode the user chose, for the agent it was chosen with; null: the folder's own ([NewThreadFlowModel.mode]). */
+    val mode: ModeChoice? = null,
     /** It came from a share and no folder is chosen yet: Where says to choose one. */
     val shared: Boolean = false,
 )
+
+/** A mode chosen on What, for [agent]: another agent goes back to its own preselection. */
+@Immutable
+data class ModeChoice(val agent: String, val mode: ThreadMode)
 
 object NewThreadFlowModel {
     /** Recent folders shown as cards before "N more recent folders". */
@@ -50,14 +54,17 @@ object NewThreadFlowModel {
         FlowStep.WHERE -> null
     }
 
-    /** A folder chosen (a card, or one found or added in Browse): What, in it. Another folder starts on its own first pick. */
-    fun choose(state: NewThreadState, folderId: String): NewThreadState =
-        state.copy(
+    /** A folder chosen (a card, or one found or added in Browse): What, in it. Another folder starts on its own first pick and mode. */
+    fun choose(state: NewThreadState, folderId: String): NewThreadState {
+        val same = folderId == state.folderId
+        return state.copy(
             step = FlowStep.WHAT,
             folderId = folderId,
-            chosen = if (folderId == state.folderId) state.chosen else null,
+            chosen = if (same) state.chosen else null,
+            mode = if (same) state.mode else null,
             shared = false,
         )
+    }
 
     fun browse(state: NewThreadState): NewThreadState = state.copy(step = FlowStep.BROWSE)
 
@@ -66,10 +73,19 @@ object NewThreadFlowModel {
     /** A pick, or what was chosen under "Other agent, model or thinking…". */
     fun pick(state: NewThreadState, choice: RunChoice): NewThreadState = state.copy(chosen = choice)
 
-    fun plan(state: NewThreadState, on: Boolean): NewThreadState = state.copy(plan = on)
+    /** A mode picked from the list, for [agent]. */
+    fun pickMode(state: NewThreadState, agent: String, mode: ThreadMode): NewThreadState = state.copy(mode = ModeChoice(agent, mode))
 
-    /** The mode it starts in: Plan only when it's chosen and the agent can plan. */
-    fun mode(state: NewThreadState, canPlan: Boolean): ThreadMode = if (state.plan && canPlan) ThreadMode.PLAN else ThreadMode.SUPERVISED
+    /**
+     * The mode it starts in, for [agent] (offering [offered]) in [folder]: the
+     * one chosen for that agent while it's offered, else the folder's last for
+     * the agent (never Plan), else Ask (plans/modes-approvals-composer.md §2.2).
+     */
+    fun mode(state: NewThreadState, agent: String?, offered: List<ThreadMode>, folder: FolderUse?): ThreadMode {
+        if (agent == null) return ThreadMode.ASK
+        val chosen = state.mode?.takeIf { it.agent == agent && it.mode in offered }?.mode
+        return chosen ?: AgentModes.preselect(folder, agent, offered)
+    }
 
     /** The folder chosen went from the PC's list: back to Where to choose another, the task kept. */
     fun checked(state: NewThreadState, folders: Collection<String>): NewThreadState {
@@ -116,6 +132,7 @@ internal object NewThreadFfi {
                     branch = last.branch?.takeIf { it.isNotBlank() },
                 )
             },
+            modes = AgentControlFfi.folderModes(folder.modes),
         )
     }
 

@@ -42,7 +42,7 @@ class AgentHistoryModelTest {
         folder = "duka-pos",
         title = "Thread $id",
         state = state,
-        mode = AgentMode.SUPERVISED,
+        mode = AgentMode.ASK,
         fromPhone = false,
         updatedMs = updatedMs,
         asks = asks,

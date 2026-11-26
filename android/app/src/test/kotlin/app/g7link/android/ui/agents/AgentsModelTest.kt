@@ -47,7 +47,7 @@ class AgentsModelTest {
         folder = "g7linux",
         title = "Fix the test",
         state = state,
-        mode = AgentMode.SUPERVISED,
+        mode = AgentMode.ASK,
         fromPhone = fromPhone,
         updatedMs = updatedMs,
         asks = asks,
@@ -91,7 +91,6 @@ class AgentsModelTest {
             AgentInfo(id = "codex", name = "Codex", installed = true, signedIn = false, loginHint = "codex login"),
         ),
         folders = listOf(AgentFolder(id = "f0123456789ab", label = "g7linux")),
-        modes = listOf(AgentMode.SUPERVISED),
     )
 
     private fun page(thread: AgentThread, items: List<AgentItem>, moreBefore: Boolean = false, asks: List<AgentAsk> = emptyList()) =

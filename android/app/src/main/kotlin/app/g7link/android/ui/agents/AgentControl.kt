@@ -42,6 +42,8 @@ data class AgentAbilities(
     val limits: List<LimitInfo> = emptyList(),
     /** The PC takes control (`AgentCatalog.can_control`): an older one offers what 0.1.16 did. */
     val control: Boolean = false,
+    /** The modes a thread of it may use, in its CLI's own order (`AgentInfo.modes`). */
+    val modes: List<ThreadMode> = emptyList(),
 ) {
     fun can(what: String): Boolean = control && what in can
 
@@ -55,8 +57,27 @@ data class AgentAbilities(
     }
 }
 
-/** How a thread asks before acting. A phone sets only [SUPERVISED] or [PLAN]. */
-enum class ThreadMode { SUPERVISED, AUTO_EDIT, PLAN }
+/**
+ * How a thread asks before acting (plans/modes-approvals-composer.md §2.1): five
+ * agent-neutral modes, each named the agent's own way ([AgentModes]). An agent
+ * offers some of them ([AgentAbilities.modes]); the phone may use any it offers.
+ */
+enum class ThreadMode {
+    /** Claude's "Manual", Codex's "Ask for approval". */
+    ASK,
+
+    /** Claude's "Accept edits". */
+    ACCEPT_EDITS,
+
+    /** Claude's "Auto", Codex's "Approve for me". */
+    AUTO,
+
+    /** Changes nothing: it writes a plan to implement. */
+    PLAN,
+
+    /** Nothing is asked: Claude's "Bypass permissions", Codex's "Full access". */
+    FULL,
+}
 
 /** A message waiting for the running turn to end. */
 @Immutable
@@ -81,7 +102,7 @@ data class McpCount(val on: Boolean, val servers: Int, val connected: Int, val n
 /** A thread's control state (`AgentThread`'s phase 2 fields). */
 @Immutable
 data class ThreadControl(
-    val mode: ThreadMode = ThreadMode.SUPERVISED,
+    val mode: ThreadMode = ThreadMode.ASK,
     /** The model for its next turn; null: the CLI's default. */
     val model: String? = null,
     val effort: String? = null,
@@ -286,7 +307,7 @@ object QuestionDock {
 data class ThreadSettings(
     val model: String? = null,
     val effort: String? = null,
-    val mode: ThreadMode = ThreadMode.SUPERVISED,
+    val mode: ThreadMode = ThreadMode.ASK,
     /** [model] was typed by the user rather than picked from the list. */
     val customModel: Boolean = false,
 )
@@ -322,6 +343,8 @@ data class FolderUse(
     val usedMs: Long = 0L,
     val repo: Boolean = false,
     val last: FolderLast? = null,
+    /** The mode each agent last used here, by agent id (`AgentFolder.modes`): never Plan. */
+    val modes: Map<String, ThreadMode> = emptyMap(),
 )
 
 /** An agent as quick picks read it: whether it can start a thread now, and the models its CLI reports. */
@@ -330,7 +353,7 @@ data class PickAgent(val id: String, val name: String, val ready: Boolean, val m
 
 /**
  * What a new thread runs with: exactly what a start takes, without the mode
- * (Plan is chosen per task). A null model or effort is the default; [custom]
+ * (chosen apart, per agent). A null model or effort is the default; [custom]
  * is a model the agent's list doesn't hold, sent as typed.
  */
 @Immutable
@@ -339,7 +362,7 @@ data class RunChoice(val agent: String, val model: String? = null, val effort: S
     fun same(other: RunChoice): Boolean = agent == other.agent && model == other.model && effort == other.effort
 
     /** The settings a start sends for it, with [mode]. */
-    fun settings(mode: ThreadMode = ThreadMode.SUPERVISED): ThreadSettings =
+    fun settings(mode: ThreadMode = ThreadMode.ASK): ThreadSettings =
         ThreadSettings(model = model, effort = effort, mode = mode, customModel = custom && model != null)
 }
 
@@ -374,10 +397,6 @@ object AgentSettings {
 
     /** Quick picks shown at most (contract C §2.3). */
     const val MAX_PICKS = 3
-
-    /** The modes a phone may choose (contract §Q5): never the one that edits without asking. */
-    fun phoneModes(abilities: AgentAbilities): List<ThreadMode> =
-        if (abilities.can(AgentAbilities.PLAN)) listOf(ThreadMode.SUPERVISED, ThreadMode.PLAN) else listOf(ThreadMode.SUPERVISED)
 
     /**
      * The sheet's rows after Default: the short names (or every model when
@@ -471,8 +490,9 @@ object AgentSettings {
     fun pickEffort(models: List<ModelOption>, settings: ThreadSettings, effort: String): ThreadSettings =
         if (effort in efforts(models, settings)) settings.copy(effort = effort) else settings
 
+    /** A mode the agent offers; any other leaves [settings] as they are. */
     fun pickMode(abilities: AgentAbilities, settings: ThreadSettings, mode: ThreadMode): ThreadSettings =
-        if (mode in phoneModes(abilities)) settings.copy(mode = mode) else settings
+        if (mode in AgentModes.offered(abilities)) settings.copy(mode = mode) else settings
 
     /**
      * A model id the user may type (contract §Q7): 1 to 64 bytes, no control
@@ -485,11 +505,11 @@ object AgentSettings {
     /** The settings a thread has now, as the sheet starts from. */
     fun of(control: ThreadControl): ThreadSettings = ThreadSettings(model = control.model, effort = control.effort, mode = control.mode)
 
-    /** What to send to change [current] into [chosen]; null when nothing changed. A phone never sends the mode that edits without asking. */
+    /** What to send to change [current] into [chosen]; null when nothing changed. */
     fun change(current: ThreadSettings, chosen: ThreadSettings): ConfigureChange? {
         val model = if (chosen.model != current.model) chosen.model.orEmpty() else null
         val effort = if (chosen.effort != current.effort) chosen.effort.orEmpty() else null
-        val mode = chosen.mode.takeIf { it != current.mode && it != ThreadMode.AUTO_EDIT }
+        val mode = chosen.mode.takeIf { it != current.mode }
         if (model == null && effort == null && mode == null) return null
         return ConfigureChange(model, effort, mode, customModel = model != null && model.isNotEmpty() && chosen.customModel)
     }
@@ -574,6 +594,50 @@ object AgentSettings {
         models.isNotEmpty() && choice.model != null && models.none { it.id == choice.model }
 
     private val BIDI = setOf('؜', '‎', '‏', '‪', '‫', '‬', '‭', '‮', '⁦', '⁧', '⁨', '⁩')
+}
+
+// ---- Modes (plans/modes-approvals-composer.md §2.2, §4.2) ----
+
+/**
+ * The mode chip in the reply box: always shown, [warn] (amber) for the mode
+ * that asks nothing, and what a tap does: opens the mode list between turns,
+ * says to wait while a turn runs, nothing while a question is shown.
+ */
+@Immutable
+data class ModeChip(val mode: ThreadMode, val warn: Boolean, val tap: SettingsAccess)
+
+object AgentModes {
+    /**
+     * The modes [abilities]' agent offers, in its CLI's own order; none from a
+     * PC that doesn't take control, and Ask alone from one that names none.
+     */
+    fun offered(abilities: AgentAbilities): List<ThreadMode> =
+        if (!abilities.control) emptyList() else abilities.modes.distinct().ifEmpty { listOf(ThreadMode.ASK) }
+
+    /** What a plan may be implemented in: every mode offered but Plan. */
+    fun implementModes(abilities: AgentAbilities): List<ThreadMode> =
+        offered(abilities).filter { it != ThreadMode.PLAN }.ifEmpty { listOf(ThreadMode.ASK) }
+
+    /**
+     * The mode a new thread (or an implemented plan) starts in: the one the
+     * folder remembers for its agent while the agent still offers it, never
+     * Plan; else Ask. A folder with none starts asking first.
+     */
+    fun preselect(remembered: ThreadMode?, offered: List<ThreadMode>): ThreadMode =
+        remembered?.takeIf { it != ThreadMode.PLAN && it in offered } ?: ThreadMode.ASK
+
+    /** [preselect] for [agent] in [folder]; no folder (or none known) starts asking first. */
+    fun preselect(folder: FolderUse?, agent: String, offered: List<ThreadMode>): ThreadMode =
+        preselect(folder?.modes?.get(agent), offered)
+
+    /** A thread's folder among the PC's, by its label (a thread names its folder so); none when no folder or several have it. */
+    fun folderOf(folders: List<FolderUse>, label: String): FolderUse? = folders.filter { it.label == label }.singleOrNull()
+
+    /** The mode asks nothing: drawn in the warning tint wherever it shows. */
+    fun warns(mode: ThreadMode): Boolean = mode == ThreadMode.FULL
+
+    /** The reply box's chip for a thread in [mode]; a tap does what the model control's does ([SettingsAccess]). */
+    fun chip(mode: ThreadMode, access: SettingsAccess): ModeChip = ModeChip(mode, warns(mode), access)
 }
 
 // ---- Sending while it works (contract §Q3.4, §Q6.1 "Follow-up key") ----

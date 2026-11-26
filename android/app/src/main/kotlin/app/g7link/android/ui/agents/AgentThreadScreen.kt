@@ -267,6 +267,9 @@ fun AgentThreadScreen(
     val thumbs = remember(device.id) { ImageThumbs { id -> (core.agentImageThumb(device.id, id) as? AgentCall.Ok)?.value } }
     var imageSheet by remember(threadId) { mutableStateOf(false) }
     var settingsOpen by remember(threadId) { mutableStateOf(false) }
+    var modeOpen by remember(threadId) { mutableStateOf(false) }
+    // The plan whose Implement was tapped: the modes it may run in are offered.
+    var implementFor by remember(threadId) { mutableStateOf<String?>(null) }
     var details by remember(threadId) { mutableStateOf(false) }
     var editing by remember(threadId) { mutableStateOf<QueuedLine?>(null) }
     var queueBusy by remember(threadId) { mutableStateOf(emptySet<String>()) }
@@ -641,8 +644,16 @@ fun AgentThreadScreen(
             SettingsAccess.INERT -> Unit
         }
     }
+    val openMode: () -> Unit = {
+        when (composer.settings) {
+            SettingsAccess.OPEN -> modeOpen = true
+            SettingsAccess.LATER -> core.say(resources.getString(R.string.agents_settings_later, agentName))
+            SettingsAccess.INERT -> Unit
+        }
+    }
     val configure: (ThreadSettings) -> Unit = { chosen ->
         settingsOpen = false
+        modeOpen = false
         val change = AgentSettings.change(settingsNow, chosen)
         if (change != null) {
             scope.launch {
@@ -693,17 +704,22 @@ fun AgentThreadScreen(
             }
         }
     }
-    val implement: (String) -> Unit = { itemId ->
+    // One tap: the mode the folder remembers (the PC picks it); the arrow offers the others.
+    val implementIn: (String, ThreadMode?) -> Unit = { itemId, mode ->
+        implementFor = null
         if (!implementing) {
             implementing = true
             scope.launch {
-                val result = core.agentImplement(device.id, threadId, itemId)
+                val result = core.agentImplement(device.id, threadId, itemId, mode)
                 implementing = false
                 if (result is AgentCall.Failed) core.say(failedSay(result.failure))
             }
         }
     }
+    val implement: (String) -> Unit = { itemId -> implementIn(itemId, null) }
+    val implementMenu: (String) -> Unit = { itemId -> if (!implementing) implementFor = itemId }
     val implementLatest by rememberUpdatedState(implement)
+    val implementMenuLatest by rememberUpdatedState(implementMenu)
     val changePlan: () -> Unit = { runCatching { focus.requestFocus() } }
     val focused: (Boolean) -> Unit = { on ->
         if (on) guard.focus() else guard.blur()
@@ -943,6 +959,7 @@ fun AgentThreadScreen(
             diff = { title, doc -> full = FullView.Diff(title, doc) },
             mark = { sheetCollapsed = false },
             implement = { itemId -> implementLatest(itemId) },
+            implementIn = { itemId -> implementMenuLatest(itemId) },
             changePlan = changePlan,
             messageActions = { row -> actionsFor = row },
             openChanges = { turn, path -> full = FullView.Changes(turn, path) },
@@ -1083,6 +1100,7 @@ fun AgentThreadScreen(
                 diff = actions.diff,
                 mark = actions.mark,
                 implement = actions.implement,
+                implementIn = actions.implementIn,
                 changePlan = {
                     beside = null
                     focusAfterBeside++
@@ -1281,7 +1299,7 @@ fun AgentThreadScreen(
                         }
                         AgentRowsList(
                             rows = rows,
-                            context = remember(itemsById, folder, newestPlan, running, implementing, thumbs, thread, now, lit, undoing) {
+                            context = remember(itemsById, folder, newestPlan, running, implementing, thumbs, thread, now, lit, undoing, agentName) {
                                 RowsContext(
                                     itemsById,
                                     folder,
@@ -1294,6 +1312,7 @@ fun AgentThreadScreen(
                                     nowMs = now,
                                     highlightSeq = lit,
                                     undoing = undoing,
+                                    agentName = agentName,
                                 )
                             },
                             actions = actions,
@@ -1441,9 +1460,10 @@ fun AgentThreadScreen(
                                     shown = abilities.control,
                                     model = AgentSettings.settingName(abilities.models, control.model, control.answeredModel),
                                     effort = AgentSettings.effectiveEffort(abilities.models, settingsNow)?.let(AgentSettings::effortLabel),
-                                    plan = control.mode == ThreadMode.PLAN,
+                                    mode = control.mode.takeIf { abilities.control },
                                 ),
                                 onSettings = openSettings,
+                                onMode = openMode,
                                 // Offline it shows off: pictures can't wait for the PC (board 22).
                                 attachShown = abilities.control && imagesAllowed,
                                 onAttach = { if (composer.attach) imageSheet = true },
@@ -1468,6 +1488,33 @@ fun AgentThreadScreen(
             appliesLater = true,
             onDone = configure,
             onDismiss = { settingsOpen = false },
+        )
+    }
+    if (modeOpen && thread != null) {
+        AgentModeSheet(
+            title = stringResource(R.string.agents_settings_mode),
+            modes = AgentModes.offered(abilities),
+            codex = codex,
+            selected = control.mode,
+            note = stringResource(R.string.agents_model_applies),
+            onPick = { mode -> configure(settingsNow.copy(mode = mode)) },
+            onDismiss = { modeOpen = false },
+        )
+    }
+    val implementItem = implementFor
+    if (implementItem != null && thread != null) {
+        val modes = AgentModes.implementModes(abilities)
+        // Preselected as a new thread there would start: the folder's last mode for the agent, else Ask.
+        val folderUse = remember(agents.catalog, thread.folder) {
+            agents.catalog?.let { AgentModes.folderOf(NewThreadFfi.folders(it), thread.folder) }
+        }
+        AgentModeSheet(
+            title = stringResource(R.string.agents_plan_implement),
+            modes = modes,
+            codex = codex,
+            selected = AgentModes.preselect(folderUse, thread.agent, modes),
+            onPick = { mode -> implementIn(implementItem, mode) },
+            onDismiss = { implementFor = null },
         )
     }
     if (details && thread != null) {
@@ -1909,11 +1956,11 @@ private fun PlanStepRow(step: AgentPlanStep) {
 
 /**
  * The request the thread waits on, as a sheet over the reply box (the phone
- * board, 4C): who wants what and "1 of 2", the command with its folder or the
- * change, the agent's reason as its own words, Deny and Allow. Allow waits until
- * all of it has been on screen and isn't offered for one the PC cut. A held one
- * shows with its buttons off. It never covers more than half the thread and
- * doesn't block scrolling it; its handle folds it to its first line.
+ * board, 4C): who wants what and "1 of 2", the agent's reason as its own words,
+ * then the command with its folder or the change, scrolling between the title
+ * and Deny and Allow, which stay in reach. Allow isn't offered for one the PC
+ * cut; a held one shows with its buttons off. It never covers more than half
+ * the thread and doesn't block scrolling it; its handle folds it to its first line.
  */
 @Composable
 private fun RequestSheet(
@@ -1934,15 +1981,12 @@ private fun RequestSheet(
     val tints = g7Tints()
     val fonts = LocalAppFonts.current
     val ask = queue.shown
-    // A new request is a new sheet: its own "read it all" before Allow.
+    // A new request is a new sheet, scrolled to its top.
     key(ask.token) {
         val scroll = rememberScrollState()
         val doc = rememberDiff(if (ask.kind == AgentAskKind.EDIT) ask.diff else null)
         val body = remember(ask) { AgentsModel.askBody(ask) }
         val fitsHere = ask.kind != AgentAskKind.EDIT || ask.diff.isNullOrBlank() || (doc != null && !doc.more && diffRows(doc) <= SHEET_DIFF_ROWS)
-        val ready = ask.kind != AgentAskKind.EDIT || ask.diff.isNullOrBlank() || doc != null
-        val seenHere = rememberSeenToEnd(ask.token, scroll, ready = ready && fitsHere)
-        val seenAll = body == null || (fitsHere && seenHere)
         val shape = if (card) RoundedCornerShape(12.dp) else RoundedCornerShape(topStart = 12.dp, topEnd = 12.dp)
         Column(
             modifier = Modifier
@@ -1993,6 +2037,7 @@ private fun RequestSheet(
                     modifier = Modifier.weight(1f, fill = false).verticalScroll(scroll),
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
+                    ask.reason?.takeIf { it.isNotBlank() }?.let { AgentSays(agentName, it) }
                     when {
                         ask.kind == AgentAskKind.EDIT && doc != null -> Column(
                             Modifier
@@ -2026,12 +2071,10 @@ private fun RequestSheet(
                     if (ask.truncated) {
                         Text(stringResource(R.string.agents_ask_truncated), style = MaterialTheme.typography.bodySmall, color = tints.amber)
                     }
-                    ask.reason?.takeIf { it.isNotBlank() }?.let { AgentSays(agentName, it) }
                 }
                 AnswerButtons(
                     queue = queue,
                     answering = answering,
-                    seenAll = seenAll,
                     allowPrimary = allowPrimary,
                     onAnswer = onAnswer,
                 )

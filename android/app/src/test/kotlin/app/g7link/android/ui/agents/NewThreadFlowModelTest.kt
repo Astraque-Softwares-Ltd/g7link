@@ -65,7 +65,7 @@ class NewThreadFlowModelTest {
         var state = NewThreadFlowModel.choose(NewThreadFlowModel.open(null, null, folders), "orbit-api")
         state = NewThreadFlowModel.typed(state, "Fix the login redirect")
         state = NewThreadFlowModel.pick(state, codex)
-        state = NewThreadFlowModel.plan(state, true)
+        state = NewThreadFlowModel.pickMode(state, "codex", ThreadMode.PLAN)
         // Where, Browse, and back to What in the same folder: all of it is there.
         state = NewThreadFlowModel.back(state)!!
         state = NewThreadFlowModel.browse(state)
@@ -73,14 +73,15 @@ class NewThreadFlowModelTest {
         state = NewThreadFlowModel.choose(state, "orbit-api")
         assertEquals("Fix the login redirect", state.prompt)
         assertEquals(codex, state.chosen)
-        assertEquals(ThreadMode.PLAN, NewThreadFlowModel.mode(state, canPlan = true))
-        // Another folder starts on its own first pick; the task and the mode stay.
+        val codexModes = listOf(ThreadMode.ASK, ThreadMode.AUTO, ThreadMode.FULL, ThreadMode.PLAN)
+        assertEquals(ThreadMode.PLAN, NewThreadFlowModel.mode(state, "codex", codexModes, folder = null))
+        // Plan only when the agent offers it.
+        assertEquals(ThreadMode.ASK, NewThreadFlowModel.mode(state, "codex", codexModes - ThreadMode.PLAN, folder = null))
+        // Another folder starts on its own first pick and its own mode; the task stays.
         state = NewThreadFlowModel.choose(NewThreadFlowModel.back(state)!!, "dashboard")
         assertNull(state.chosen)
+        assertNull(state.mode)
         assertEquals("Fix the login redirect", state.prompt)
-        assertTrue(state.plan)
-        // Plan only when the agent can.
-        assertEquals(ThreadMode.SUPERVISED, NewThreadFlowModel.mode(state, canPlan = false))
     }
 
     @Test

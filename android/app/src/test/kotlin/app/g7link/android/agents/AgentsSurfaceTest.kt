@@ -24,7 +24,6 @@ class AgentsSurfaceTest {
     private val catalog = AgentCatalog(
         agents = listOf(AgentInfo(id = "claude", name = "Claude", installed = true, signedIn = true, loginHint = "claude login")),
         folders = emptyList(),
-        modes = listOf(AgentMode.SUPERVISED),
     )
 
     private fun thread(id: String, state: AgentThreadState, updatedMs: Long = 1_000L, unread: Boolean = false, archived: Boolean = false, asks: UInt = 0u) =
@@ -34,7 +33,7 @@ class AgentsSurfaceTest {
             folder = "duka-pos",
             title = "Thread $id",
             state = state,
-            mode = AgentMode.SUPERVISED,
+            mode = AgentMode.ASK,
             fromPhone = false,
             updatedMs = updatedMs,
             asks = asks,

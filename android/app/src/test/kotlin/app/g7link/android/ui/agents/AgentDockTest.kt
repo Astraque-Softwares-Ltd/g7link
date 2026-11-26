@@ -86,7 +86,7 @@ class AgentDockTest {
     )
 
     private fun state(vararg asks: AgentAsk): AgentsState {
-        var state = AgentsState(catalog = AgentCatalog(agents = emptyList(), folders = emptyList(), modes = emptyList(), canSayWhy = true))
+        var state = AgentsState(catalog = AgentCatalog(agents = emptyList(), folders = emptyList(), canSayWhy = true))
         state = AgentsModel.withThread(
             state,
             AgentThread(
@@ -95,7 +95,7 @@ class AgentDockTest {
                 folder = "g7linux-phone",
                 title = "Fix the test",
                 state = AgentThreadState.WAITING,
-                mode = AgentMode.SUPERVISED,
+                mode = AgentMode.ASK,
                 fromPhone = true,
                 updatedMs = 1L,
                 asks = asks.size.toUInt(),
@@ -153,7 +153,7 @@ class AgentDockTest {
         val held = state.askQueue("t1") { guard.held(it) }!!
         assertEquals("a2", held.shown.token)
         assertTrue(held.held)
-        assertFalse(AgentDock.canAllow(held, answering = false, seenAll = true))
+        assertFalse(AgentDock.canAllow(held, answering = false))
         assertFalse(AgentDock.canDeny(held, answering = false))
         assertEquals(AgentMarkKind.HELD, AgentsModel.marks(state, "t1") { guard.held(it) }.single().kind)
 
@@ -162,7 +162,7 @@ class AgentDockTest {
         assertNull(guard.idleAtMs())
         val free = state.askQueue("t1") { guard.held(it) }!!
         assertFalse(free.held)
-        assertTrue(AgentDock.canAllow(free, answering = false, seenAll = true))
+        assertTrue(AgentDock.canAllow(free, answering = false))
     }
 
     @Test
@@ -268,11 +268,21 @@ class AgentDockTest {
     }
 
     @Test
-    fun `Allow waits for the whole request, never for one the PC cut`() {
-        assertFalse(AgentDock.canAllow(queue(), answering = false, seenAll = false))
-        assertTrue(AgentDock.canAllow(queue(), answering = false, seenAll = true))
-        assertFalse(AgentDock.canAllow(queue(truncated = true), answering = false, seenAll = true))
-        assertFalse(AgentDock.canAllow(queue(), answering = true, seenAll = true))
+    fun `Allow is on at once, off while held or answering, never for one the PC cut`() {
+        assertTrue("no scrolling to the end first", AgentDock.canAllow(queue(), answering = false))
+        assertFalse(AgentDock.canAllow(queue(held = true), answering = false))
+        assertFalse(AgentDock.canAllow(queue(), answering = true))
+        assertFalse(AgentDock.canAllow(queue(truncated = true), answering = false))
         assertTrue(AgentDock.canDeny(queue(truncated = true), answering = false))
+        assertFalse(AgentDock.canDeny(queue(held = true), answering = false))
+    }
+
+    @Test
+    fun `Deny says it stops the turn only for a request whose denial does, and is still offered`() {
+        assertFalse(AgentDock.denyStops(queue()))
+        val stops = AskQueue(shown = ask("a1", 10_000L).copy(agent = "codex", denyStops = true), more = 0)
+        assertTrue(AgentDock.denyStops(stops))
+        assertTrue(AgentDock.canDeny(stops, answering = false))
+        assertTrue(AgentDock.canAllow(stops, answering = false))
     }
 }
