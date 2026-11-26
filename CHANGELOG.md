@@ -4,6 +4,43 @@ All notable changes to G7 Link. Versions follow
 [semantic versioning](https://semver.org); before 1.0, a minor version may
 change things that need a step from you, and its notes say so.
 
+## 0.1.31 (2026-11-26)
+
+**Update both together** for the new permission modes.
+
+### Added
+
+- **Every permission mode each agent has.** Claude: Auto, Manual, Accept
+  edits, Plan and Bypass permissions; Codex: Ask for approval, Approve for
+  me and Full access, in each CLI's own words and order. The PC's menu works
+  like Claude Code's, with a line on what each mode does and keys 1–5; the
+  phone has the same list in a sheet. Auto is greyed out with a model that
+  doesn't support it. Bypass permissions and Full access are drawn in amber.
+- **The mode is always in the reply box**: its full name on the PC and a
+  short word on the phone. It also appears in the new-thread form. A folder
+  remembers the mode you last used there for each agent (never Plan), and a
+  new thread there starts in it.
+- **Codex's own reviewer.** With Approve for me, a step the reviewer passed
+  says "Approved by Codex's reviewer". For Codex, Deny stops the turn, as it
+  does in Codex, and the card says so.
+- **Hide the PC's sidebar on the Agents page** (Ctrl+Shift+[, or the button
+  beside the page's own sidebar). It stays hidden until you show it again.
+
+### Changed
+
+- **Allow works at once.** You no longer have to scroll to the end of a
+  long command first; you can still scroll it.
+- **The agent's reason comes first**, above the command or edit it wants to
+  run.
+- **Implement runs in one tap** in the mode the folder remembers, on the PC
+  and the phone. The arrow beside it offers the other modes.
+- **Send is the Return icon and Stop is an icon**, as in Claude's apps.
+- **Bigger text on the PC**: 14 px body text, and 15 px in an agent's
+  replies. The phone's body text is 16 sp. Labels are one size up on both.
+- **The phone's search button** at the bottom right is a circle.
+- "Always allow" is hidden in Auto and Full access too, as it already was
+  in Accept edits.
+
 ## 0.1.30 (2026-11-25)
 
 **Update both together** to browse and add the PC's folders from the phone.
