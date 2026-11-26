@@ -4,6 +4,20 @@ All notable changes to G7 Link. Versions follow
 [semantic versioning](https://semver.org); before 1.0, a minor version may
 change things that need a step from you, and its notes say so.
 
+## 0.1.32 (2026-11-26)
+
+### Fixed
+
+- **"A newer draft from Pixel 8 Pro" no longer stays on the PC** after you
+  send that message from the phone. An emptied draft is never offered, on
+  the PC or the phone, and a newer draft always replaces an older offer.
+
+### Changed
+
+- **A finished thread's notification is one short line**: "Codex is done"
+  and the first sentence of its answer (or its error). Your question and
+  the whole answer are no longer repeated there; the thread has them.
+
 ## 0.1.31 (2026-11-26)
 
 **Update both together** for the new permission modes.
