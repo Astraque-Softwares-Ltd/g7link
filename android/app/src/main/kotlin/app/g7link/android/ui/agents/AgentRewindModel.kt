@@ -156,12 +156,15 @@ object AgentDrafts {
         if (draft == null) return DraftStep(state.copy(loaded = true, rev = 0uL, offer = null))
         val next = state.copy(loaded = true, rev = draft.rev)
         if (draft.text == local && draft.images.isEmpty()) return DraftStep(next.copy(offer = null))
-        return if (local.isBlank()) {
-            DraftStep(next.copy(offer = null, dirty = false), draft.text, draft.images.map { it.id })
-        } else {
-            DraftStep(next.copy(offer = draft))
+        return when {
+            local.isBlank() -> DraftStep(next.copy(offer = null, dirty = false), draft.text, draft.images.map { it.id })
+            emptied(draft) -> DraftStep(next.copy(offer = null))
+            else -> DraftStep(next.copy(offer = draft))
         }
     }
+
+    /** Its text was sent or cleared elsewhere: nothing to offer. */
+    private fun emptied(draft: AgentDraft): Boolean = draft.text.isEmpty() && draft.images.isEmpty()
 
     fun edited(state: DraftState): DraftState = if (state.dirty) state else state.copy(dirty = true)
 
@@ -171,6 +174,7 @@ object AgentDrafts {
         return when {
             conflict == null -> state.copy(rev = saved.rev, dirty = false)
             conflict.text == local -> state.copy(rev = conflict.rev, dirty = false, offer = null)
+            emptied(conflict) -> state.copy(rev = conflict.rev, offer = null)
             else -> state.copy(rev = conflict.rev, offer = conflict)
         }
     }
@@ -178,13 +182,17 @@ object AgentDrafts {
     /** Another device changed it ([rev]): read it unless it's the one this composer wrote. */
     fun stale(state: DraftState, rev: ULong): Boolean = state.loaded && rev > state.rev
 
-    /** The newer draft arrived: it replaces the text while the composer isn't focused, else it's offered. */
+    /**
+     * The newer draft arrived: it replaces the text while the composer isn't focused, else it's offered; one
+     * emptied elsewhere (sent or cleared) takes back an earlier offer and offers nothing.
+     */
     fun arrived(state: DraftState, draft: AgentDraft?, focused: Boolean, local: String): DraftStep {
         if (draft == null) return DraftStep(state.copy(offer = null))
         if (draft.rev <= state.rev && state.offer == null) return DraftStep(state)
         val next = state.copy(rev = maxOf(state.rev, draft.rev))
         return when {
             draft.text == local && draft.images.isEmpty() -> DraftStep(next.copy(offer = null, dirty = false))
+            focused && emptied(draft) -> DraftStep(next.copy(offer = null))
             focused -> DraftStep(next.copy(offer = draft))
             else -> DraftStep(next.copy(offer = null, dirty = false), draft.text, draft.images.map { it.id })
         }

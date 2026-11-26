@@ -160,6 +160,25 @@ class AgentRewindModelTest {
     }
 
     @Test
+    fun `a draft sent or cleared elsewhere takes back its offer and is never offered`() {
+        val state = AgentDrafts.loaded(DraftState(), draft("a", 2uL), "a").state
+        val offered = AgentDrafts.arrived(state, draft("from the PC", 3uL), focused = true, local = "mine")
+        assertEquals("from the PC", offered.state.offer?.text)
+        val sent = AgentDrafts.arrived(offered.state, draft("", 4uL), focused = true, local = "mine")
+        assertNull("sent on the PC: nothing left to offer", sent.state.offer)
+        assertNull("the words typed here stay", sent.text)
+        assertEquals(4uL, sent.state.rev)
+        val idle = AgentDrafts.arrived(offered.state, draft("", 4uL), focused = false, local = "from the PC")
+        assertEquals("an idle box follows the PC", "", idle.text)
+        assertNull(AgentDrafts.loaded(DraftState(), draft("", 6uL), "mine").state.offer)
+        val edited = AgentDrafts.edited(state)
+        val conflict = AgentDrafts.saved(edited, AgentDraftSaved(rev = 2uL, conflict = draft("", 5uL)), "mine")
+        assertNull(conflict.offer)
+        assertEquals(5uL, conflict.rev)
+        assertTrue("still to be written", conflict.dirty)
+    }
+
+    @Test
     fun `sending drops the draft with the message`() {
         val sent = AgentDrafts.sent(AgentDrafts.edited(AgentDrafts.loaded(DraftState(), draft("a", 5uL), "a").state))
         assertEquals(0uL, sent.rev)

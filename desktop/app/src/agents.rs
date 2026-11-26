@@ -5239,35 +5239,39 @@ async fn read_draft(client: Client, generation: u64, key: String) {
 /// isn't typing in it, else a line offers it. Never while a question waits.
 fn take_remote_draft(generation: u64, draft: Draft) {
     let this_pc = this_pc_name();
-    {
+    let took = {
         let mut s = lock();
         let Some(open) = s.open.as_mut().filter(|o| o.generation == generation) else { return };
-        let c = &mut open.composer;
-        if draft.rev <= c.draft_rev && c.draft_rev != 0 {
-            return;
-        }
-        // Edit from here's message takes the composer even while it's in use.
-        let busy = (c.focused && !c.refill) || !open.questions.is_empty();
-        match control::remote_draft(busy, &c.text, &draft, &this_pc) {
-            control::DraftAction::Keep => {}
-            control::DraftAction::Replace(text) => {
-                c.put(text.clone());
-                c.draft_saved = text;
-                c.offer = None;
-                c.refill = false;
-            }
-            control::DraftAction::Offer { by } => {
-                let rev = draft.rev;
-                c.offer = Some((draft, by));
-                // Saving now would only meet the same conflict again.
-                c.draft_rev = rev;
-                changed();
-                return;
-            }
-        }
-        c.draft_rev = draft.rev;
+        apply_remote_draft(open, draft, &this_pc)
+    };
+    if took {
+        changed();
     }
-    changed();
+}
+
+/// [`take_remote_draft`] on the open view; `false` for a draft older than
+/// the composer's. A newer draft always replaces what an older one offered:
+/// once that one was sent or cleared, nothing is offered.
+fn apply_remote_draft(open: &mut OpenView, draft: Draft, this_pc: &str) -> bool {
+    let c = &mut open.composer;
+    if draft.rev <= c.draft_rev && c.draft_rev != 0 {
+        return false;
+    }
+    // Edit from here's message takes the composer even while it's in use.
+    let busy = (c.focused && !c.refill) || !open.questions.is_empty();
+    c.draft_rev = draft.rev;
+    match control::remote_draft(busy, &c.text, &draft, this_pc) {
+        control::DraftAction::Keep => c.offer = None,
+        control::DraftAction::Replace(text) => {
+            c.put(text.clone());
+            c.draft_saved = text;
+            c.offer = None;
+            c.refill = false;
+        }
+        // Saving now would only meet the same conflict again: the rev moved on.
+        control::DraftAction::Offer { by } => c.offer = Some((draft, by)),
+    }
+    true
 }
 
 /// The user took the draft another device offered.
@@ -7084,6 +7088,32 @@ mod tests {
         view.apply(entry(&Item { tool: Some(ruled), ..Item::new(9, "toolu_a", ItemKind::Tool, 5) }));
         assert!(view.marks().iter().all(|m| m.item_id != "toolu_a"));
         assert!(view.entries[0].item_in().unwrap().tool.unwrap().by_rule);
+    }
+
+    #[test]
+    fn a_draft_sent_elsewhere_takes_back_what_it_offered() {
+        let mut open = OpenView::new(1, OpenKind::Thread, "t1".into());
+        open.composer.focused = true;
+        let typed = Draft {
+            key: "t1".into(),
+            text: "what would you advise we improve".into(),
+            images: Vec::new(),
+            rev: 3,
+            by: Some(Origin::phone("d", "Pixel 8 Pro")),
+        };
+        assert!(apply_remote_draft(&mut open, typed.clone(), "guchu"));
+        assert_eq!(open.composer.offer.as_ref().map(|(_, by)| by.as_str()), Some("Pixel 8 Pro"));
+        // The phone sent it: the host empties the draft, and the offer goes.
+        let sent = Draft { text: String::new(), rev: 4, ..typed.clone() };
+        assert!(apply_remote_draft(&mut open, sent, "guchu"));
+        assert!(open.composer.offer.is_none());
+        assert_eq!(open.composer.draft_rev, 4);
+        assert!(!apply_remote_draft(&mut open, typed.clone(), "guchu"), "an older one changes nothing");
+        assert!(open.composer.offer.is_none());
+        // Words typed here meanwhile stay, and an emptied draft offers nothing.
+        open.composer.put("mine".into());
+        assert!(apply_remote_draft(&mut open, Draft { text: String::new(), rev: 5, ..typed }, "guchu"));
+        assert_eq!((open.composer.text.as_str(), open.composer.offer.is_none()), ("mine", true));
     }
 
     #[test]

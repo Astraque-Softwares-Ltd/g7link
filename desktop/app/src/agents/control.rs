@@ -1267,13 +1267,17 @@ pub(crate) enum DraftAction {
     Keep,
 }
 
-/// Replace when the composer isn't focused, offer when it is.
+/// Replace when the composer isn't focused, offer when it is; an emptied
+/// draft (its text was sent or cleared elsewhere) is never offered.
 pub(crate) fn remote_draft(focused: bool, current: &str, draft: &Draft, this_pc: &str) -> DraftAction {
     if draft.text == current {
         return DraftAction::Keep;
     }
     if !focused {
         return DraftAction::Replace(draft.text.clone());
+    }
+    if draft.text.is_empty() && draft.images.is_empty() {
+        return DraftAction::Keep;
     }
     let by = match &draft.by {
         Some(o) if o.kind == OriginKind::Phone => o.device_name.clone().unwrap_or_default(),
@@ -2308,11 +2312,15 @@ mod tests {
             DraftAction::Offer { by: "Pixel 8 Pro".into() }
         );
         assert_eq!(remote_draft(true, &draft.text, &draft, "guchu"), DraftAction::Keep);
-        let from_launcher = Draft { by: Some(Origin::launcher()), ..draft };
+        let from_launcher = Draft { by: Some(Origin::launcher()), ..draft.clone() };
         assert_eq!(
             remote_draft(true, "", &from_launcher, "guchu"),
             DraftAction::Offer { by: "guchu".into() }
         );
+        // Sent from the phone: the draft is emptied, and nothing is offered.
+        let sent = Draft { text: String::new(), rev: 4, ..draft };
+        assert_eq!(remote_draft(true, "mine", &sent, "guchu"), DraftAction::Keep);
+        assert_eq!(remote_draft(false, "old", &sent, "guchu"), DraftAction::Replace(String::new()));
     }
 
     #[test]
