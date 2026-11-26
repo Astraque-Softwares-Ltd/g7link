@@ -649,4 +649,18 @@ class AgentNotificationsTest {
         store.dropAll("agent:pc2:")
         assertFalse(store.has("agent:pc2:t9"))
     }
+
+    @Test
+    fun `a finished thread says one short line, never the prompt and the answer together`() {
+        val answer = "Implemented safer M-Pesa retries. Checkout now records the payment attempt in D1 before contacting M-Pesa."
+        assertEquals("Implemented safer M-Pesa retries.", AgentNotifications.finishedLine("what do you think of this project", answer))
+        assertEquals("Done: the toggle is in Settings.", AgentNotifications.finishedLine("t", "\n## **Done**: the toggle is in Settings.\n\nMore."))
+        assertEquals("- not a bullet", AgentNotifications.finishedLine("t", "- - not a bullet"))
+        assertEquals("Add a dark mode toggle", AgentNotifications.finishedLine("Add a dark mode toggle\nwith details", null))
+        assertEquals("Add a dark mode toggle", AgentNotifications.finishedLine("Add a dark mode toggle", "  "))
+        val long = AgentNotifications.finishedLine("t", "word ".repeat(60).trim())
+        assertTrue(long, long.length <= AgentNotifications.FINISHED_LINE_MAX && long.endsWith("word…"))
+        val unbroken = AgentNotifications.finishedLine("t", "x".repeat(300))
+        assertEquals(AgentNotifications.FINISHED_LINE_MAX, unbroken.length)
+    }
 }

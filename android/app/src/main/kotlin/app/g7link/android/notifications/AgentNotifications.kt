@@ -422,6 +422,33 @@ object AgentNotifications {
 
     fun tag(pcId: String, threadId: String): String = "$TAG_PREFIX$pcId:$threadId"
 
+    /** A finished thread's notification says this much: one line. */
+    const val FINISHED_LINE_MAX = 120
+
+    /**
+     * A finished thread's one line: the first sentence of its answer (or error, or when its limit resets), without
+     * Markdown marks, cut at a word; what the thread was about when there's none. Never the prompt and the answer
+     * together: the thread holds the rest.
+     */
+    fun finishedLine(title: String, detail: String?): String {
+        val text = detail?.lineSequence()?.map { plainLine(it) }?.firstOrNull { it.isNotEmpty() }
+            ?: return cutAtWord(plainLine(title.lineSequence().firstOrNull().orEmpty()), FINISHED_LINE_MAX)
+        val end = SENTENCE_END.find(text)?.let { it.range.first + 1 } ?: text.length
+        return cutAtWord(text.substring(0, end), FINISHED_LINE_MAX)
+    }
+
+    private val SENTENCE_END = Regex("[.!?](?=\\s|$)")
+    private val LINE_MARKS = Regex("^\\s*(?:#{1,6}\\s+|[-*+>]\\s+|\\d+[.)]\\s+)")
+
+    private fun plainLine(line: String): String =
+        line.replace(LINE_MARKS, "").replace("**", "").replace("__", "").replace("`", "").trim()
+
+    private fun cutAtWord(text: String, max: Int): String {
+        if (text.length <= max) return text
+        val space = text.lastIndexOf(' ', max - 1).takeIf { it > max / 2 } ?: (max - 1)
+        return text.substring(0, space).trimEnd(' ', ',', ';', ':') + "…"
+    }
+
     fun sessionTag(pcId: String, sessionId: String): String = "$SESSION_TAG_PREFIX$pcId:$sessionId"
 
     fun createChannels(context: Context) {
@@ -1282,7 +1309,6 @@ object AgentNotifications {
             } ?: context.getString(R.string.agents_usage_limit)
             else -> notice.text
         }
-        val expanded = listOfNotNull(notice.title.ifBlank { null }, detail?.ifBlank { null }).joinToString("\n")
         val open = openIntent(context, notice.pcId, notice.threadId)
         // On the lock screen: who finished, never the thread, its folder, its summary or the error.
         val public = Notification.Builder(context, CHANNEL_DONE)
@@ -1292,8 +1318,7 @@ object AgentNotifications {
         val builder = Notification.Builder(context, CHANNEL_DONE)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(title)
-            .setContentText(notice.title)
-            .setStyle(Notification.BigTextStyle().bigText(expanded))
+            .setContentText(finishedLine(notice.title, detail))
             .setSubText(pcName)
             .setContentIntent(open)
             .setVisibility(Notification.VISIBILITY_PRIVATE)
